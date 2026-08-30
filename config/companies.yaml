@@ -1,0 +1,309 @@
+version: 1
+# ATS URLs change frequently. Entries without a verified list_url fail explicitly rather
+# than inventing an endpoint. Populate source-specific config after running endpoint_probe.py.
+# adapter: stealth_html uses a real headless stealth browser (see adapters/stealth_html.py)
+# to get past a Cloudflare/Akamai-style bot-management challenge — a deliberate choice for
+# this project, made with the understanding that it can conflict with a site's Terms of
+# Service. Prefer every other adapter first; only reach for it when no plain anonymous
+# endpoint exists at all. Requires `uv sync --extra stealth && uv run scrapling install`.
+companies:
+  - key: honda
+    company: American Honda Motor Co.
+    adapter: phenom
+    platform: phenom
+    config:
+      # Full pagination (from/s params) — see PhenomAdapter's docstring for how these
+      # were found (rendering the page once to read its own generated links).
+      list_url: https://careers.honda.com/us/en/search-results
+      keywords: ""
+  - key: toyota
+    company: Toyota Motor North America
+    adapter: workday
+    platform: workday
+    config:
+      workday_native: true
+      list_url: https://toyota.wd503.myworkdayjobs.com/wday/cxs/toyota/TMNA/jobs
+      public_base_url: https://toyota.wd503.myworkdayjobs.com/wday/cxs/toyota/TMNA/
+  - key: gm
+    company: General Motors
+    adapter: workday
+    platform: workday
+    config:
+      # search-careers.gm.com (Findly-branded) is Cloudflare-protected, but it's only a
+      # front end — GM's actual candidate-facing system, found via a real job link
+      # (generalmotors.wd5.myworkdayjobs.com), is a completely public, unauthenticated
+      # Workday CXS API with no bot protection at all. Same total job count (~820) as the
+      # stealth-rendered site, but plain httpx, real postedOn/startDate, and no ToS
+      # exposure — dropped stealth_html for this source entirely.
+      workday_native: true
+      list_url: https://generalmotors.wd5.myworkdayjobs.com/wday/cxs/generalmotors/Careers_GM/jobs
+      public_base_url: https://generalmotors.wd5.myworkdayjobs.com/wday/cxs/generalmotors/Careers_GM/
+  - key: ford
+    company: Ford Motor Company
+    adapter: oracle_hcm
+    platform: oracle_hcm
+    config:
+      # careers.ford.com (Radancy/TalentBrew) is only the marketing job board; the real
+      # backing system — discovered via a real apply.ford.com job link, same vanity-domain
+      # pattern as DENSO — is Oracle HCM at efds.fa.em5.oraclecloud.com, site CX_1. Same
+      # job count as the TalentBrew scrape (~824) but with real PostedDate, an official
+      # REST API instead of HTML scraping, and no pagination-selector fragility.
+      paginate: true
+      list_url: https://efds.fa.em5.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS,limit=200,offset=0
+      items_path: items.0.requisitionList
+      total_path: items.0.TotalJobsCount
+      detail_base_url: https://efds.fa.em5.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
+      detail_description_path: ExternalDescriptionStr
+      fields:
+        id: Id
+        title: Title
+        url: Id
+        location: PrimaryLocation
+        country: PrimaryLocationCountry
+        employment_type: WorkplaceType
+        posted_at: PostedDate
+  - key: stellantis
+    company: Stellantis
+    adapter: adp_recruiting
+    platform: adp_recruiting
+    config:
+      # careers.stellantis.com (the Angular/Findly front end previously scraped via
+      # stealth_html, only its first ~10-job page reachable) is just a skin over
+      # Stellantis's real backing system: ADP Recruiting Management, at
+      # myjobs.adp.com/stellantisexternalcx — a real job link
+      # (careers.stellantis.com/job/23716470/... == myjobs.adp.com/stellantisexternalcx/
+      # cx/job-details?reqId=5001216839806, confirmed same posting) exposes a public,
+      # unauthenticated two-call API: /public/staffing/v1/career-site/{domain} returns a
+      # myJobsToken, replayed as a myjobstoken header on
+      # .../job-requisitions/apply-custom-filters, which returns every requisition
+      # (full description, qualifications, and posting date included, no separate detail
+      # fetch needed) with real $top/$skip pagination — no browser needed at all.
+      career_site_domain: stellantisexternalcx
+  - key: nissan
+    company: Nissan
+    adapter: workday
+    platform: workday
+    config:
+      workday_native: true
+      list_url: https://alliance.wd3.myworkdayjobs.com/wday/cxs/alliance/nissanjobs/jobs
+      public_base_url: https://alliance.wd3.myworkdayjobs.com/wday/cxs/alliance/nissanjobs/
+      applied_facets:
+        locationCountry: [bc33aa3152ec42d4995f4791a106ed09]
+  - key: mercedes
+    company: Mercedes-Benz
+    adapter: unsupported
+    platform: taleo
+    unsupported_reason: jobs.mercedes-benz.com is a Nuxt SPA proxying Oracle Taleo (tas-DAIMLER.taleo.net) via jobs.api.mercedes-benz.com/search; no working U.S.-only filter parameter was found and this project has no Taleo adapter.
+  - key: volkswagen
+    company: Volkswagen Group of America
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      list_url: https://jobs.volkswagen-group.com/search/?locale=en_US&optionsFacetsDD_country=US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate
+  - key: audi
+    company: Audi of America
+    adapter: unsupported
+    platform: successfactors_rmk
+    unsupported_reason: Audi has no distinct career site; jobs.volkswagen-group.com has no legal-entity/brand facet, and a keyword search for "audi" mostly returns unrelated VW Group postings. Audi-branded reqs (e.g. "Sales Consultant Audi") already surface unfiltered within the volkswagen source.
+  - key: tesla
+    company: Tesla
+    adapter: unsupported
+    platform: akamai_protected
+    unsupported_reason: www.tesla.com/careers returns an Akamai "Access Denied" edge block on plain requests; no verified anonymous endpoint, and this project does not add anti-bot workarounds.
+  - key: paccar
+    company: PACCAR
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      list_url: https://jobs.paccar.com/search/?q=&locationsearch=&optionsFacetsDD_country=US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate
+  - key: valeo
+    company: Valeo
+    adapter: workday
+    platform: workday
+    config:
+      workday_native: true
+      list_url: https://valeo.wd3.myworkdayjobs.com/wday/cxs/valeo/valeo_jobs/jobs
+      public_base_url: https://valeo.wd3.myworkdayjobs.com/wday/cxs/valeo/valeo_jobs/
+  - key: denso
+    company: DENSO
+    adapter: oracle_hcm
+    platform: oracle_hcm
+    config:
+      # json_api adapters fetch a single page; limit is set high enough to cover DENSO's
+      # ~100 open reqs in one request (Oracle HCM's recruitingCEJobRequisitions has no
+      # separate pagination support in this adapter).
+      list_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations,flexFieldsFacet.values&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS%3BWORK_LOCATIONS%3BWORKPLACE_TYPES%3BTITLES%3BCATEGORIES%3BORGANIZATIONS%3BPOSTING_DATES%3BFLEX_FIELDS,limit=500,offset=0
+      items_path: items.0.requisitionList
+      detail_base_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
+      detail_description_path: ExternalDescriptionStr
+      fields:
+        id: Id
+        title: Title
+        url: Id
+        location: PrimaryLocation
+        country: PrimaryLocationCountry
+        employment_type: WorkplaceType
+        posted_at: PostedDate
+  - key: astemo
+    company: Astemo
+    adapter: stealth_html
+    platform: html
+    config:
+      # Same Cloudflare Turnstile challenge and platform vendor as GM; fetched via the
+      # stealth_html adapter. Global site — expect mostly non-US postings.
+      list_url: https://www.careers.astemo.com/en/jobs/
+      card_selector: .card-job
+      link_selector: .card-title a
+      title_selector: .card-title a
+      location_selector: .job-meta__location
+      page_number_parameter: page
+      page_size: 20
+      description_selector: article.cms-content
+  - key: hri
+    company: Honda Research Institute USA
+    adapter: html_multi_index
+    platform: html
+    config:
+      index_urls: [https://usa.honda-ri.com/associate-positions]
+      card_selector: .b-job-item
+      link_selector: a.b-button
+      title_selector: .b-job-item__title h3
+      location_selector: .b-job-item__location
+      description_selector: .journal-content-article
+  - key: tri
+    company: Toyota Research Institute
+    adapter: lever
+    platform: lever
+    config:
+      list_url: https://api.lever.co/v0/postings/tri?mode=json
+      listing_description_path: description
+      fields:
+        id: id
+        title: text
+        url: hostedUrl
+        location: categories.location
+        department: categories.department
+        employment_type: categories.commitment
+        posted_at: createdAt
+  - key: mbrdna
+    company: Mercedes-Benz Research & Development North America
+    adapter: lever
+    platform: lever
+    config:
+      list_url: https://api.lever.co/v0/postings/MBRDNA?mode=json
+      listing_description_path: description
+      fields:
+        id: id
+        title: text
+        url: hostedUrl
+        location: categories.location
+        department: categories.department
+        employment_type: categories.commitment
+        posted_at: createdAt
+  - key: woven
+    company: Woven by Toyota
+    adapter: lever
+    platform: lever
+    config:
+      # woven.toyota/en/careers/ is a Next.js front end (custom UI over a public API, no
+      # bot protection); its detail-page URL embeds a UUID job ID that exactly matches
+      # Lever's own posting ID for the same job (confirmed: a real "Apply" link for
+      # woven.toyota/en/careers/detail/9da63697-.../ resolved to
+      # jobs.lever.co/woven-by-toyota/9da63697-.../apply) — the real backend is a public,
+      # unauthenticated Lever tenant, same platform/shape as TRI/MBRDNA. ~143 postings,
+      # mostly Tokyo/Japan with a smaller US contingent (Ann Arbor MI, Palo Alto CA).
+      list_url: https://api.lever.co/v0/postings/woven-by-toyota?mode=json
+      listing_description_path: description
+      fields:
+        id: id
+        title: text
+        url: hostedUrl
+        location: categories.location
+        department: categories.department
+        employment_type: categories.commitment
+        posted_at: createdAt
+  - key: hma
+    company: Hyundai Motor America
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      list_url: https://careers-americas.hyundai.com/hma/search/?optionsFacetsDD_country=US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate
+  - key: apple
+    company: Apple
+    adapter: apple
+    platform: apple
+    config:
+      # jobs.apple.com's React Router SPA server-renders every page (search results and
+      # job detail alike) with a full JSON snapshot embedded as
+      # `window.__staticRouterHydrationData = JSON.parse("...")` — a plain GET already
+      # returns exact posting dates and full descriptions, no browser needed. Dropped
+      # stealth_html entirely once this was found by inspecting the plain HTML directly.
+      list_url: https://jobs.apple.com/en-us/search?location=united-states-USA
+      page_size: 20
+  - key: google
+    company: Google
+    adapter: stealth_html
+    platform: html
+    config:
+      # Not bot-blocked; rendering is required because content only exists after this
+      # "boq-hiring" frontend's JS runs. Its client-side router emits job hrefs relative
+      # to a shorter base path than the page's own URL, hence detail_base_url. CSS classes
+      # here are Closure-compiler hashes (e.g. QJPWVe, lLd3Je) — expect these to be more
+      # fragile across a Google redesign than other sources' hand-authored class names.
+      list_url: https://www.google.com/about/careers/applications/jobs/results
+      detail_base_url: https://www.google.com/about/careers/applications/
+      card_selector: li.lLd3Je
+      link_selector: a[aria-label^="Learn more about"]
+      title_selector: h3.QJPWVe
+      location_selector: span.r0wTof
+      next_selector: a[aria-label="Go to next page"]
+      description_selector: .DkhPwc
+  - key: waymo
+    company: Waymo
+    adapter: html_paginated
+    platform: html
+    config:
+      list_url: https://careers.withwaymo.com/jobs/search
+      card_selector: div.job-search-results-card
+      link_selector: .card-title a
+      title_selector: .card-title a
+      location_selector: .job-component-location
+      description_selector: .job-description
+  - key: hatci
+    company: Hyundai America Technical Center, Inc.
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      list_url: https://careers-americas.hyundai.com/hatci/search/
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate

@@ -1,0 +1,36 @@
+profile_version: 1
+resume_path: config/resume.example.md
+target_domains:
+  - ADAS
+  - autonomous driving
+  - active safety
+  - vehicle systems
+  - validation
+  - verification
+  - systems engineering
+  - simulation
+  - sensor fusion
+  - robotics
+  - mechatronics
+target_title_terms:
+  - principal
+  - staff
+  - lead
+  - senior
+  - systems
+  - development
+  - validation
+  - test
+  - robotics
+  - mechatronics
+  - product technical leader
+  - product technical manager
+  - product manager
+  - vehicle testing
+exclude_title_terms: [intern, co-op]
+exclude_terms: []
+minimum_recommendation_score: 75
+location:
+  country: US
+  allowed_work_arrangements: [onsite, hybrid, remote]
+

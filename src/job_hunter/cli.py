@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import importlib.util
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+
+from .adapters import adapter_class
+from .collector import Collector, select_companies
+from .config import load_companies, load_profile, load_settings
+from .logging_config import configure_logging
+from .storage import Storage
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="job-hunter")
+    sub = root.add_subparsers(dest="command", required=True)
+    search = sub.add_parser("search")
+    search.add_argument("--companies")
+    search.add_argument("--all-companies", action="store_true")
+    seen = search.add_mutually_exclusive_group()
+    seen.add_argument("--include-seen", action="store_true")
+    seen.add_argument("--new-only", action="store_true")
+    search.add_argument("--refresh-details", action="store_true")
+    search.add_argument("--max-candidates", type=int)
+    search.add_argument("--json", action="store_true")
+    search.add_argument("--output", type=Path)
+    search.add_argument("--verbose", action="store_true")
+    search.add_argument("--debug", action="store_true")
+    sub.add_parser("doctor")
+    sub.add_parser("source-status")
+    test = sub.add_parser("source-test")
+    test.add_argument("company")
+    sub.add_parser("db-stats")
+    export = sub.add_parser("export")
+    export.add_argument("--format", choices=["json"], default="json")
+    return root
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+async def _source_test(key: str) -> int:
+    import httpx
+
+    settings = load_settings()
+    companies = select_companies(load_companies(), key)
+    async with httpx.AsyncClient(
+        timeout=settings.collection.timeout_seconds, follow_redirects=True
+    ) as client:
+        adapter = adapter_class(companies[0].adapter)(companies[0], client, settings.collection)
+        health = await adapter.healthcheck()
+    print(_json(health.model_dump(mode="json")))
+    return 0 if health.status.value in {"ok", "warning"} else 1
+
+
+def doctor() -> int:
+    checks: list[tuple[str, bool, str]] = []
+    checks.append(("python", sys.version_info >= (3, 11), sys.version.split()[0]))
+    checks.append(
+        (
+            "uv environment",
+            bool(os.environ.get("VIRTUAL_ENV")),
+            os.environ.get("VIRTUAL_ENV", "not active"),
+        )
+    )
+    try:
+        settings, companies, profile = load_settings(), load_companies(), load_profile()
+        checks.append(("configuration", True, f"{len(companies)} companies"))
+        with Storage(settings.database_path):
+            pass
+        checks.append(("database", True, str(settings.database_path)))
+        if profile.resume_path:
+            checks.append(("resume", profile.resume_path.exists(), str(profile.resume_path)))
+        else:
+            checks.append(("resume", True, "not configured; profile-only ranking"))
+    except Exception as exc:
+        checks.append(("configuration/database", False, str(exc)))
+    packages = all(
+        importlib.util.find_spec(name) for name in ("httpx", "pydantic", "yaml", "selectolax")
+    )
+    checks.append(("dependencies", packages, "required imports"))
+    try:
+        socket.getaddrinfo("example.com", 443)
+        checks.append(("DNS", True, "available"))
+    except OSError as exc:
+        checks.append(("DNS", False, str(exc)))
+    checks.append(
+        (
+            "headless",
+            True,
+            "no browser/DISPLAY dependency, except the opt-in stealth_html adapter "
+            "(astemo, google) which runs a headless browser "
+            "and needs `--extra stealth`",
+        )
+    )
+    for name, ok, detail in checks:
+        print(f"{'OK' if ok else 'FAIL':4} {name}: {detail}")
+    return 0 if all(ok for _, ok, _ in checks) else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    try:
+        if args.command == "doctor":
+            return doctor()
+        settings = load_settings()
+        if args.command in {"source-status", "db-stats", "export"}:
+            with Storage(settings.database_path) as storage:
+                value = (
+                    storage.health_rows()
+                    if args.command == "source-status"
+                    else storage.stats()
+                    if args.command == "db-stats"
+                    else storage.export_active()
+                )
+            print(_json(value))
+            return 0
+        if args.command == "source-test":
+            return asyncio.run(_source_test(args.company))
+        configure_logging(verbose=args.verbose, debug=args.debug)
+        companies = select_companies(load_companies(), args.companies)
+        result = asyncio.run(
+            Collector(settings, companies, load_profile()).search(
+                include_seen=args.include_seen or not args.new_only,
+                new_only=args.new_only,
+                refresh_details=args.refresh_details,
+                max_candidates=args.max_candidates,
+            )
+        )
+        rendered = _json(result.model_dump(mode="json"))
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        if args.json:
+            print(rendered)
+        else:
+            summary = result.summary
+            print(
+                f"Sources: {summary.sources_attempted} attempted / {summary.sources_succeeded} succeeded / {summary.sources_failed} failed"
+            )
+            print(
+                f"Jobs: {summary.jobs_observed} observed / {summary.us_eligible} U.S.-eligible / "
+                f"{summary.stale_excluded} excluded as stale / {summary.prefilter_candidates} candidates"
+            )
+            for health in result.source_health:
+                print(
+                    f"{health.source_key}: {health.status.value} ({health.job_count}){': ' + health.message if health.message else ''}"
+                )
+        return 0 if result.summary.sources_succeeded else 2
+    except (FileNotFoundError, ValueError, ValidationError) as exc:
+        print(f"job-hunter: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

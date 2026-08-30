@@ -1,0 +1,18 @@
+version: 1
+database_path: data/jobs.sqlite3
+collection:
+  max_concurrent_sources: 3
+  max_concurrent_details: 8
+  max_connections: 24
+  max_keepalive_connections: 12
+  timeout_seconds: 30
+  max_retries: 3
+search:
+  country: US
+  include_work_arrangements: [onsite, hybrid, remote, unknown]
+recommendation:
+  minimum_score: 75
+  max_results: 10
+logging:
+  level: INFO
+
