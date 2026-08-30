@@ -1,8 +1,25 @@
 from datetime import UTC, datetime, timedelta
 
-from job_hunter.models import Job, LocationConfidence
+from job_hunter.models import Assessment, Job, LocationConfidence
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
+
+
+def make_assessment(**updates):
+    values = dict(
+        source_key="acme",
+        job_id="42",
+        company="Acme",
+        title="Engineer",
+        url="https://example.com/42",
+        content_hash="hash-1",
+        score=85,
+        recommended=True,
+        matches=["Python", "ADAS"],
+        gaps=["No ROS"],
+    )
+    values.update(updates)
+    return Assessment(**values)
 
 
 def make_job(description="first", **updates):
@@ -53,3 +70,27 @@ def test_stale_before_excludes_already_old_jobs_from_missing_accounting(tmp_path
             storage.mark_missing("acme", [], stale_before=stale_before)
         assert storage.stats()["active"] == 1
         assert storage.stats().get("closed", 0) == 0
+
+
+def test_upsert_assessment_roundtrips_and_updates(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment())
+        stored = storage.all_assessments()[("acme", "42")]
+        assert stored.score == 85
+        assert stored.matches == ["Python", "ADAS"]
+
+        storage.upsert_assessment(make_assessment(score=91, recommended=False, gaps=[]))
+        updated = storage.all_assessments()[("acme", "42")]
+        assert updated.score == 91
+        assert updated.recommended is False
+        assert updated.gaps == []
+
+
+def test_export_assessments_matches_all_assessments(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment())
+        rows = storage.export_assessments()
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "42"
+    assert rows[0]["matches"] == ["Python", "ADAS"]
+    assert rows[0]["recommended"] is True

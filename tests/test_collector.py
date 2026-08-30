@@ -5,7 +5,9 @@ import pytest
 
 from job_hunter.collector import Collector
 from job_hunter.config import CandidateProfile, CollectionConfig, CompanyConfig, Settings
-from job_hunter.models import JobDetail, JobSummary
+from job_hunter.models import Assessment, JobDetail, JobSummary
+from job_hunter.normalizer import description_hash
+from job_hunter.storage import Storage
 
 
 class _FakeAdapter:
@@ -67,3 +69,55 @@ async def test_stale_summary_skips_detail_fetch(tmp_path):
     assert _FakeAdapter.detail_calls == ["fresh-1"]
     jobs_by_id = {job.job_id: job for job in result.candidates}
     assert "stale-1" not in jobs_by_id
+
+
+def _seed_assessment(db_path, content_hash: str) -> None:
+    with Storage(db_path) as storage:
+        storage.upsert_assessment(
+            Assessment(
+                source_key="fake",
+                job_id="fresh-1",
+                company="Acme",
+                title="New Role",
+                url="https://example.com/fresh-1",
+                content_hash=content_hash,
+                score=88,
+                recommended=True,
+                matches=["a"],
+                gaps=["b"],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_prior_assessment_attached_when_content_hash_matches(tmp_path):
+    """A candidate whose stored assessment was made against its exact current
+    description should carry that verdict forward, so the skill can skip re-reviewing
+    (and spending tokens on) a job it already assessed."""
+    db_path = tmp_path / "jobs.sqlite3"
+    _seed_assessment(db_path, description_hash("Description for fresh-1"))
+    settings = Settings(database_path=db_path, collection=CollectionConfig())
+    company = CompanyConfig(key="fake", company="Acme", adapter="fake", config={})
+
+    with patch("job_hunter.collector.adapter_class", return_value=_FakeAdapter):
+        result = await Collector(settings, [company], CandidateProfile()).search(include_seen=True)
+
+    jobs_by_id = {job.job_id: job for job in result.candidates}
+    assert jobs_by_id["fresh-1"].prior_assessment is not None
+    assert jobs_by_id["fresh-1"].prior_assessment.score == 88
+
+
+@pytest.mark.asyncio
+async def test_prior_assessment_not_attached_when_content_hash_stale(tmp_path):
+    """An assessment recorded against different content (the posting changed since it
+    was reviewed) must not be silently reused — the job is treated as unassessed."""
+    db_path = tmp_path / "jobs.sqlite3"
+    _seed_assessment(db_path, "a-completely-different-hash")
+    settings = Settings(database_path=db_path, collection=CollectionConfig())
+    company = CompanyConfig(key="fake", company="Acme", adapter="fake", config={})
+
+    with patch("job_hunter.collector.adapter_class", return_value=_FakeAdapter):
+        result = await Collector(settings, [company], CandidateProfile()).search(include_seen=True)
+
+    jobs_by_id = {job.job_id: job for job in result.candidates}
+    assert jobs_by_id["fresh-1"].prior_assessment is None

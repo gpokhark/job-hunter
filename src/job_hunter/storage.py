@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import HealthStatus, Job, SourceHealth
+from .models import Assessment, HealthStatus, Job, SourceHealth
 
 
 class Storage:
@@ -51,6 +52,14 @@ class Storage:
                 source_key TEXT PRIMARY KEY, company TEXT NOT NULL, last_attempt_at TEXT,
                 last_success_at TEXT, last_job_count INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 last_status TEXT, last_error_type TEXT, last_error_message TEXT
+            );
+            CREATE TABLE IF NOT EXISTS assessments (
+                source_key TEXT NOT NULL, job_id TEXT NOT NULL, company TEXT NOT NULL,
+                title TEXT NOT NULL, url TEXT NOT NULL, content_hash TEXT,
+                score INTEGER NOT NULL, recommended INTEGER NOT NULL,
+                matches TEXT NOT NULL, gaps TEXT NOT NULL, resume_path TEXT,
+                assessed_at TEXT NOT NULL,
+                PRIMARY KEY(source_key, job_id)
             );
             """
         )
@@ -235,3 +244,81 @@ class Storage:
         return [
             dict(row) for row in self.connection.execute("SELECT * FROM jobs WHERE status='active'")
         ]
+
+    def upsert_assessment(self, assessment: Assessment) -> None:
+        self.connection.execute(
+            """INSERT INTO assessments(source_key, job_id, company, title, url, content_hash,
+               score, recommended, matches, gaps, resume_path, assessed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_key, job_id) DO UPDATE SET company=excluded.company,
+               title=excluded.title, url=excluded.url, content_hash=excluded.content_hash,
+               score=excluded.score, recommended=excluded.recommended, matches=excluded.matches,
+               gaps=excluded.gaps, resume_path=excluded.resume_path, assessed_at=excluded.assessed_at""",
+            (
+                assessment.source_key,
+                assessment.job_id,
+                assessment.company,
+                assessment.title,
+                assessment.url,
+                assessment.content_hash,
+                assessment.score,
+                int(assessment.recommended),
+                json.dumps(assessment.matches),
+                json.dumps(assessment.gaps),
+                assessment.resume_path,
+                assessment.assessed_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    @staticmethod
+    def _row_to_assessment(row: sqlite3.Row) -> Assessment:
+        return Assessment(
+            source_key=row["source_key"],
+            job_id=row["job_id"],
+            company=row["company"],
+            title=row["title"],
+            url=row["url"],
+            content_hash=row["content_hash"],
+            score=row["score"],
+            recommended=bool(row["recommended"]),
+            matches=json.loads(row["matches"]),
+            gaps=json.loads(row["gaps"]),
+            resume_path=row["resume_path"],
+            assessed_at=row["assessed_at"],
+        )
+
+    def all_assessments(self) -> dict[tuple[str, str], Assessment]:
+        """Every recorded assessment, keyed by (source_key, job_id), for the collector to
+        attach to a matching candidate — only when that candidate's current content_hash
+        still matches (see `Assessment`'s docstring)."""
+        rows = self.connection.execute("SELECT * FROM assessments").fetchall()
+        return {(row["source_key"], row["job_id"]): self._row_to_assessment(row) for row in rows}
+
+    def get_valid_assessment(
+        self, source_key: str, job_id: str, content_hash: str | None
+    ) -> Assessment | None:
+        """A single-job lookup for callers (e.g. `scripts/review_with_lm_studio.py`) that
+        want to skip already-reviewed jobs one at a time rather than loading every
+        assessment up front. Returns None if never assessed, or if assessed against
+        different content (the posting changed since that review — see `Assessment`'s
+        docstring)."""
+        row = self.connection.execute(
+            "SELECT * FROM assessments WHERE source_key=? AND job_id=?", (source_key, job_id)
+        ).fetchone()
+        if row is None or row["content_hash"] != content_hash:
+            return None
+        return self._row_to_assessment(row)
+
+    def export_assessments(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM assessments ORDER BY assessed_at DESC"
+        ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["matches"] = json.loads(item["matches"])
+            item["gaps"] = json.loads(item["gaps"])
+            item["recommended"] = bool(item["recommended"])
+            results.append(item)
+        return results

@@ -16,6 +16,7 @@ from .adapters import adapter_class
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
+from .models import Assessment
 from .storage import Storage
 
 
@@ -41,11 +42,29 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("db-stats")
     export = sub.add_parser("export")
     export.add_argument("--format", choices=["json"], default="json")
+    record = sub.add_parser("record-assessment")
+    record.add_argument(
+        "--payload",
+        required=True,
+        help=(
+            "JSON object: source_key, job_id, company, title, url, score (0-100), "
+            "recommended (bool), matches (list[str]), gaps (list[str]), "
+            "optional resume_path"
+        ),
+    )
+    sub.add_parser("export-assessments")
     return root
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
+    path = settings.database_path.parent / "assessments.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    return path
 
 
 async def _source_test(key: str) -> int:
@@ -113,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
-        if args.command in {"source-status", "db-stats", "export"}:
+        if args.command in {"source-status", "db-stats", "export", "export-assessments"}:
             with Storage(settings.database_path) as storage:
                 value = (
                     storage.health_rows()
@@ -121,8 +140,27 @@ def main(argv: list[str] | None = None) -> int:
                     else storage.stats()
                     if args.command == "db-stats"
                     else storage.export_active()
+                    if args.command == "export"
+                    else storage.export_assessments()
                 )
+            if args.command == "export-assessments":
+                _write_assessments_export(settings, value)
             print(_json(value))
+            return 0
+        if args.command == "record-assessment":
+            payload = json.loads(args.payload)
+            payload.pop("content_hash", None)  # always server-derived, never caller-supplied
+            with Storage(settings.database_path) as storage:
+                prior_job = storage.get_job(
+                    payload.get("source_key", ""), payload.get("job_id", "")
+                )
+                assessment = Assessment(
+                    **payload, content_hash=prior_job["content_hash"] if prior_job else None
+                )
+                storage.upsert_assessment(assessment)
+                rows = storage.export_assessments()
+            _write_assessments_export(settings, rows)
+            print(_json(assessment.model_dump(mode="json")))
             return 0
         if args.command == "source-test":
             return asyncio.run(_source_test(args.company))

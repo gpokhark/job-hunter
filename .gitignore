@@ -1093,6 +1093,7 @@ logs/*
 # Personal candidate profile and resume — copy the .example. files instead and fill in
 # your own. Any resume file living directly in config/ is ignored except the example.
 config/candidate_profile.yaml
+config/lm_studio.yaml
 config/*resume*
 !config/resume.example.md
 

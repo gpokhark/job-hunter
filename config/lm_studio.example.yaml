@@ -1,0 +1,14 @@
+# Copy to config/lm_studio.yaml and point it at your LM Studio server's OpenAI-compatible
+# API (LM Studio > Developer > Start Server; default port 1234). base_url must include the
+# "/v1" suffix. Find your machine's LAN IP with `ipconfig getifaddr en0` (macOS Wi-Fi) or
+# `hostname -I` (Linux) if LM Studio runs on a different machine on your network.
+base_url: http://192.168.1.100:1234/v1
+
+# The model identifier LM Studio reports for whatever you've loaded (check the server's
+# own logs or GET {base_url}/models) — LM Studio ignores this if only one model is loaded,
+# but the OpenAI-compatible API still requires the field to be present.
+model: local-model
+
+# Generous timeout: local inference on modest hardware can take well over a minute per job.
+timeout_seconds: 180
+temperature: 0.2

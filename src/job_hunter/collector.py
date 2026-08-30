@@ -58,6 +58,16 @@ class Collector:
                 results = await asyncio.gather(*tasks)
             health = [item[0] for item in results]
             jobs = [job for _, source_jobs in results for job in source_jobs]
+            # Attach a prior LLM assessment when the job's content hasn't changed since
+            # it was reviewed, so the skill can skip re-reviewing it (and spending
+            # tokens on it again) without any extra round-trip — the candidate already
+            # carries its own verdict. A changed content_hash means the posting was
+            # edited since that review, so it's treated as unassessed again.
+            assessments = storage.all_assessments()
+            for job in jobs:
+                prior = assessments.get((job.source_key, job.job_id))
+                if prior and prior.content_hash == job.content_hash:
+                    job.prior_assessment = prior
             candidates = [job for job in jobs if passes_prefilter(job, self.profile)]
             max_age_days = self.settings.search.max_posting_age_days
             stale_excluded = sum(not passes_recency(job, max_age_days) for job in candidates)

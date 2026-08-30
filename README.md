@@ -16,6 +16,8 @@ Edit `config/candidate_profile.yaml` with your preferences and optional resume p
 
 **Your resume and filled-in `candidate_profile.yaml` are personal and never committed** — `.gitignore` excludes `config/candidate_profile.yaml` and any `config/*resume*` file except the checked-in `config/resume.example.md`. Bring your own resume as a `.md` file anywhere under `config/` matching that pattern (e.g. `config/my_resume.md`), point `candidate_profile.yaml`'s `resume_path` at it, and it stays local. `config/resume.example.md` is a fully fictional placeholder (fake name, contact info, and employers) showing the expected format, including the optional per-employer tailoring-note HTML comment the scoring skill can use.
 
+Scoring candidates against your resume needs one more piece: a local model running in [LM Studio](https://lmstudio.ai/) (Developer tab > Start Server). Copy `config/lm_studio.example.yaml` to `config/lm_studio.yaml` (also gitignored) and edit `base_url` to match your server's address, then see [Agent skill](#agent-skill) for how `scripts/review_with_lm_studio.py` uses it.
+
 ### Source status
 
 Run `uv run job-hunter source-status` for live, current numbers. As of the last verification pass:
@@ -144,9 +146,14 @@ uv run job-hunter source-status
 uv run job-hunter source-test honda
 uv run job-hunter db-stats
 uv run job-hunter export --format json
+uv run job-hunter record-assessment --payload '{"source_key": "tri", "job_id": "...", "company": "...", "title": "...", "url": "...", "score": 82, "recommended": true, "matches": ["..."], "gaps": ["..."]}'
+uv run job-hunter export-assessments
+uv run python scripts/assessments_to_csv.py
 ```
 
 Searches attempt every enabled source by default. One source failure does not stop other sources. If all requested sources fail, the command exits non-zero. `--new-only` limits output but collection still observes and persists all returned jobs. Previously seen active jobs remain eligible by default because this is a current-search tool, not only a notification service.
+
+`record-assessment` is the manual/scriptable way to persist one verdict; in practice `scripts/review_with_lm_studio.py` (see [Agent skill](#agent-skill)) calls the same underlying storage directly rather than shelling out to it. Either way, a verdict is keyed by `(source_key, job_id)` and stamped server-side with that job's current `content_hash` (never a caller-supplied one), so a later `search` automatically attaches it back as `prior_assessment` on that exact candidate, but only while the posting's content is unchanged; an edited posting is treated as unassessed again. Every recorded assessment lives in the same `data/jobs.sqlite3` as everything else, mirrored to `data/assessments.json` on every write (`export-assessments` re-exports the current state without recording anything new); `scripts/assessments_to_csv.py` converts that into `data/assessments.csv` for a human-readable sortable/filterable view, the same pattern as `scripts/search_to_csv.py`.
 
 ## Source configuration
 
@@ -163,7 +170,57 @@ Use `scripts/endpoint_probe.py` during development to inspect a known public end
 
 ## Agent skill
 
-The canonical skill is `skills/job-hunter/SKILL.md`. Install it with:
+The canonical skill is `skills/job-hunter/SKILL.md`. Scoring itself was deliberately moved out of
+the calling agent (Claude, Hermes, whichever runtime installed the skill) entirely: a plain,
+deterministic script sends each job to a **local** model running in
+[LM Studio](https://lmstudio.ai/), one at a time, so no cloud/agent tokens are ever spent scoring
+a job — the calling agent's only remaining role is running two shell commands and then presenting
+whatever verdicts come back.
+
+```mermaid
+flowchart TD
+    subgraph PY["Deterministic Python — uv run job-hunter search (no LLM anywhere in this box)"]
+        A["config/companies.yaml"] --> B["Per-company JobAdapter.fetch_summaries()<br/>httpx / selectolax (Scrapling only for stealth_html)"]
+        B --> C["JobAdapter.fetch_detail()<br/>concurrent, skipped if already stored and not stale"]
+        C --> D["location.evaluate_location()<br/>deterministic US-eligibility rules"]
+        D --> E["prefilter.passes_prefilter() + passes_recency()<br/>keyword/domain match, 30-day cutoff"]
+        E --> F["storage.py (SQLite): jobs + assessments<br/>attach prior_assessment when content_hash still matches"]
+        F --> G["data/latest_search.json<br/>capped candidate bundle, best-first,<br/>each carrying prior_assessment or null"]
+    end
+
+    subgraph LOCAL["scripts/review_with_lm_studio.py — deterministic script, no cloud LLM involved"]
+        G --> H["Filter to us_eligible candidates"]
+        H --> R{"prior_assessment present?"}
+        R -->|"yes — skip, zero cost"| Z["Reuse the stored verdict"]
+        R -->|"no"| Q["POST to LM Studio's local server<br/>(config/lm_studio.yaml) — one job at a time,<br/>strictly sequential, never parallel"]
+        Q --> REC["storage.upsert_assessment()<br/>writes SQLite + data/assessments.json immediately"]
+        REC -->|"next not-yet-assessed candidate"| Q
+    end
+
+    REC --> CSV["scripts/assessments_to_csv.py<br/>data/assessments.csv, human-readable"]
+    REC --> AGENT["Calling agent (Claude/Hermes/...)<br/>sorts all verdicts by score,<br/>recommends top recommendation.max_results"]
+    Z --> AGENT
+```
+
+Everything in the top box runs identically on every search, with no model involved and no
+variance between runs — including the `prior_assessment` lookup, a plain SQLite join keyed by
+`(source_key, job_id)` and gated on the job's `content_hash` still matching what was reviewed, so
+an edited posting is treated as unassessed again rather than silently reusing a stale verdict. The
+middle box is the only place any scoring happens, and it's a **local** model, not the calling
+agent: `scripts/review_with_lm_studio.py` skips anything with a still-valid `prior_assessment` for
+free, then sends **every** remaining eligible candidate to LM Studio's OpenAI-compatible API one
+job at a time — never in parallel, and persisting each verdict immediately (so an interrupted run
+keeps what it already reviewed). There is no cap on how many jobs get *reviewed* — `--limit` exists
+but defaults to unlimited; `recommendation.max_results` (10 by default) instead caps how many of
+the *reviewed* jobs the calling agent actually recommends afterward, sorted by score. That
+separation is deliberate: review everything so nothing good gets missed for being sorted lower in
+the listing, then only surface the best of what was actually reviewed. The calling agent never
+scores anything itself; it runs `review_with_lm_studio.py`, then `assessments_to_csv.py`, then
+reads and ranks the results — it's also still forbidden from re-deriving retrieval or location
+decisions Python already made (never recommending a `us_eligible=false` job, never inventing a
+posting date, salary, or qualification).
+
+Install it with:
 
 ```bash
 sh scripts/install_skill.sh
