@@ -89,11 +89,6 @@ companies:
       public_base_url: https://alliance.wd3.myworkdayjobs.com/wday/cxs/alliance/nissanjobs/
       applied_facets:
         locationCountry: [bc33aa3152ec42d4995f4791a106ed09]
-  - key: mercedes
-    company: Mercedes-Benz
-    adapter: unsupported
-    platform: taleo
-    unsupported_reason: jobs.mercedes-benz.com is a Nuxt SPA proxying Oracle Taleo (tas-DAIMLER.taleo.net) via jobs.api.mercedes-benz.com/search; no working U.S.-only filter parameter was found and this project has no Taleo adapter.
   - key: volkswagen
     company: Volkswagen Group of America
     adapter: successfactors_rmk
@@ -108,11 +103,6 @@ companies:
       page_size: 25
       description_selector: .jobdescription
       posted_at_selector: td.colDate span.jobDate
-  - key: audi
-    company: Audi of America
-    adapter: unsupported
-    platform: successfactors_rmk
-    unsupported_reason: Audi has no distinct career site; jobs.volkswagen-group.com has no legal-entity/brand facet, and a keyword search for "audi" mostly returns unrelated VW Group postings. Audi-branded reqs (e.g. "Sales Consultant Audi") already surface unfiltered within the volkswagen source.
   - key: tesla
     company: Tesla
     adapter: unsupported

@@ -94,7 +94,7 @@ def detect_arrangement(text: str | None) -> WorkArrangement:
 
 
 # Several U.S. state abbreviations collide with ISO-3166 country/region codes that appear in
-# multinational ATS feeds formatted as "City, Region, COUNTRY, Zip" (e.g. Volkswagen/Audi's
+# multinational ATS feeds formatted as "City, Region, COUNTRY, Zip" (e.g. Volkswagen's
 # SuccessFactors listings: "Berlin, BE, DE, 10178", "Pickering, ON, CA, L1V 0C4"). Bare-abbreviation
 # matches for these codes require the code to not be sitting in that feed's country position.
 _AMBIGUOUS_STATE_COUNTRY_CODES = {
