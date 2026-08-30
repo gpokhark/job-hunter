@@ -72,6 +72,27 @@ class JobDetail(BaseModel):
     salary_currency: str | None = None
 
 
+class Assessment(BaseModel):
+    """An LLM sub-agent's fitness verdict on one job, persisted so a later run can skip
+    re-reviewing it (see `storage.py`'s `assessments` table and `job-hunter
+    record-assessment`). Keyed by (source_key, job_id); `content_hash` pins it to the
+    exact job content it was evaluated against — a job whose content_hash has since
+    changed is treated as unassessed again, not silently reused."""
+
+    source_key: str
+    job_id: str
+    company: str
+    title: str
+    url: str
+    content_hash: str | None = None
+    score: int = Field(ge=0, le=100)
+    recommended: bool
+    matches: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    resume_path: str | None = None
+    assessed_at: datetime = Field(default_factory=utcnow)
+
+
 class Job(JobSummary):
     us_eligible: bool
     location_confidence: LocationConfidence
@@ -85,6 +106,7 @@ class Job(JobSummary):
     content_hash: str | None = None
     is_new: bool = False
     is_changed: bool = False
+    prior_assessment: Assessment | None = None
 
 
 class SourceHealth(BaseModel):

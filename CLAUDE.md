@@ -140,16 +140,25 @@ before most commands will find a profile (falls back to the example file otherwi
   (no LLM involved) against `settings.search.max_posting_age_days` (default 30) — a job with no
   discoverable `posted_at` is kept rather than excluded, since its age can't be determined.
 
-- **`storage.py`** — SQLite (WAL mode) with three tables: `jobs` (one row per `(source_key,
+- **`storage.py`** — SQLite (WAL mode) with four tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
   per search invocation), `source_health` (per-source rolling status, consecutive-failure count,
-  last success time). A job is marked `closed` after 3 consecutive runs where it's missing from a
-  healthy source's listing (`mark_missing`); it stays `active` otherwise, which is why the tool
-  surfaces previously-seen jobs by default (see `--new-only` vs default behavior below).
-  `mark_missing`'s `stale_before` parameter excludes jobs already older than a source's own
-  early-pagination-stop cutoff from this accounting — without it, a source that deliberately stops
-  looking for postings past the recency window would falsely close every job that ages past that
-  window, since it would never see them in its listing again regardless of their real status.
+  last success time), and `assessments` (one row per `(source_key, job_id)`, a local model's
+  fitness verdict — score, recommended, matches, gaps — written by `scripts/review_with_lm_studio.py`
+  via `upsert_assessment()`/`get_valid_assessment()` directly, or manually via the
+  `record-assessment` CLI command; never produced by Python itself, which only ever persists a
+  verdict handed to it). A job is marked `closed` after 3 consecutive runs
+  where it's missing from a healthy source's listing (`mark_missing`); it stays `active` otherwise,
+  which is why the tool surfaces previously-seen jobs by default (see `--new-only` vs default
+  behavior below). `mark_missing`'s `stale_before` parameter excludes jobs already older than a
+  source's own early-pagination-stop cutoff from this accounting — without it, a source that
+  deliberately stops looking for postings past the recency window would falsely close every job
+  that ages past that window, since it would never see them in its listing again regardless of
+  their real status. `Collector.search()` joins `assessments` back onto each candidate as
+  `Job.prior_assessment`, but only when the row's stored `content_hash` still matches the job's
+  current one — a job whose posting changed since it was assessed is treated as unassessed again,
+  never silently served a stale verdict. This is what lets the `job-hunter` skill's per-job
+  sub-agent review (see below) skip a job it already scored in a previous run at zero token cost.
 
 - **`health.py`** — `detect_count_anomaly` flags (but does not fail) a source whose job count drops
   more than 70% from its last known count, guarding against adapters that "succeed" against a
@@ -161,8 +170,14 @@ before most commands will find a profile (falls back to the example file otherwi
 
 - **`skills/job-hunter/`** — the agent-facing half of the system. `SKILL.md` is the canonical
   procedure (run the collector, read only `candidates`, never recommend `us_eligible=false`, never
-  invent salary/sponsorship/qualifications). `references/scoring.md` defines the scoring rubric.
-  Install/copy it for other agent runtimes via `scripts/install_skill.sh`.
+  invent salary/sponsorship/qualifications). Scoring itself is delegated entirely to
+  `scripts/review_with_lm_studio.py` — a deterministic script, not a sub-agent — which sends each
+  not-yet-assessed candidate to a **local** model via LM Studio's OpenAI-compatible API
+  (`config/lm_studio.yaml`, one job at a time, strictly sequential), so no Claude/cloud tokens are
+  spent scoring anything; the calling agent's job is just to run it, then read
+  `data/assessments.json`/`export-assessments` and present the results. `references/scoring.md`
+  defines the rubric embedded into that script's prompt. Install/copy `SKILL.md` for other agent
+  runtimes via `scripts/install_skill.sh`.
 
 ## Working in this repo
 
