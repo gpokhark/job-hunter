@@ -56,6 +56,16 @@ def test_users_not_available_example_is_not_available():
     assert decision.status == SponsorshipStatus.NOT_AVAILABLE
 
 
+def test_inline_tag_splitting_a_phrase_does_not_defeat_a_match():
+    """Real live miss: Ford's actual wording bolds just the word 'not' — stripping that
+    tag alone (without also collapsing the resulting double space) leaves 'is  not
+    available', which the literal single-space pattern 'is not available' never matches."""
+    decision = evaluate_sponsorship(
+        "Visa sponsorship is <strong>not</strong> available for this position."
+    )
+    assert decision.status == SponsorshipStatus.NOT_AVAILABLE
+
+
 def test_gm_and_google_boilerplate_variants():
     """GM's most common boilerplate (hundreds of live postings) and Google's phrasing —
     both initially missed because the negation and the target word weren't adjacent."""

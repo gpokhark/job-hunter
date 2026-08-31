@@ -84,7 +84,11 @@ def evaluate_sponsorship(description: str | None) -> SponsorshipDecision:
     # Descriptions are raw HTML — a tag sitting between two words of a phrase (e.g.
     # Nissan's "<b>Sponsorship:</b> No") would otherwise silently defeat a plain-text
     # pattern; strip tags first so phrase matching sees the same text a human reader does.
-    text = _TAG.sub(" ", description or "")
+    # Stripping a tag that sat *inside* a phrase (e.g. "is <strong>not</strong>
+    # available") leaves double spaces behind — confirmed as a real live miss on Ford's
+    # own "Visa sponsorship is <strong>not</strong> available" wording — so whitespace
+    # is also collapsed, since every pattern below assumes single-space-separated words.
+    text = " ".join(_TAG.sub(" ", description or "").split())
     not_available = _first_match(text, _NOT_AVAILABLE)
     if not_available:
         return SponsorshipDecision(SponsorshipStatus.NOT_AVAILABLE, not_available)

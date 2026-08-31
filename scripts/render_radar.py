@@ -58,7 +58,9 @@ def _sponsorship_tag(status: str | None) -> str:
         return '<span class="tag tag-sponsor-no">No Sponsorship</span>'
     if status == "available":
         return '<span class="tag tag-sponsor-yes">Sponsorship OK</span>'
-    return ""  # "unmentioned" (or missing, for an older archive) carries no tag
+    return ""  # "unmentioned" (or missing, for an older archive) carries no tag — a
+    # blanket "Not Stated" label on the majority of rows was tried and found to add no
+    # value; only the two explicit, actionable states are worth a tag.
 
 
 def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
@@ -140,10 +142,20 @@ def build(
             is_new = (now - posted).days <= new_days
         rows.append(
             {
+                # Judgment fields (score/recommended/matches/gaps) come from the
+                # assessment — that's its whole purpose, and its validity is exactly
+                # what content_hash matching already guarantees. Everything else here
+                # is factual/descriptive metadata about the listing, not a judgment, so
+                # it must come from the *current* candidate record, not the assessment's
+                # snapshot frozen at whatever moment it was reviewed — otherwise an
+                # adapter fix (e.g. a corrected URL) silently doesn't show up in any
+                # report until the job's description happens to change and forces a
+                # fresh review. Confirmed as a real bug: Ford's URL fix didn't appear
+                # here because these jobs' cached assessments predated it.
                 "score": assessment["score"],
-                "company": assessment["company"],
-                "title": assessment["title"],
-                "url": assessment["url"],
+                "company": candidate.get("company", assessment["company"]),
+                "title": candidate.get("title", assessment["title"]),
+                "url": candidate.get("url", assessment["url"]),
                 "posted_at": posted_at,
                 "location": candidate.get("location_raw"),
                 "new": is_new,

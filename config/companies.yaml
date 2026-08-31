@@ -65,7 +65,12 @@ companies:
       items_path: items.0.requisitionList
       total_path: items.0.TotalJobsCount
       detail_base_url: https://efds.fa.em5.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
-      detail_description_path: ExternalDescriptionStr
+      # Ford's Oracle tenant splits a posting across three separate fields instead of
+      # putting everything in ExternalDescriptionStr alone — confirmed directly against
+      # the raw API: ExternalDescriptionStr was only the short intro (1.3KB), while
+      # ExternalQualificationsStr (6.6KB) held the actual qualifications *and* each job's
+      # visa-sponsorship statement, entirely missed until this was added.
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
       public_url_template: https://efds.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/{id}
       fields:
         id: Id
@@ -161,7 +166,11 @@ companies:
       list_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations,flexFieldsFacet.values&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS%3BWORK_LOCATIONS%3BWORKPLACE_TYPES%3BTITLES%3BCATEGORIES%3BORGANIZATIONS%3BPOSTING_DATES%3BFLEX_FIELDS,limit=500,offset=0
       items_path: items.0.requisitionList
       detail_base_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
-      detail_description_path: ExternalDescriptionStr
+      # DENSO's tenant currently puts everything in ExternalDescriptionStr alone
+      # (Responsibilities/Qualifications come back empty, confirmed directly against the
+      # raw API) — listed as a 3-field concatenation anyway, same as Ford, since that's
+      # safe either way and doesn't silently miss content if DENSO's data entry changes.
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
       public_url_template: https://hcwt.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/{id}
       fields:
         id: Id

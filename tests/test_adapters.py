@@ -192,6 +192,54 @@ async def test_oracle_hcm_public_url_template_used_for_display_not_detail_fetch(
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_oracle_hcm_concatenates_multiple_description_fields():
+    """Regression for a real bug: Ford's Oracle tenant splits a posting across three
+    separate fields (ExternalDescriptionStr/ExternalResponsibilitiesStr/
+    ExternalQualificationsStr) instead of putting everything in one — a single-path
+    detail_description_path silently dropped Qualifications entirely, including each
+    job's visa-sponsorship statement. A list of paths must concatenate all of them, and
+    must not choke on an empty field (DENSO's tenant, confirmed live, leaves
+    Responsibilities/Qualifications empty and puts everything in the first field alone)."""
+    base = "https://jobs.example/reqs?onlyData=true&finder=findReqs;offset=0"
+    respx.get(base).mock(return_value=httpx.Response(200, json=_oracle_page(["42"], total=1)))
+    respx.get("https://jobs.example/details/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ExternalDescriptionStr": "Build ADAS features.",
+                "ExternalResponsibilitiesStr": "",
+                "ExternalQualificationsStr": "Visa sponsorship is not available for this position.",
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="ford",
+        company="Ford",
+        adapter="oracle_hcm",
+        config={
+            "paginate": True,
+            "list_url": base,
+            "items_path": "items.0.requisitionList",
+            "total_path": "items.0.TotalJobsCount",
+            "detail_base_url": "https://jobs.example/details/",
+            "detail_description_path": [
+                "ExternalDescriptionStr",
+                "ExternalResponsibilitiesStr",
+                "ExternalQualificationsStr",
+            ],
+            "fields": {"id": "Id", "title": "Title", "url": "Id", "location": "PrimaryLocation"},
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = OracleHcmAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert "Build ADAS features." in detail.description
+    assert "Visa sponsorship is not available" in detail.description
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_workday_native_public_base_url_used_for_display_not_detail_fetch():
     """Same regression as the Oracle HCM case: the CXS API host (list_url) returns raw
     JSON when opened directly — public_base_url (a real Workday-hosted page) must be

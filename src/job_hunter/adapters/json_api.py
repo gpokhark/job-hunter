@@ -91,7 +91,16 @@ class ConfigurableJsonAdapter(JobAdapter):
             api_url = urljoin(cfg.get("detail_base_url", summary.url), raw_url)
         response = await self.request("GET", api_url)
         payload = response.json()
-        return JobDetail(description=_stringify(nested(payload, description_path)))
+        # detail_description_path may be a single dot-path (most platforms put the full
+        # posting in one field) or a list of them — needed because some Oracle HCM
+        # tenants (confirmed: Ford) split a posting across three separate fields
+        # (ExternalDescriptionStr/ExternalResponsibilitiesStr/ExternalQualificationsStr);
+        # reading only the first one silently dropped Qualifications entirely, including
+        # each job's visa-sponsorship statement. Concatenating is safe even for a tenant
+        # that puts everything in the first field alone (DENSO): the rest are just empty.
+        paths = description_path if isinstance(description_path, list) else [description_path]
+        parts = [text for path in paths if (text := _stringify(nested(payload, path)))]
+        return JobDetail(description="\n\n".join(parts) or None)
 
 
 def _stringify(value: Any) -> str | None:
