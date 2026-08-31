@@ -13,7 +13,7 @@ from .health import detect_count_anomaly
 from .location import evaluate_location
 from .models import HealthStatus, Job, RunInfo, SearchResult, SearchSummary, SourceHealth
 from .normalizer import description_hash
-from .prefilter import is_recent, passes_prefilter, passes_recency, relevance_score
+from .prefilter import is_recent, passes_prefilter, passes_recency
 from .storage import Storage
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ class Collector:
         new_only: bool = False,
         refresh_details: bool = False,
         max_candidates: int | None = None,
+        keywords: list[str] | None = None,
     ) -> SearchResult:
         started = datetime.now(UTC)
         run_id = str(uuid4())
@@ -68,7 +69,9 @@ class Collector:
                 prior = assessments.get((job.source_key, job.job_id))
                 if prior and prior.content_hash == job.content_hash:
                     job.prior_assessment = prior
-            candidates = [job for job in jobs if passes_prefilter(job, self.profile)]
+            candidates = [
+                job for job in jobs if passes_prefilter(job, self.profile, keywords=keywords)
+            ]
             max_age_days = self.settings.search.max_posting_age_days
             stale_excluded = sum(not passes_recency(job, max_age_days) for job in candidates)
             candidates = [job for job in candidates if passes_recency(job, max_age_days)]
@@ -76,16 +79,24 @@ class Collector:
                 candidates = [job for job in candidates if job.is_new]
             elif not include_seen:
                 candidates = [job for job in candidates if job.is_new or job.is_changed]
+            # No cap by default: every candidate that clears passes_prefilter/passes_recency
+            # is passed on for LLM assessment, ranked newest-first (so an interrupted
+            # local-LLM review has already covered the freshest postings). There used to be
+            # a default recommendation.max_results*3 cap here, back when passes_prefilter's
+            # loose description-wide matching routinely passed 70%+ of all U.S.-eligible
+            # jobs — that cap silently discarded most of what it admitted, using a coarse
+            # keyword-count heuristic (relevance_score) as the tiebreaker for what survived.
+            # Now that the gate itself is precise (see passes_prefilter's docstring),
+            # capping is opt-in only, via --max-candidates.
             candidates.sort(
                 key=lambda job: (
-                    -relevance_score(job, self.profile),
                     not (job.is_new or job.is_changed),
                     -(job.posted_at.timestamp() if job.posted_at else 0),
                     job.title,
                 )
             )
-            cap = max_candidates or self.settings.recommendation.max_results * 3
-            candidates = candidates[:cap]
+            if max_candidates is not None:
+                candidates = candidates[:max_candidates]
             succeeded = sum(
                 item.status in {HealthStatus.OK, HealthStatus.WARNING} for item in health
             )

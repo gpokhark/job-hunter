@@ -183,9 +183,9 @@ flowchart TD
         A["config/companies.yaml"] --> B["Per-company JobAdapter.fetch_summaries()<br/>httpx / selectolax (Scrapling only for stealth_html)"]
         B --> C["JobAdapter.fetch_detail()<br/>concurrent, skipped if already stored and not stale"]
         C --> D["location.evaluate_location()<br/>deterministic US-eligibility rules"]
-        D --> E["prefilter.passes_prefilter() + passes_recency()<br/>keyword/domain match, 30-day cutoff"]
+        D --> E["prefilter.passes_prefilter() + passes_recency()<br/>title+department match (not description), 30-day cutoff"]
         E --> F["storage.py (SQLite): jobs + assessments<br/>attach prior_assessment when content_hash still matches"]
-        F --> G["data/latest_search.json<br/>capped candidate bundle, best-first,<br/>each carrying prior_assessment or null"]
+        F --> G["data/latest_search.json<br/>uncapped candidate bundle, newest-first,<br/>each carrying prior_assessment or null"]
     end
 
     subgraph LOCAL["scripts/review_with_lm_studio.py — deterministic script, no cloud LLM involved"]
@@ -198,7 +198,7 @@ flowchart TD
     end
 
     REC --> CSV["scripts/assessments_to_csv.py<br/>data/assessments.csv, human-readable"]
-    REC --> AGENT["Calling agent (Claude/Hermes/...)<br/>sorts all verdicts by score,<br/>recommends top recommendation.max_results"]
+    REC --> AGENT["Calling agent (Claude/Hermes/...)<br/>groups ALL verdicts scoring 50+ by score<br/>(75+ strong / 50-74 for review),<br/>tags 90+/80+ and postings <10 days old"]
     Z --> AGENT
 ```
 
@@ -206,19 +206,31 @@ Everything in the top box runs identically on every search, with no model involv
 variance between runs — including the `prior_assessment` lookup, a plain SQLite join keyed by
 `(source_key, job_id)` and gated on the job's `content_hash` still matching what was reviewed, so
 an edited posting is treated as unassessed again rather than silently reusing a stale verdict. The
-middle box is the only place any scoring happens, and it's a **local** model, not the calling
+positive-match gate (`target_domains`/`target_title_terms`, or a `--keyword` override) only
+checks a job's title and department, never its free-text description — matching the description
+let company-wide "about us" boilerplate or a long "preferred qualifications" list admit postings
+with no real connection to the search terms, confirmed directly against live postings; `department`
+is kept because it's curated structured metadata (e.g. "Autonomous Tech Dev Dep"), not marketing
+prose, so it doesn't share that failure mode. There is also no default cap on `data/latest_search.json`
+itself anymore — `--max-candidates` remains available as an explicit opt-in one, but by default
+every prefilter match is carried through, sorted newest-first.
+
+The middle box is the only place any scoring happens, and it's a **local** model, not the calling
 agent: `scripts/review_with_lm_studio.py` skips anything with a still-valid `prior_assessment` for
 free, then sends **every** remaining eligible candidate to LM Studio's OpenAI-compatible API one
 job at a time — never in parallel, and persisting each verdict immediately (so an interrupted run
 keeps what it already reviewed). There is no cap on how many jobs get *reviewed* — `--limit` exists
-but defaults to unlimited; `recommendation.max_results` (10 by default) instead caps how many of
-the *reviewed* jobs the calling agent actually recommends afterward, sorted by score. That
-separation is deliberate: review everything so nothing good gets missed for being sorted lower in
-the listing, then only surface the best of what was actually reviewed. The calling agent never
-scores anything itself; it runs `review_with_lm_studio.py`, then `assessments_to_csv.py`, then
-reads and ranks the results — it's also still forbidden from re-deriving retrieval or location
-decisions Python already made (never recommending a `us_eligible=false` job, never inventing a
-posting date, salary, or qualification).
+but defaults to unlimited. The calling agent then reports **every** verdict scoring 50 or above
+(the rest are just counted, not listed), split into a "strong matches" group (score ≥ 75) and a
+"for review" group (score 50-74) shown separately, tagging `[90+]`/`[80+]` within the strong group
+and `[New]` on any posting from the last 10 days — there is no cap on how many get reported, unlike
+the older design this replaced, which recommended only the top `recommendation.max_results`. That
+change is deliberate: review everything so nothing good gets missed for being sorted lower in the
+listing, then surface everything that scored well enough to be worth a human look, not just a fixed
+top-N. The calling agent never scores anything itself; it runs `review_with_lm_studio.py`, then
+`assessments_to_csv.py`, then reads and reports the results — it's also still forbidden from
+re-deriving retrieval or location decisions Python already made (never recommending a
+`us_eligible=false` job, never inventing a posting date, salary, or qualification).
 
 Install it with:
 

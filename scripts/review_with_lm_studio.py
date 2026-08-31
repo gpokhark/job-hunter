@@ -5,10 +5,10 @@ one job at a time, sequentially (never in parallel), and persists each verdict i
 via the same SQLite-backed assessment store the `job-hunter` skill uses, so a later run (of
 this script, or a fresh `job-hunter search`) skips any job whose content hasn't changed.
 
-Reviews everything by default — there is no cap on how many jobs get reviewed. Deciding how
-many of the *reviewed* jobs to actually recommend (top N by score) is a separate step the
-`job-hunter` skill does afterward, using `recommendation.max_results`; pass --limit here only
-if you explicitly want to review fewer than all eligible candidates this run.
+Reviews everything by default — there is no cap on how many jobs get reviewed. Grouping the
+*reviewed* jobs for the user (strong matches vs. borderline, flagging standouts) is a separate
+step the `job-hunter` skill does afterward, with no cap on how many it reports either; pass
+--limit here only if you explicitly want to review fewer than all eligible candidates this run.
 
 Setup: in LM Studio, Developer tab > Start Server. Then:
     cp config/lm_studio.example.yaml config/lm_studio.yaml
@@ -224,8 +224,8 @@ def main() -> int:
         default=None,
         help=(
             "max NEW reviews this run (default: no cap — review every eligible candidate; "
-            "recommendation.max_results governs how many of the *reviewed* jobs get "
-            "recommended afterward, not how many get reviewed)"
+            "the job-hunter skill reports every reviewed job scoring 50+ afterward, with no "
+            "separate cap on how many get reported)"
         ),
     )
     parser.add_argument(

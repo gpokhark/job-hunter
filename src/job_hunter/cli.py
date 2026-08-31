@@ -30,7 +30,19 @@ def parser() -> argparse.ArgumentParser:
     seen.add_argument("--include-seen", action="store_true")
     seen.add_argument("--new-only", action="store_true")
     search.add_argument("--refresh-details", action="store_true")
-    search.add_argument("--max-candidates", type=int)
+    search.add_argument(
+        "--max-candidates",
+        type=int,
+        help="optional cap on candidates returned; none by default — every prefilter match is kept",
+    )
+    search.add_argument(
+        "--keyword",
+        help=(
+            "comma-separated keyword(s) (e.g. 'ADAS,Robotics,Product Technical Leader'); "
+            "when set, replaces target_title_terms/target_domains as the prefilter's "
+            "positive-match set for this run only (the profile file itself is untouched)"
+        ),
+    )
     search.add_argument("--json", action="store_true")
     search.add_argument("--output", type=Path)
     search.add_argument("--verbose", action="store_true")
@@ -166,12 +178,18 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_source_test(args.company))
         configure_logging(verbose=args.verbose, debug=args.debug)
         companies = select_companies(load_companies(), args.companies)
+        keywords = (
+            [term.strip() for term in args.keyword.split(",") if term.strip()]
+            if args.keyword
+            else None
+        )
         result = asyncio.run(
             Collector(settings, companies, load_profile()).search(
                 include_seen=args.include_seen or not args.new_only,
                 new_only=args.new_only,
                 refresh_details=args.refresh_details,
                 max_candidates=args.max_candidates,
+                keywords=keywords,
             )
         )
         rendered = _json(result.model_dump(mode="json"))

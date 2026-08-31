@@ -133,12 +133,45 @@ before most commands will find a profile (falls back to the example file otherwi
   wrongly excluded or wrongly included — read the comments in `evaluate_location` before reordering
   the checks.
 
-- **`prefilter.py`** — cheap, deliberately permissive filtering (`passes_prefilter`) plus a
-  cheap `relevance_score` used only for *ordering* candidates before the cap is applied. Real
-  semantic/resume scoring is explicitly out of scope here (see the module docstring) — it lives in
-  the agent skill, not in Python. `passes_recency` is a separate, fully deterministic date check
-  (no LLM involved) against `settings.search.max_posting_age_days` (default 30) — a job with no
-  discoverable `posted_at` is kept rather than excluded, since its age can't be determined.
+- **`prefilter.py`** — `passes_prefilter`'s positive-term gate (the profile's
+  `target_title_terms`/`target_domains`, or a `keywords` override — see below) matches only
+  against `job.title` + `job.department`, never the free-text `description`. This was a
+  deliberate fix, not the original design: matching the full description let a company-wide
+  "about us" boilerplate paragraph (e.g. "...from next-generation connectivity and autonomous
+  driving technologies...", pasted into every posting regardless of role) or a long list of
+  optional "preferred qualifications" bullets inject a target term into a posting with no real
+  connection to it — confirmed directly against live postings (a GM RF hardware role passing
+  purely because ADAS was one of several optional "or" bullets, and the company boilerplate
+  mentioned "autonomous driving"). `department` is kept in the gate because it's curated,
+  structured metadata some ATS platforms expose (e.g. Honda's "Autonomous Tech Dev Dep"), not
+  marketing prose, so it doesn't share that failure mode and can still catch a genuinely relevant
+  but generically-titled role. `exclude_terms` still scans the full `description` — over-excluding
+  on a disqualifying phrase found anywhere is low-risk; the danger this fix addresses is only ever
+  on the inclusion side. `relevance_score` (ordering only, no gating role) still uses the full
+  haystack including description.
+
+  `passes_prefilter` takes an optional `keywords` override (wired to `job-hunter search
+  --keyword`): when given, it *replaces* the profile's `target_title_terms`/`target_domains` as
+  the positive-match set for that one run, subject to the same title+department scope.
+  `exclude_title_terms`/`exclude_terms`/U.S.-eligibility stay in force either way. `passes_recency`
+  is a separate, fully deterministic date check (no LLM involved) against
+  `settings.search.max_posting_age_days` (default 30) — a job with no discoverable `posted_at` is
+  kept rather than excluded, since its age can't be determined.
+
+  `Collector.search()` has no default candidate cap — `--max-candidates` remains available as an
+  explicit opt-in one. There used to be an automatic `recommendation.max_results * 3` cap here,
+  because the old full-description matching passed ~74% of all U.S.-eligible postings, so
+  *something* had to bound what reached the free-but-sequential local-LLM review step; that cap
+  then silently discarded most of what it admitted, using `relevance_score` (a coarse
+  keyword-count heuristic) as the tiebreaker for what survived — which is how postings with zero
+  real domain relevance (matching only on a bare seniority word like "senior"/"staff", or a
+  generic word like "validation" picked up from boilerplate) could occupy review slots ahead of
+  more relevant matches. Confirmed on live data: the old gate passed ~3,100+ U.S.-eligible jobs by
+  default; the title+department-scoped gate passes ~50-150 depending on the day, small enough for
+  a full sequential local-LLM review to finish in well under half an hour, so nothing needs to be
+  discarded pre-review anymore. Candidates are sorted newest-first (not by `relevance_score`) so an
+  interrupted review has already covered the freshest postings; final ranking is always the local
+  LLM's own score, applied at the skill's compile step, never Python's.
 
 - **`storage.py`** — SQLite (WAL mode) with four tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row

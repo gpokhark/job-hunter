@@ -12,7 +12,6 @@ search:
   include_work_arrangements: [onsite, hybrid, remote, unknown]
 recommendation:
   minimum_score: 75
-  max_results: 10
 logging:
   level: INFO
 
