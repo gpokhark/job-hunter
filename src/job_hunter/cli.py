@@ -5,8 +5,10 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import socket
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +46,19 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     search.add_argument("--json", action="store_true")
-    search.add_argument("--output", type=Path)
+    output_group = search.add_mutually_exclusive_group()
+    output_group.add_argument("--output", type=Path)
+    output_group.add_argument(
+        "--archive",
+        action="store_true",
+        help=(
+            "write to an auto-named data/searches/{keyword-or-default}_{date}.json instead "
+            "of choosing a path yourself with --output. The same keyword on the same day "
+            "overwrites (today's answer refreshing); a new day or a different keyword gets "
+            "its own file, so an earlier run's candidate snapshot is never silently lost. "
+            "Mutually exclusive with --output."
+        ),
+    )
     search.add_argument("--verbose", action="store_true")
     search.add_argument("--debug", action="store_true")
     sub.add_parser("doctor")
@@ -65,11 +79,39 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     sub.add_parser("export-assessments")
+    sub.add_parser(
+        "reevaluate-sponsorship",
+        help=(
+            "re-run visa-sponsorship detection against every stored job's existing "
+            "description (no network) — use after sponsorship.py's phrase list changes, "
+            "or to backfill jobs collected before a source (e.g. a rate-limited one) has "
+            "successfully re-fetched since visa_sponsorship was added"
+        ),
+    )
     return root
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify(text: str) -> str:
+    return _SLUG_RE.sub("-", text.lower()).strip("-") or "untitled"
+
+
+def archive_path(keyword: str | None, *, now: datetime | None = None) -> Path:
+    """The deterministic data/searches/{slug}_{date}.json path for --archive, computed
+    from the same --keyword string passed to `search` (or "default" without one) and
+    today's UTC date — same inputs always produce the same path, so a caller (the
+    job-hunter skill, or any other agent runtime) can predict it without parsing stdout,
+    and a same-day rerun with the same keyword deliberately overwrites rather than
+    accumulating duplicates."""
+    slug = _slugify(keyword) if keyword else "default"
+    date_str = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    return Path("data/searches") / f"{slug}_{date_str}.json"
 
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
@@ -159,6 +201,11 @@ def main(argv: list[str] | None = None) -> int:
                 _write_assessments_export(settings, value)
             print(_json(value))
             return 0
+        if args.command == "reevaluate-sponsorship":
+            with Storage(settings.database_path) as storage:
+                changed = storage.reevaluate_sponsorship()
+            print(f"Re-evaluated visa sponsorship for every stored job; {changed} changed.")
+            return 0
         if args.command == "record-assessment":
             payload = json.loads(args.payload)
             payload.pop("content_hash", None)  # always server-derived, never caller-supplied
@@ -193,9 +240,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         rendered = _json(result.model_dump(mode="json"))
-        if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(rendered + "\n", encoding="utf-8")
+        output_path = archive_path(args.keyword) if args.archive else args.output
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(rendered + "\n", encoding="utf-8")
+            print(f"Archived to: {output_path}")
         if args.json:
             print(rendered)
         else:

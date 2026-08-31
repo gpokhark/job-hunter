@@ -14,6 +14,7 @@ from .location import evaluate_location
 from .models import HealthStatus, Job, RunInfo, SearchResult, SearchSummary, SourceHealth
 from .normalizer import description_hash
 from .prefilter import is_recent, passes_prefilter, passes_recency
+from .sponsorship import evaluate_sponsorship
 from .storage import Storage
 
 LOGGER = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ class Collector:
                         arrangement=summary.work_arrangement,
                     )
                     description = detail.description if detail else (prior["description"] if prior else None)
+                    sponsorship = evaluate_sponsorship(description)
                     decision = (
                         evaluate_location(
                             (
@@ -231,6 +233,8 @@ class Collector:
                         us_eligible=decision.us_eligible,
                         location_confidence=decision.confidence,
                         location_evidence=decision.evidence,
+                        visa_sponsorship=sponsorship.status,
+                        sponsorship_evidence=sponsorship.evidence,
                         description=description,
                         salary_min=detail.salary_min if detail else None,
                         salary_max=detail.salary_max if detail else None,

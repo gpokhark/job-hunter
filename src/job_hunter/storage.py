@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Assessment, HealthStatus, Job, SourceHealth
+from .sponsorship import evaluate_sponsorship
 
 
 class Storage:
@@ -36,6 +37,7 @@ class Storage:
                 source_platform TEXT NOT NULL, title TEXT NOT NULL, canonical_url TEXT NOT NULL,
                 location_raw TEXT, city TEXT, state TEXT, country TEXT, work_arrangement TEXT,
                 us_eligible INTEGER NOT NULL, location_confidence TEXT, location_evidence TEXT,
+                visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned', sponsorship_evidence TEXT,
                 department TEXT, employment_type TEXT, posted_at TEXT, description TEXT,
                 salary_min REAL, salary_max REAL, salary_currency TEXT, content_hash TEXT,
                 first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
@@ -63,7 +65,21 @@ class Storage:
             );
             """
         )
+        self._migrate()
         self.connection.commit()
+
+    def _migrate(self) -> None:
+        """CREATE TABLE IF NOT EXISTS never adds a column to a table that already exists —
+        an existing database predates visa_sponsorship/sponsorship_evidence, so add them
+        explicitly if missing. Existing rows backfill the next time each job is
+        successfully re-fetched, same as any other collected field."""
+        existing = {row["name"] for row in self.connection.execute("PRAGMA table_info(jobs)")}
+        if "visa_sponsorship" not in existing:
+            self.connection.execute(
+                "ALTER TABLE jobs ADD COLUMN visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned'"
+            )
+        if "sponsorship_evidence" not in existing:
+            self.connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
 
     def begin_run(self, run_id: str, started_at: datetime) -> None:
         self.connection.execute(
@@ -125,6 +141,8 @@ class Storage:
             "us_eligible": int(job.us_eligible),
             "location_confidence": job.location_confidence.value,
             "location_evidence": job.location_evidence,
+            "visa_sponsorship": job.visa_sponsorship.value,
+            "sponsorship_evidence": job.sponsorship_evidence,
             "department": job.department,
             "employment_type": job.employment_type,
             "posted_at": job.posted_at.isoformat() if job.posted_at else None,
@@ -150,6 +168,33 @@ class Storage:
         )
         self.connection.commit()
         return job
+
+    def reevaluate_sponsorship(self) -> int:
+        """Re-run sponsorship.evaluate_sponsorship against every stored job's *existing*
+        description — purely local, no network involved. Needed because a job's
+        visa_sponsorship column is only ever set by upsert_job, i.e. only on a fresh
+        successful collection of that specific job; a source that's failing (rate limits,
+        outages) or a sponsorship.py phrase-list improvement never retroactively updates
+        rows already sitting in the database with a stale or default value. Returns how
+        many rows' classification actually changed."""
+        rows = self.connection.execute(
+            "SELECT source_key, job_id, description, visa_sponsorship, sponsorship_evidence FROM jobs"
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            decision = evaluate_sponsorship(row["description"])
+            if (
+                decision.status.value != row["visa_sponsorship"]
+                or decision.evidence != row["sponsorship_evidence"]
+            ):
+                self.connection.execute(
+                    "UPDATE jobs SET visa_sponsorship=?, sponsorship_evidence=? "
+                    "WHERE source_key=? AND job_id=?",
+                    (decision.status.value, decision.evidence, row["source_key"], row["job_id"]),
+                )
+                changed += 1
+        self.connection.commit()
+        return changed
 
     def mark_missing(
         self, source_key: str, observed_ids: Iterable[str], stale_before: datetime | None = None

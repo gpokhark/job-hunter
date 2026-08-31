@@ -14,6 +14,7 @@ from job_hunter.adapters.json_api import _date
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
+from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -144,6 +145,96 @@ async def test_oracle_hcm_pagination():
         jobs = await OracleHcmAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
     assert [job.job_id for job in jobs] == ["1", "2", "3"]
     assert jobs[0].posted_at is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_oracle_hcm_public_url_template_used_for_display_not_detail_fetch():
+    """The REST detail endpoint (detail_base_url) returns raw JSON — a human clicking the
+    job's url should land on a real page instead. public_url_template must be what's
+    shown, while fetch_detail must still hit the REST API (not the display page) to get
+    a description. Regression test for a real bug: Ford/DENSO/GM/Toyota/Valeo/Nissan job
+    links were opening a JSON dump instead of the posting."""
+    base = "https://jobs.example/reqs?onlyData=true&finder=findReqs;offset=0"
+    respx.get(base).mock(return_value=httpx.Response(200, json=_oracle_page(["42"], total=1)))
+    detail_url = "https://jobs.example/details/42"
+    respx.get(detail_url).mock(
+        return_value=httpx.Response(200, json={"ExternalDescriptionStr": "Build ADAS features."})
+    )
+    company = CompanyConfig(
+        key="ford",
+        company="Ford",
+        adapter="oracle_hcm",
+        config={
+            "paginate": True,
+            "list_url": base,
+            "items_path": "items.0.requisitionList",
+            "total_path": "items.0.TotalJobsCount",
+            "detail_base_url": "https://jobs.example/details/",
+            "detail_description_path": "ExternalDescriptionStr",
+            "public_url_template": "https://jobs.example/candidate/job/{id}",
+            "fields": {
+                "id": "Id",
+                "title": "Title",
+                "url": "Id",
+                "location": "PrimaryLocation",
+                "posted_at": "PostedDate",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = OracleHcmAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        assert jobs[0].url == "https://jobs.example/candidate/job/42"
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.description == "Build ADAS features."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_native_public_base_url_used_for_display_not_detail_fetch():
+    """Same regression as the Oracle HCM case: the CXS API host (list_url) returns raw
+    JSON when opened directly — public_base_url (a real Workday-hosted page) must be
+    what's shown, while fetch_detail must still hit the CXS API for a description."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "jobPostings": [
+                    {
+                        "title": "ADAS Engineer",
+                        "externalPath": "/job/Some-City/ADAS-Engineer_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                    }
+                ],
+            },
+        )
+    )
+    detail_api_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Some-City/ADAS-Engineer_JR-1"
+    respx.get(detail_api_url).mock(
+        return_value=httpx.Response(
+            200, json={"jobPostingInfo": {"jobDescription": "Build ADAS features."}}
+        )
+    )
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        assert jobs[0].url == "https://tenant.wd1.myworkdayjobs.com/en-US/site/job/Some-City/ADAS-Engineer_JR-1"
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.description == "Build ADAS features."
 
 
 @pytest.mark.asyncio

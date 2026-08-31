@@ -17,8 +17,15 @@ Use this skill only when the user explicitly asks to search or evaluate current 
    comma-separated list, preserving multi-word phrases as single entries, and pass it as
    `--keyword`. Run:
    ```bash
-   uv run job-hunter search --json --output data/latest_search.json [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run job-hunter search --json --archive [--keyword "ADAS,Robotics,Product Technical Leader"]
    ```
+   `--archive` writes to an auto-named `data/searches/{slug}_{date}.json` instead of the old fixed
+   `data/latest_search.json` — the same keyword (or no keyword, "default") on the same day
+   overwrites, but a new day or a different keyword gets its own file, so an earlier run's
+   candidate snapshot is never silently lost when you search again. The command prints
+   `Archived to: <path>` — capture that exact path (called `$SEARCH_PATH` below) and reuse it
+   verbatim in steps 5, 7, and 9; don't recompute it yourself, since the slugification rule is an
+   implementation detail of the CLI, not something to replicate by hand.
    A keyword argument **replaces** the profile's `target_title_terms`/`target_domains` as the
    prefilter's positive-match set for this run only (the profile file itself is untouched) — a
    match requires the keyword to appear in the job's title or department (not the free-text
@@ -28,7 +35,7 @@ Use this skill only when the user explicitly asks to search or evaluate current 
    candidate cap by default (with or without a keyword) — tell the user the match count from
    `prefilter_candidates` before running the local-LLM review in step 7, since a broad keyword can
    still match a sizeable pool and each job is reviewed strictly sequentially.
-5. Read `data/latest_search.json`; report failed sources while continuing with successful sources.
+5. Read `$SEARCH_PATH`; report failed sources while continuing with successful sources.
 6. Filter to `candidates` with `us_eligible=true` only — never send an ineligible job to review.
    The collector has already deterministically excluded postings older than
    `search.max_posting_age_days` (default 30) using each job's `posted_at`; a job with no
@@ -37,10 +44,10 @@ Use this skill only when the user explicitly asks to search or evaluate current 
 7. **Scoring happens outside this agent entirely, on a local model — you never score a job
    yourself.** Run:
    ```bash
-   uv run python scripts/review_with_lm_studio.py
+   uv run python scripts/review_with_lm_studio.py --input $SEARCH_PATH
    ```
    This is a plain deterministic script (see its docstring for one-time LM Studio setup), not a
-   sub-agent: it reads `data/latest_search.json`, skips any candidate whose `prior_assessment`
+   sub-agent: it reads `$SEARCH_PATH`, skips any candidate whose `prior_assessment`
    already matches its current `content_hash` (a job already reviewed and unchanged since — zero
    added cost), then sends **every remaining eligible candidate** to the local model **one at a
    time, strictly sequentially**, persisting each verdict immediately (SQLite plus
@@ -69,9 +76,32 @@ Use this skill only when the user explicitly asks to search or evaluate current 
    to the candidate's `is_new`/`is_changed` fields, which only mean "not previously seen by this
    tool" and say nothing about how recently the job was actually posted — do not conflate them.
    Include strengths, gaps, first-party URL, and posting date for every listed job.
-10. Do not invent salary, sponsorship, arrangement, qualifications, or posting dates — you may
+10. Also render this same compiled view as a standalone HTML report:
+    ```bash
+    uv run python scripts/render_radar.py --search $SEARCH_PATH [--keyword "ADAS,Robotics,Product Technical Leader"]
+    ```
+    This is pure presentation over the exact same data as step 9 — it never re-derives, adjusts,
+    or overrides a score. It also tags each row with the job's explicit visa-sponsorship stance
+    (`available`/`not_available`/`unmentioned`, deterministically detected in `sponsorship.py`) —
+    this is informational only, never a filter: a `not_available` job is still fully listed at its
+    score, same as any other. If you're compiling the text summary in step 9 too, mention a job's
+    sponsorship stance there as well when it's explicitly stated (available or not_available) —
+    never invent one for a posting that doesn't mention it. It prints `Wrote <path> | strong=N
+    review=N below_50=N never_reviewed=N`; sanity-check those counts against what you just
+    compiled. `--keyword` (when
+    this run used one) drives the title/labels — pass the same string given to `search` in step 4
+    so the two stay consistent; omit it for a default, keyword-less run (titled "Candidate Radar").
+    If your runtime has an artifact-publishing capability (e.g. Claude Code's Artifact tool),
+    publish the rendered file — load whatever design-guidance skill that capability requires first.
+    A same-day rerun of the same keyword should update the *same* published link rather than
+    create a new one (pass the artifact's existing `url` if your runtime distinguishes create vs.
+    update); a new day or a different keyword gets its own new link, mirroring `$SEARCH_PATH`'s own
+    naming. Never publish over the *wrong* keyword's report — check what a link was for before
+    reusing it. If your runtime has no such capability, just tell the user the local file path
+    (e.g. `data/radar/product-manager_2026-08-31.html`) so they can open it directly.
+11. Do not invent salary, sponsorship, arrangement, qualifications, or posting dates — you may
     only relay what the job record, the resume, or a recorded verdict actually contains.
-11. If nothing scores 50 or above, say so plainly — do not lower the floor to manufacture
+12. If nothing scores 50 or above, say so plainly — do not lower the floor to manufacture
     results. A candidate that was never reviewed (an LM Studio error skipped it, or the user
     explicitly capped `--limit` — check the script's stderr output) must never appear in either
     group — say it wasn't reviewed, don't imply it was scored.

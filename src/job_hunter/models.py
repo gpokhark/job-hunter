@@ -24,6 +24,16 @@ class LocationConfidence(StrEnum):
     LOW = "low"
 
 
+class SponsorshipStatus(StrEnum):
+    """A posting's explicit stance on visa sponsorship, when one is stated — see
+    `sponsorship.py`'s module docstring. Purely informational, never a filter: a job
+    scored NOT_AVAILABLE still passes every other stage exactly like any other job."""
+
+    AVAILABLE = "available"
+    NOT_AVAILABLE = "not_available"
+    UNMENTIONED = "unmentioned"
+
+
 class HealthStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -97,6 +107,8 @@ class Job(JobSummary):
     us_eligible: bool
     location_confidence: LocationConfidence
     location_evidence: str | None = None
+    visa_sponsorship: SponsorshipStatus = SponsorshipStatus.UNMENTIONED
+    sponsorship_evidence: str | None = None
     description: str | None = None
     salary_min: float | None = None
     salary_max: float | None = None

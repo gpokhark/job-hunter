@@ -94,3 +94,32 @@ def test_export_assessments_matches_all_assessments(tmp_path):
     assert rows[0]["job_id"] == "42"
     assert rows[0]["matches"] == ["Python", "ADAS"]
     assert rows[0]["recommended"] is True
+
+
+def test_reevaluate_sponsorship_backfills_from_stored_description(tmp_path):
+    """Regression for a real gap: a row's visa_sponsorship is only ever set by
+    upsert_job (i.e. on a fresh successful fetch). A source that's failing (rate
+    limited, outages) never gets that chance even though its description — containing
+    a real sponsorship clause — is already sitting in the database. reevaluate_sponsorship
+    must backfill that from the stored description alone, no re-fetch required."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(description="A role with no sponsorship mention at all."))
+        # Simulate a description that already contains a real clause but whose
+        # visa_sponsorship column predates that clause being classifiable (e.g. it was
+        # collected before sponsorship.py existed, or before a phrase-list fix).
+        storage.connection.execute(
+            "UPDATE jobs SET description=? WHERE source_key='acme' AND job_id='42'",
+            ("GM does not provide immigration-related sponsorship for this role.",),
+        )
+        storage.connection.commit()
+        assert storage.get_job("acme", "42")["visa_sponsorship"] == "unmentioned"
+
+        changed = storage.reevaluate_sponsorship()
+
+        assert changed == 1
+        row = storage.get_job("acme", "42")
+        assert row["visa_sponsorship"] == "not_available"
+        assert row["sponsorship_evidence"]
+
+        # Idempotent: running it again with nothing changed reports zero.
+        assert storage.reevaluate_sponsorship() == 0

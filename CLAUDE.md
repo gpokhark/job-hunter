@@ -32,6 +32,20 @@ solved by "it's just reading public data" — so don't reach for it by default; 
 stays plain httpx, and a new source should too unless a plain endpoint genuinely doesn't exist.
 See the README's "The `stealth_html` adapter" section.
 
+A related trap those same public APIs walked straight into: **the endpoint that's good for
+scraping is not always a page a human should be handed.** GM's Workday CXS API and Ford/DENSO's
+Oracle HCM REST API are both public JSON endpoints — great for `fetch_summaries`/`fetch_detail` —
+but opening either directly in a browser just shows a JSON dump, not a job posting. The `url`
+field was originally set to that same API endpoint for both, since it happened to work for the
+one thing being tested (scraping). Fixed by decoupling the two: `workday.py`'s `fetch_detail`
+reconstructs the CXS API url independently (from `summary.raw["externalPath"]`) rather than
+reusing `summary.url`, so `public_base_url` (GM/Toyota/Valeo/Nissan) can point at Workday's real
+`.../en-US/{site}/` candidate-facing host instead; `json_api.py`'s `_items_to_jobs`/`fetch_detail`
+gained an opt-in `public_url_template` (Ford/DENSO) for the same reason, pointed at Oracle's own
+`.../hcmUI/CandidateExperience/en/sites/{site}/job/{id}` page — confirmed via curl to render the
+correct job, not guessed. Any new JSON-API-backed adapter should ask this question explicitly: is
+`url` something a human can actually open, or only something `fetch_detail` can `.json()`?
+
 The division of responsibility is intentional and load-bearing: **Python owns networking,
 normalization, persistence, health, and location filtering; the agent skill owns evidence-based
 resume scoring.** Don't move scoring logic into Python or retrieval logic into the skill.
@@ -133,6 +147,24 @@ before most commands will find a profile (falls back to the example file otherwi
   wrongly excluded or wrongly included — read the comments in `evaluate_location` before reordering
   the checks.
 
+- **`sponsorship.py`** — `evaluate_sponsorship`, the same deterministic-detection pattern as
+  `location.py` but for a posting's explicit stance on visa sponsorship (`Job.visa_sponsorship`:
+  `available`/`not_available`/`unmentioned`, plus a `sponsorship_evidence` string). **Purely
+  informational — never a filter.** `passes_prefilter` never calls it, and a `not_available`
+  posting is scored, ranked, and shown exactly like any other job at its score, just carrying a
+  different tag in `render_radar.py`'s output. This was an explicit design choice: a company's
+  current sponsorship stance can change, so the pipeline should surface it, not gate on it. Uses a
+  curated phrase list, not a bare `"sponsor"` substring match — confirmed directly against live
+  postings that `"sponsor"` alone produces real false positives (PACCAR's "sponsor Key-Op program
+  participants", Hyundai's "sponsors for training initiatives", Valeo's "our sponsored sports
+  hall" and Polish "Sponsorowane... ubezpieczenie"), none visa-related. Descriptions are raw HTML,
+  so text is stripped of tags before matching — Nissan's structured `<b>Sponsorship:</b> No` field
+  would otherwise silently defeat a plain-text phrase match. Not-available phrases are checked
+  before available ones, so a sentence like GM's extremely common "GM DOES NOT PROVIDE
+  IMMIGRATION-RELATED SPONSORSHIP" can never be miscounted by a looser "provide sponsorship"
+  positive pattern. Defaults to `unmentioned` whenever nothing matches — never guess, exactly
+  `location.py`'s philosophy for ambiguous cases.
+
 - **`prefilter.py`** — `passes_prefilter`'s positive-term gate (the profile's
   `target_title_terms`/`target_domains`, or a `keywords` override — see below) matches only
   against `job.title` + `job.department`, never the free-text `description`. This was a
@@ -211,6 +243,23 @@ before most commands will find a profile (falls back to the example file otherwi
   `data/assessments.json`/`export-assessments` and present the results. `references/scoring.md`
   defines the rubric embedded into that script's prompt. Install/copy `SKILL.md` for other agent
   runtimes via `scripts/install_skill.sh`.
+
+  `job-hunter search --archive` writes each run's candidate bundle to
+  `data/searches/{slug}_{date}.json` (`cli.py`'s `archive_path()`) instead of one fixed
+  `data/latest_search.json` that every run overwrote — the same keyword (or "default", without
+  one) on the same day overwrites its own file, but a different day or keyword gets its own, so an
+  earlier run's exact candidate snapshot survives a later, unrelated search. `data/assessments.json`
+  / the SQLite `assessments` table stay deliberately **global**, never split per keyword or per
+  run: a job's fitness verdict is a property of *(job, resume)*, not of whichever search happened
+  to surface it, and splitting it would mean re-reviewing the same job from scratch every time a
+  different keyword happens to match it too — real wasted local-model time for a score that can't
+  legitimately differ. `scripts/render_radar.py` is the read-time join between the two: given one
+  archived search file plus the (global) assessments, it renders the grouped/tagged HTML report
+  described in `SKILL.md` step 9 — Strong (≥75) and For-review (50–74) sections,
+  `[90+]`/`[80+]`/`[New]` tags — reusing `scripts/templates/radar_template.html`, to
+  `data/radar/{slug}_{date}.html`. It is pure presentation: it never re-derives, adjusts, or
+  overrides a score, and a candidate the review step skipped (an LM Studio error, or an explicit
+  `--limit`) is counted but never listed in either group.
 
 ## Working in this repo
 
