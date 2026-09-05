@@ -41,6 +41,20 @@ class HealthStatus(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class PrefilterRule(StrEnum):
+    """Which check in `prefilter.py`'s `evaluate_prefilter` decided a job's pass/fail outcome —
+    see `docs/profile-diff-plan.md` section 6. Short-circuit evaluation means this is the
+    *decisive* check in the code's fixed precedence order, not an exhaustive list of every check
+    that would also have failed."""
+
+    NOT_US_ELIGIBLE = "not_us_eligible"
+    EXCLUDE_TITLE_TERMS = "exclude_title_terms"
+    EXCLUDE_TERMS = "exclude_terms"
+    NO_POSITIVE_MATCH = "no_positive_match"
+    SOFT_EXCLUDED = "soft_excluded"
+    POSITIVE_MATCH = "positive_match"
+
+
 class JobSummary(BaseModel):
     source_key: str
     source_platform: str

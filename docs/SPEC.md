@@ -7,14 +7,18 @@ narratives, working rules); this document is the system description itself — w
 behaves, and every configuration/schema surface. Where the two overlap, this document is the one
 kept in sync with the code; `CLAUDE.md`'s narrative callouts are cross-referenced, not repeated.
 
-Status: reflects the repo as of 2026-09-03, **after** the skill-split described in
+Status: reflects the repo as of 2026-09-05, **after** the skill-split described in
 `skill-split-plan.md` was implemented — four independently-invocable skills
 (`job-scout`/`job-reviewer`/`job-radar`/`job-hunter` orchestrator), the `search_archive.py`
 resolver, and `review_with_lm_studio.py --status`. Section 11 below reflects this current state.
 This document also absorbed the operational/discovery detail that used to live in `README.md`
 (per-source posted-date mechanisms and caveats, adapter-specific tradeoffs, measured performance
 numbers, adapter config keys) — `README.md` was trimmed to setup/commands/skills/installation only
-and now points here for everything else.
+and now points here for everything else. Also reflects two later additions: the radar
+click-feedback → safe-exclusion mechanism (`job_feedback` table, `soft_exclude_terms`/
+`strong_relevance_terms`, `apply_radar_feedback.py`/`suggest_exclusions.py` — full design in
+`docs/feedback-exclusion-plan.md`) and the profile-diff preview tool (`evaluate_prefilter`/
+`PrefilterDecision`, `scripts/diff_profile.py` — full design in `docs/profile-diff-plan.md`).
 
 ---
 
@@ -102,6 +106,8 @@ Keys must be unique (also enforced by a validator).
 | `target_title_terms` | list[str] | positive-match terms (title-level, e.g. "Product Manager") |
 | `exclude_title_terms` | list[str], default `["intern", "co-op"]` | hard exclude, title only |
 | `exclude_terms` | list[str] | hard exclude, full description text |
+| `soft_exclude_terms` | list[str], default `[]` | title+department-only exclude, overridden by `strong_relevance_terms` (see §7.3) |
+| `strong_relevance_terms` | list[str], default `[]` | narrow override list for `soft_exclude_terms` — deliberately not `target_domains` (see §7.3) |
 | `minimum_recommendation_score` | int, default 75 | threshold passed into the LLM prompt as `recommended` |
 | `location` | dict | reserved for future location-preference config (unused by current filters beyond eligibility) |
 
@@ -520,6 +526,25 @@ Order of checks:
    text inject an irrelevant target term (confirmed on live postings). `department` stays in scope
    because it's curated structured metadata, not marketing prose.
 5. A keyword search only ever *narrows* — exclude terms and U.S. eligibility still apply on top.
+6. **Soft exclude** (`soft_exclude_terms`) — checked against **title+department only** (never the
+   description, unlike `exclude_terms` — confirmed on live data that description-wide soft-exclude
+   matching produces false positives, e.g. Ford's EV "vehicle platform architectures" description
+   text vs. the Apple chip-org "platform architecture" postings the term was meant to catch). A
+   match is rejected *unless* title+department also contains one of the separately-curated
+   `strong_relevance_terms` — deliberately not a reuse of `target_domains`, since that list already
+   contains the broad terms (`validation`/`verification`/`simulation`) that caused the false
+   positives this mechanism exists to catch. Both fields empty by default, populated only via
+   human-approved suggestions from `scripts/suggest_exclusions.py` — see
+   `docs/feedback-exclusion-plan.md`.
+
+**Structured decisions, not a bare bool:** the actual logic lives in `evaluate_prefilter()`,
+returning a `PrefilterDecision` (`passes`, `rule: PrefilterRule`, `term`, `rescued_by`) — the same
+verdict-plus-evidence pattern `location.py`/`sponsorship.py` already use, instead of collapsing
+straight to true/false. `passes_prefilter` is a thin `.passes` wrapper, unchanged for every
+existing caller. This is what lets `scripts/diff_profile.py` (`docs/profile-diff-plan.md`) explain
+*why* a job's candidacy changed between two profiles, not just that it did — though short-circuit
+evaluation means `rule`/`term` name the *decisive* check in the order above, not an exhaustive list
+of every check that would also have failed.
 
 `relevance_score` is a cheap keyword-count heuristic used only for ordering, never gating — final
 semantic scoring is always the LLM review step.
@@ -586,6 +611,21 @@ only by `scripts/review_with_lm_studio.py` (via `upsert_assessment`) or manually
 content_hash-matching rule), letting the skill layer report a job's known verdict without any
 additional lookup.
 
+### 8.5 `job_feedback` — one row per `(source_key, job_id)`, a human's radar-report verdict
+
+`company`, `title`, `department`, `score` (the assessment score at the time of tagging, if one
+existed), `label` (`relevant`/`okay`/`irrelevant`), `recorded_at`. **Upserted, not appended** — a
+later label for the same job replaces the earlier one, so a reviewer correcting an earlier click
+(e.g. "okay" reconsidered as "irrelevant") lands on one current row, never two contradictory ones.
+Written only by `scripts/apply_radar_feedback.py`, from a JSON export produced by the 👍/🆗/👎
+buttons and "Export Feedback" button now built into every radar report row
+(`scripts/templates/radar_template.html`) — a job nobody clicks never gets a row at all, and
+absence of feedback is never itself a signal in either direction. `job-hunter export-feedback`
+mirrors `export-assessments` for read-only inspection (`data/job_feedback.json`,
+`data/job_feedback.csv`). Read only by `scripts/suggest_exclusions.py` — `prefilter.py` never
+reads this table directly, only the `soft_exclude_terms`/`strong_relevance_terms` a human approved
+into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-exclusion-plan.md`.
+
 ---
 
 ## 9. CLI reference (`job-hunter`, via `cli.py`)
@@ -600,6 +640,7 @@ additional lookup.
 | `export` | `--format json` | dumps all `active` jobs |
 | `record-assessment` | `--payload <json>` | manually write one assessment (content_hash always server-derived from the stored job, never caller-supplied) |
 | `export-assessments` | — | dumps + writes `data/assessments.json` |
+| `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 
@@ -618,6 +659,10 @@ Exit codes: `0` success; `2` on config/validation error or (for `search`) zero s
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |
 | `install_skill.sh` | Symlinks (or `--copy`s) all four skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. |
+| `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` (required). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
+| `suggest_exclusions.py` | Suggests safe `soft_exclude_terms` candidates from `job_feedback`'s `irrelevant`-tagged titles — n-gram frequency (`--min-support`, default 2) filtered against a protected set (every `assessments` row scoring ≥50, plus explicit `relevant`/`okay` labels; an `irrelevant` label always overrides that job's own stale score for this check). Prints a per-term diff preview against a real archive (default newest, or `--search`/`--keyword`) showing exactly what it would exclude and what `strong_relevance_terms` would rescue. Below-`--min-support` (single-occurrence) candidates are shown separately, not silently omitted. **Never writes to `candidate_profile.yaml`** — suggestions only. |
+| `diff_profile.py` | Preview-only: compares two `CandidateProfile`s — `--before`/`--after` (two saved YAML files) or the real on-disk profile plus an in-memory `--add field:term`/`--remove field:term` patch (never written back) — against every stored, `us_eligible`, recency-passing job, using `evaluate_prefilter` directly. Reports retained/still-excluded/gained/lost counts, a per-job before/after reason, and existing assessment/`job_feedback` context (a lost job someone tagged `relevant`/`okay` is flagged loudly). `--keyword` replaces `target_domains`/`target_title_terms` exactly like `search --keyword` does — not a narrowing of them, so testing an edit to either field under `--keyword` correctly shows no effect. Reads via a genuine read-only SQLite connection, not `Storage`. No `--apply` — preview only. `--output` (HTML path, default `data/profile-diff/{timestamp}.html`). See `docs/profile-diff-plan.md`. |
+| `refilter_archive.py` | Applies (not preview-only, unlike `diff_profile.py`): re-runs `passes_prefilter`/`passes_recency` against an already-collected search archive's `candidates`, in place — **no network/adapter call**. For after editing `candidate_profile.yaml` and wanting an existing archive/report to reflect it without a fresh `search`. `--search`/`--keyword` resolve the archive exactly like every other script (`search_archive.resolve_search_path`); `--keyword` also serves as the positive-match override, identical semantics to `search --keyword`. Recomputes recency against wall-clock *now*, not the archive's original collection time — a job fresh at collection can have aged out since, independent of any profile edit. Rewrites only `candidates` and `summary.prefilter_candidates`/`stale_excluded`; every other field (`jobs_observed`, `source_health`, `run` metadata) is left untouched since it describes collection, not filtering. `--output` (default: overwrite the input archive in place). Invoked as an optional step in the `job-radar` skill, never automatically. |
 
 `src/job_hunter/search_archive.py` is the shared module behind both flags above and the CLI's
 `resolve-search`: `slugify()`, `archive_path()` (forward direction — compute where `search
@@ -647,7 +692,10 @@ Four independently-invocable skills under `skills/`, each with its own canonical
 - **`job-radar`** — resolves the same way, compiles the text summary (Strong ≥75 / For-review
   50-74, `[90+]`/`[80+]`/`[New]` tags), runs `render_radar.py`, publishes/updates the artifact if
   the runtime supports it. Safe to re-invoke at any time, including mid-review — it always
-  reflects exactly what's been reviewed so far and reports `never_reviewed` transparently.
+  reflects exactly what's been reviewed so far and reports `never_reviewed` transparently. Each
+  rendered row also carries 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
+  button (§8.5, `docs/feedback-exclusion-plan.md`) — a job nobody clicks is never assumed to be
+  anything, in either direction.
 - **`job-hunter`** (orchestrator) — runs the same three commands end to end for the "just do the
   whole thing" case, explicitly threading the resolved keyword/path from its own search step into
   the review and radar steps (never relying on their no-arg defaults, since it already knows
@@ -824,3 +872,12 @@ uv run job-hunter resolve-search                                              # 
   `data/searches/{slug}_{date}.json` path; permanent, never overwritten across different
   keywords/days.
 - **Radar** — the rendered HTML report from `render_radar.py`, one per archive.
+- **Soft exclude** — `soft_exclude_terms`: a title+department-scoped exclude, overridden by
+  `strong_relevance_terms`; distinct from `exclude_terms` (absolute, full-description, no
+  override) — see §7.3.
+- **job_feedback** — a human's 👍/🆗/👎 click on a radar report row; upserted per `(source_key,
+  job_id)`, feeds `suggest_exclusions.py`'s candidate generation but never read by `prefilter.py`
+  directly — see §8.5.
+- **Prefilter decision** — the `PrefilterDecision` (`passes`/`rule`/`term`/`rescued_by`) returned
+  by `evaluate_prefilter`, the structured verdict `passes_prefilter` wraps down to a bool; what
+  `diff_profile.py` uses to explain *why* a job's candidacy changed, not just that it did.

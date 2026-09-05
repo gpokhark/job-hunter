@@ -6,9 +6,11 @@ candidate bundle for an LLM agent to compare with a resume. It does not schedule
 apply to jobs.
 
 For the full architecture, adapter internals, per-source status/caveats, filtering pipeline, data
-model, and skill design, see **[`docs/SPEC.md`](docs/SPEC.md)** (functionality spec) and
-**[`docs/skill-split-plan.md`](docs/skill-split-plan.md)** (skill design). This file covers setup,
-commands, and installation only.
+model, and skill design, see **[`docs/SPEC.md`](docs/SPEC.md)** (functionality spec),
+**[`docs/skill-split-plan.md`](docs/skill-split-plan.md)** (skill design),
+**[`docs/feedback-exclusion-plan.md`](docs/feedback-exclusion-plan.md)** (radar click-feedback →
+safe exclusion terms), and **[`docs/profile-diff-plan.md`](docs/profile-diff-plan.md)** (preview a
+filter edit's effect before saving it). This file covers setup, commands, and installation only.
 
 ## Setup
 
@@ -42,10 +44,16 @@ uv run job-hunter db-stats
 uv run job-hunter export --format json
 uv run job-hunter resolve-search [--keyword "..."] [--search <path>]
 uv run job-hunter export-assessments
+uv run job-hunter export-feedback
 uv run job-hunter record-assessment --payload '{"source_key": "tri", "job_id": "...", "company": "...", "title": "...", "url": "...", "score": 82, "recommended": true, "matches": ["..."], "gaps": ["..."]}'
 uv run python scripts/review_with_lm_studio.py [--keyword "..."] [--status]
 uv run python scripts/render_radar.py [--keyword "..."]
 uv run python scripts/assessments_to_csv.py
+uv run python scripts/apply_radar_feedback.py --file ~/Downloads/radar-feedback-<report>.json
+uv run python scripts/suggest_exclusions.py [--min-support 2]
+uv run python scripts/diff_profile.py --add soft_exclude_terms:"some term"
+uv run python scripts/diff_profile.py --remove target_domains:"some term"
+uv run python scripts/refilter_archive.py [--keyword "..."] [--search <path>] [--output <path>]
 ```
 
 Searches attempt every enabled source by default; one source's failure doesn't stop the others.
@@ -53,6 +61,18 @@ Searches attempt every enabled source by default; one source's failure doesn't s
 `--archive` writes to a deterministic `data/searches/{keyword-or-default}_{date}.json`; omitting
 `--keyword`/`--search` on the review/radar scripts resolves to the newest archive (see
 `docs/SPEC.md` §11 and `docs/skill-split-plan.md` §4 for the full resolution rule).
+
+Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
+button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated
+"irrelevant" tags into safe `soft_exclude_terms` candidates for `candidate_profile.yaml` (never
+auto-applied), and `diff_profile.py` previews any filter-field edit's real effect against every
+stored posting before you save it. See `docs/feedback-exclusion-plan.md`/`docs/profile-diff-plan.md`.
+
+After editing `candidate_profile.yaml` (e.g. approving a `suggest_exclusions.py` suggestion),
+`refilter_archive.py` re-applies the current profile to an already-collected archive **with no
+network/scraper call** — re-running `render_radar.py` afterward updates the same report in place
+to reflect the edit. Use this instead of re-running `search` when you just want an existing
+report to catch up with a filter change, not to fetch anything new.
 
 ## Skills
 

@@ -218,6 +218,35 @@ before most commands will find a profile (falls back to the example file otherwi
   catch. Both fields empty by default; populated only by human-approved suggestions from
   `scripts/suggest_exclusions.py`, never automatically.
 
+  The actual gating logic lives in `evaluate_prefilter()`, which returns a `PrefilterDecision`
+  (`passes`, `rule: PrefilterRule`, `term`, `rescued_by`) instead of a bare bool — mirroring
+  `location.py`'s `LocationDecision`/`sponsorship.py`'s `SponsorshipDecision` pattern of a
+  structured verdict plus evidence, not just true/false. `passes_prefilter` is now a thin wrapper
+  (`.passes`) kept for every existing caller; `evaluate_prefilter` exists so `scripts/
+  diff_profile.py` (`docs/profile-diff-plan.md`) can explain *why* a job's candidacy changed
+  between two profiles, not just that it did. Short-circuit evaluation means `rule`/`term` name
+  the *decisive* check in the fixed precedence order above, not an exhaustive list of every check
+  that would also have failed.
+
+- **`scripts/diff_profile.py`** — preview-only tool: compares two `CandidateProfile`s (either two
+  saved YAML files via `--before`/`--after`, or the real on-disk profile plus an in-memory
+  `--add field:term`/`--remove field:term` patch that's never written back) against every stored,
+  `us_eligible`, recency-passing job in SQLite, using `evaluate_prefilter` directly — never an
+  approximation of it. Reports four counts (retained/still-excluded/gained/lost), not one
+  "unchanged" bucket that would hide which side it's mostly made of, plus a terminal summary and
+  an HTML report (`data/profile-diff/{timestamp}.html` by default) with a per-job before/after
+  reason and, for changed jobs, any existing assessment score or `job_feedback` label (a lost job
+  someone already tagged `relevant`/`okay` is flagged loudly, not folded into the general list).
+  Reads via a genuine read-only SQLite connection, not `Storage` (whose `__init__` always runs
+  `CREATE TABLE IF NOT EXISTS`/`_migrate()`/`commit()`, harmless but not actually read-only), and
+  explicitly maps the `jobs` table's `canonical_url` column to `Job.url` — the one column name
+  that doesn't already match a `Job` field. `--keyword` here means exactly what it means in
+  `job-hunter search --keyword` (a full replacement of `target_domains`/`target_title_terms`, not
+  a narrowing of them) — testing an edit to either field while also passing `--keyword` will
+  correctly show zero effect, and the tool says so explicitly rather than leaving that silent.
+  No `--apply` — see `docs/profile-diff-plan.md` section 7 for why that's out of scope, not
+  merely deferred.
+
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
   per search invocation), `source_health` (per-source rolling status, consecutive-failure count,
