@@ -75,6 +75,8 @@ class CandidateProfile(BaseModel):
     target_title_terms: list[str] = Field(default_factory=list)
     exclude_title_terms: list[str] = Field(default_factory=lambda: ["intern", "co-op"])
     exclude_terms: list[str] = Field(default_factory=list)
+    soft_exclude_terms: list[str] = Field(default_factory=list)
+    strong_relevance_terms: list[str] = Field(default_factory=list)
     minimum_recommendation_score: int = Field(75, ge=0, le=100)
     location: dict[str, Any] = Field(default_factory=dict)
 

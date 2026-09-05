@@ -36,6 +36,10 @@ def _e(text: str | None) -> str:
     return html.escape(text or "", quote=False)
 
 
+def _attr(text: str | None) -> str:
+    return html.escape(text or "", quote=True)
+
+
 def _fmt_date(iso: str | None) -> str | None:
     if not iso:
         return None
@@ -82,6 +86,14 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         if row.get("sponsorship_evidence")
         else ""
     )
+    feedback_buttons = f'''<span class="feedback-buttons"
+          data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
+          data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
+          data-department="{_attr(row.get("department"))}" data-score="{row["score"]}">
+          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>'''
     return f'''
     <details class="row tier-{tier}">
       <summary>
@@ -92,6 +104,7 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
           <span class="job-company">{_e(row["company"])}</span>
         </span>
         <span class="job-date">{date_display}</span>
+        {feedback_buttons}
       </summary>
       <div class="row-detail">
         <div class="detail-col">
@@ -157,6 +170,9 @@ def build(
                 # report until the job's description happens to change and forces a
                 # fresh review. Confirmed as a real bug: Ford's URL fix didn't appear
                 # here because these jobs' cached assessments predated it.
+                "source_key": key[0],
+                "job_id": key[1],
+                "department": candidate.get("department"),
                 "score": assessment["score"],
                 "company": candidate.get("company", assessment["company"]),
                 "title": candidate.get("title", assessment["title"]),
@@ -195,6 +211,7 @@ def build(
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     out = (
         template.replace("__TITLE__", _e(title))
+        .replace("__SEARCH_STEM__", _e(search_path.stem))
         .replace("__H1__", _e(title))
         .replace("__EYEBROW__", _e(eyebrow))
         .replace("__SUBHEAD__", _e(subhead))

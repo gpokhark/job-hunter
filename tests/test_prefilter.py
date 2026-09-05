@@ -91,6 +91,49 @@ def test_exclude_terms_still_checks_full_description():
     )
 
 
+def test_soft_exclude_term_rejects_without_a_rescuing_strong_relevance_term():
+    """A soft_exclude_terms match with nothing in strong_relevance_terms present must be
+    excluded — the real Apple posting that motivated this mechanism."""
+    profile = CandidateProfile(
+        target_domains=["verification"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["ADAS"],
+    )
+    assert not passes_prefilter(
+        job(title="Verification Platform Engineer, Platform Architecture"), profile
+    )
+
+
+def test_strong_relevance_term_rescues_a_soft_excluded_job():
+    """The exact edge case that motivated strong_relevance_terms: a future job matching
+    both a soft_exclude_terms phrase and a strong_relevance_terms phrase must survive —
+    this is what makes the mechanism structurally safe, not just empirically safe
+    against history seen so far. See docs/feedback-exclusion-plan.md section 4."""
+    profile = CandidateProfile(
+        target_domains=["ADAS", "verification"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["ADAS"],
+    )
+    assert passes_prefilter(job(title="ADAS Platform Architecture Engineer"), profile)
+
+
+def test_control_systems_tradeoff_is_deliberate_not_a_bug():
+    """Documented, accepted false negative: "control systems" in strong_relevance_terms
+    rescues this exact Apple posting despite it being confirmed irrelevant, because a
+    narrower override term was judged not worth the added complexity. See
+    docs/feedback-exclusion-plan.md section 3.3 and CLAUDE.md's false-negatives-over-
+    false-positives principle. This test exists so the behavior reads as an intentional
+    decision, not something to "fix" later."""
+    profile = CandidateProfile(
+        target_domains=["simulation"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["control systems"],
+    )
+    assert passes_prefilter(
+        job(title="Simulation and Control Systems Engineer - Platform Architecture"), profile
+    )
+
+
 def test_title_only_domain_terms_still_gate_a_relevant_generic_title():
     """Regression: a title like "Integrated Verification and Validation Technical
     Program Manager" must still pass on its own domain terms once description-wide

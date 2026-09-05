@@ -206,14 +206,35 @@ before most commands will find a profile (falls back to the example file otherwi
   interrupted review has already covered the freshest postings; final ranking is always the local
   LLM's own score, applied at the skill's compile step, never Python's.
 
-- **`storage.py`** — SQLite (WAL mode) with four tables: `jobs` (one row per `(source_key,
+  `passes_prefilter` also supports two profile fields for click-through feedback-derived
+  exclusions (`docs/feedback-exclusion-plan.md`): `soft_exclude_terms` behaves like
+  `exclude_terms` but scoped to title+department only (never the description — confirmed on live
+  data that description-wide matching here produces real false positives, e.g. Ford's EV
+  "vehicle platform architectures" description text vs. Apple's chip-org "platform architecture"
+  postings the term was meant to catch), and a match is *overridden* whenever title+department
+  also contains one of the separately-curated `strong_relevance_terms` — deliberately not a reuse
+  of `target_domains`, since that list already contains the broad terms (`validation`,
+  `verification`, `simulation`) that caused the false positives `soft_exclude_terms` exists to
+  catch. Both fields empty by default; populated only by human-approved suggestions from
+  `scripts/suggest_exclusions.py`, never automatically.
+
+- **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
   per search invocation), `source_health` (per-source rolling status, consecutive-failure count,
-  last success time), and `assessments` (one row per `(source_key, job_id)`, a local model's
+  last success time), `assessments` (one row per `(source_key, job_id)`, a local model's
   fitness verdict — score, recommended, matches, gaps — written by `scripts/review_with_lm_studio.py`
   via `upsert_assessment()`/`get_valid_assessment()` directly, or manually via the
   `record-assessment` CLI command; never produced by Python itself, which only ever persists a
-  verdict handed to it). A job is marked `closed` after 3 consecutive runs
+  verdict handed to it), and `job_feedback` (one row per `(source_key, job_id)`, a human's
+  click-through "relevant"/"okay"/"irrelevant" verdict from a rendered radar report — see
+  `docs/feedback-exclusion-plan.md`. Upserted, not appended: a later label for the same job
+  replaces the earlier one, since a reviewer correcting an earlier click must land on one current
+  row, not accumulate contradictory history. Written only by `scripts/apply_radar_feedback.py`
+  from a radar report's exported feedback JSON; `job-hunter export-feedback` mirrors
+  `export-assessments` for read-only inspection (dumps the table, writes `data/job_feedback.json`).
+  Read only by `scripts/suggest_exclusions.py` — `prefilter.py` never reads this table directly,
+  only the `soft_exclude_terms`/`strong_relevance_terms` a human approved into
+  `candidate_profile.yaml` from its suggestions). A job is marked `closed` after 3 consecutive runs
   where it's missing from a healthy source's listing (`mark_missing`); it stays `active` otherwise,
   which is why the tool surfaces previously-seen jobs by default (see `--new-only` vs default
   behavior below). `mark_missing`'s `stale_before` parameter excludes jobs already older than a
@@ -280,6 +301,17 @@ before most commands will find a profile (falls back to the example file otherwi
 
 ## Working in this repo
 
+- **Any filtering mechanism must prefer false negatives over false positives.** An exclude term,
+  a soft-exclude, a future scoring/ranking gate — whatever the mechanism, judge it first by
+  whether it could ever wrongly reject a genuinely relevant/okay posting, and treat that as the
+  risk to eliminate, not merely reduce. A false negative (an irrelevant job slips through) costs a
+  little wasted local-LLM review time, visibly, and is cheap to correct next round. A false
+  positive (a real match gets silently filtered) costs the job itself, invisibly, with nothing in
+  any report to reveal it happened. When a choice must be made between the two — e.g. a soft-exclude
+  override term specific enough to avoid rescuing most irrelevant postings but broad enough that
+  one specific irrelevant posting keeps resurfacing anyway — always resolve it in favor of fewer
+  false positives, even at the cost of more false negatives. See `docs/feedback-exclusion-plan.md`
+  for a concrete worked example of this tradeoff being made deliberately.
 - Adapters and location logic fail loudly (raise `SchemaError`/`AdapterError`) rather than
   guessing or silently returning partial data — preserve that when touching adapter code.
 - Don't add credentials or session/CSRF replay for collection. Browser-based stealth fetching is

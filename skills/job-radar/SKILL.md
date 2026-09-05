@@ -69,3 +69,10 @@ from `data/assessments.json` as it stands right now.
 9. Do not invent salary, sponsorship, arrangement, qualifications, or posting dates — you may only
    relay what the job record, the resume, or a recorded verdict actually contains. If nothing
    scores 50 or above, say so plainly — do not lower the floor to manufacture results.
+10. Mention, when relevant (e.g. the user hasn't seen this before, or asks how to fine-tune future
+    results), that each row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export
+    Feedback" button — tagging jobs and exporting produces a JSON file that
+    `scripts/apply_radar_feedback.py --file <path>` ingests, and `scripts/suggest_exclusions.py`
+    turns into safe `soft_exclude_terms` candidates for `candidate_profile.yaml`. See
+    `docs/feedback-exclusion-plan.md` for the full mechanism — never suggests anything that
+    collides with an already-good match, and nothing is ever auto-applied.

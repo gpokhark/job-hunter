@@ -1,3 +1,5 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
 <title>__TITLE__</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -203,7 +205,7 @@
     list-style: none;
     cursor: pointer;
     display: grid;
-    grid-template-columns: 44px auto 1fr auto;
+    grid-template-columns: 44px auto 1fr auto auto;
     align-items: center;
     gap: 14px;
     padding: 12px 16px;
@@ -370,13 +372,78 @@
   }
 
   @media (max-width: 560px) {
-    summary { grid-template-columns: 36px auto 1fr; }
+    summary { grid-template-columns: 36px auto 1fr auto; }
     .job-date { display: none; }
     .row-detail { grid-template-columns: 1fr; padding-left: 16px; }
   }
 
   @media (prefers-reduced-motion: no-preference) {
     details.row { transition: border-color 0.15s ease; }
+  }
+
+  /* --- Radar feedback (docs/feedback-exclusion-plan.md) --- */
+
+  .feedback-buttons {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .fb-btn {
+    font-size: 13px;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    cursor: pointer;
+  }
+
+  .fb-btn:hover { border-color: var(--accent); }
+
+  .fb-btn.fb-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .fb-btn.fb-irrelevant.fb-active {
+    border-color: var(--danger);
+    background: var(--danger-soft);
+  }
+
+  details.row.fb-tagged { border-left: 3px solid var(--accent); }
+
+  .feedback-export {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 10;
+  }
+
+  #feedback-export-btn {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 12px 20px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--accent);
+    color: var(--surface);
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(20, 25, 31, 0.2);
+  }
+
+  #feedback-export-btn:disabled {
+    background: var(--surface);
+    color: var(--muted);
+    cursor: not-allowed;
+    box-shadow: var(--shadow);
+    opacity: 0.7;
+  }
+
+  @media (max-width: 560px) {
+    .feedback-buttons { gap: 2px; }
+    .fb-btn { padding: 3px 4px; font-size: 12px; }
   }
 </style>
 
@@ -425,3 +492,79 @@
     <p>__SKIPPED_NOTE__Full data in <code>data/assessments.csv</code>. Tesla is excluded from every run &mdash; its careers site blocks anonymous requests and this project doesn't add anti-bot workarounds.</p>
   </footer>
 </main>
+
+<div class="feedback-export">
+  <button type="button" id="feedback-export-btn" disabled>Export Feedback (0)</button>
+</div>
+
+<script>
+(function () {
+  // Per-job relevance feedback — click-to-tag, export-on-demand, nothing auto-assumed for
+  // an untouched row. See docs/feedback-exclusion-plan.md for the full mechanism this feeds.
+  var feedback = {};
+
+  function exportButton() {
+    return document.getElementById('feedback-export-btn');
+  }
+
+  function refreshExportButton() {
+    var count = Object.keys(feedback).length;
+    var btn = exportButton();
+    btn.textContent = 'Export Feedback (' + count + ')';
+    btn.disabled = count === 0;
+  }
+
+  document.querySelectorAll('.feedback-buttons').forEach(function (group) {
+    var buttons = group.querySelectorAll('.fb-btn');
+    var key = group.dataset.sourceKey + '|' + group.dataset.jobId;
+    var row = group.closest('details.row');
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function (evt) {
+        // Nested inside <summary> — without this, a click here would also toggle the
+        // row open/closed, since <summary> is itself a native details-toggle control.
+        evt.preventDefault();
+        evt.stopPropagation();
+
+        var alreadyActive = btn.classList.contains('fb-active');
+        buttons.forEach(function (b) { b.classList.remove('fb-active'); });
+
+        if (alreadyActive) {
+          // Un-tag: revert this row to genuinely untouched, not to a different label.
+          delete feedback[key];
+          if (row) row.classList.remove('fb-tagged');
+        } else {
+          btn.classList.add('fb-active');
+          feedback[key] = {
+            source_key: group.dataset.sourceKey,
+            job_id: group.dataset.jobId,
+            company: group.dataset.company,
+            title: group.dataset.title,
+            department: group.dataset.department || null,
+            score: group.dataset.score ? parseInt(group.dataset.score, 10) : null,
+            label: btn.dataset.label
+          };
+          if (row) row.classList.add('fb-tagged');
+        }
+        refreshExportButton();
+      });
+    });
+  });
+
+  exportButton().addEventListener('click', function () {
+    var rows = Object.keys(feedback).map(function (k) { return feedback[k]; });
+    if (rows.length === 0) {
+      return;
+    }
+    var blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'radar-feedback-__SEARCH_STEM__.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
+})();
+</script>

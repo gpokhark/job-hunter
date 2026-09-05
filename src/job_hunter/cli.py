@@ -78,6 +78,7 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     sub.add_parser("export-assessments")
+    sub.add_parser("export-feedback")
     sub.add_parser(
         "reevaluate-sponsorship",
         help=(
@@ -109,6 +110,13 @@ def _json(value: Any) -> str:
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
     path = settings.database_path.parent / "assessments.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_feedback_export(settings, rows: list[dict[str, Any]]) -> Path:
+    path = settings.database_path.parent / "job_feedback.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json(rows) + "\n", encoding="utf-8")
     return path
@@ -179,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
-        if args.command in {"source-status", "db-stats", "export", "export-assessments"}:
+        if args.command in {
+            "source-status", "db-stats", "export", "export-assessments", "export-feedback",
+        }:
             with Storage(settings.database_path) as storage:
                 value = (
                     storage.health_rows()
@@ -189,9 +199,13 @@ def main(argv: list[str] | None = None) -> int:
                     else storage.export_active()
                     if args.command == "export"
                     else storage.export_assessments()
+                    if args.command == "export-assessments"
+                    else storage.export_job_feedback()
                 )
             if args.command == "export-assessments":
                 _write_assessments_export(settings, value)
+            elif args.command == "export-feedback":
+                _write_feedback_export(settings, value)
             print(_json(value))
             return 0
         if args.command == "reevaluate-sponsorship":

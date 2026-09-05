@@ -121,6 +121,24 @@ class Job(JobSummary):
     prior_assessment: Assessment | None = None
 
 
+class JobFeedback(BaseModel):
+    """A human's click-through verdict on one job from a rendered radar report — "relevant",
+    "okay", or "irrelevant". Keyed by (source_key, job_id), upserted (never appended): a later
+    label for the same job replaces the earlier one rather than creating a second, contradictory
+    row — see `docs/feedback-exclusion-plan.md` section 8 for why this has to be upsert semantics,
+    not an append-only log. Purely an input to `scripts/suggest_exclusions.py`'s suggestions;
+    `prefilter.py` never reads this table directly."""
+
+    source_key: str
+    job_id: str
+    company: str
+    title: str
+    department: str | None = None
+    score: int | None = None
+    label: str
+    recorded_at: datetime = Field(default_factory=utcnow)
+
+
 class SourceHealth(BaseModel):
     source_key: str
     company: str

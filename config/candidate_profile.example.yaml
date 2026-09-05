@@ -29,6 +29,14 @@ target_title_terms:
   - vehicle testing
 exclude_title_terms: [intern, co-op]
 exclude_terms: []
+# soft_exclude_terms: like exclude_terms, but a match here is overridden whenever the title/
+# department also contains one of strong_relevance_terms — e.g. a future "ADAS Platform
+# Architecture Engineer" survives a "platform architecture" soft-exclude because "ADAS" is
+# unambiguous evidence of real relevance. Populate via scripts/suggest_exclusions.py's
+# suggestions (reviewed and approved manually — never auto-applied); see
+# docs/feedback-exclusion-plan.md for the full mechanism. Both empty by default.
+soft_exclude_terms: []
+strong_relevance_terms: []
 minimum_recommendation_score: 75
 location:
   country: US

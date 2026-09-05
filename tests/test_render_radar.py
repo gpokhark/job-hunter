@@ -299,6 +299,43 @@ def test_empty_group_renders_fallback_message(tmp_path):
     assert "No candidates scored 75 or above" in html
 
 
+def test_feedback_buttons_carry_correct_data_attributes(tmp_path):
+    """The click-and-submit feedback mechanism (docs/feedback-exclusion-plan.md) depends on
+    each row's buttons carrying the right identifiers — a mismatch here would silently tag
+    the wrong job."""
+    candidate = _candidate("ford", "77", title="ADAS Engineer", company="Ford Motor Company")
+    candidate["department"] = "ADAS Team"
+    search_path = tmp_path / "search.json"
+    search_path.write_text(json.dumps(_search_json([candidate])))
+
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps([_assessment("ford", "77", 82, title="ADAS Engineer", company="Ford Motor Company")])
+    )
+    output_path = tmp_path / "out.html"
+
+    build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    html = output_path.read_text()
+    assert 'data-source-key="ford"' in html
+    assert 'data-job-id="77"' in html
+    assert 'data-company="Ford Motor Company"' in html
+    assert 'data-title="ADAS Engineer"' in html
+    assert 'data-department="ADAS Team"' in html
+    assert 'data-score="82"' in html
+    assert 'data-label="relevant"' in html
+    assert 'data-label="okay"' in html
+    assert 'data-label="irrelevant"' in html
+    assert 'radar-feedback-search.json' in html  # __SEARCH_STEM__ substitution
+
+
 def test_default_title_derivation():
     assert _default_title(None) == "Candidate Radar"
     assert _default_title("product manager") == "Product Manager Radar"

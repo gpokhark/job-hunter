@@ -60,7 +60,26 @@ def passes_prefilter(
         return False
     gate_text = f"{job.title} {job.department or ''}".lower()
     positive = keywords if keywords else [*profile.target_title_terms, *profile.target_domains]
-    return not positive or any(term.lower() in gate_text for term in positive)
+    if positive and not any(term.lower() in gate_text for term in positive):
+        return False
+    # Soft excludes: unlike exclude_terms above, (a) the match itself is scoped to gate_text
+    # (title+department), never the description, and (b) even a match there is overridden
+    # whenever gate_text also contains one of the narrow, separately-curated
+    # strong_relevance_terms. Both restrictions exist for the same reason the positive-match
+    # gate above is title+department-scoped: confirmed on real data that description-wide
+    # soft-exclude matching produces real false positives — Ford's "Sr. Electrical System
+    # Validation Engineer" and "Staff HV Electrical System Validation Engineer" both mention
+    # "next-generation vehicle platform architectures for electric vehicles" in their
+    # description, a legitimate EV context with nothing to do with the Apple chip-org
+    # postings "platform architecture" was meant to catch — and neither title contains
+    # anything a title-scoped strong_relevance_terms check could rescue. Unlike categorical
+    # exclude_terms (intern/co-op, where over-excluding is low-risk), a soft-exclude is a
+    # domain-overlap pattern derived from feedback, not a categorical disqualifier — it needs
+    # the same discipline as inclusion, not the description's full text. See
+    # docs/feedback-exclusion-plan.md section 4.
+    soft_excluded = any(term.lower() in gate_text for term in profile.soft_exclude_terms)
+    rescued = any(term.lower() in gate_text for term in profile.strong_relevance_terms)
+    return not (soft_excluded and not rescued)
 
 
 def relevance_score(job: Job, profile: CandidateProfile) -> int:
