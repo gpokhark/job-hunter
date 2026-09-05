@@ -25,7 +25,6 @@ class SearchConfig(BaseModel):
 
 class RecommendationConfig(BaseModel):
     minimum_score: int = Field(75, ge=0, le=100)
-    max_results: int = Field(10, ge=1)
 
 
 class LoggingConfig(BaseModel):

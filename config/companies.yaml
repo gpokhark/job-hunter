@@ -21,9 +21,11 @@ companies:
     adapter: workday
     platform: workday
     config:
+      # public_base_url is Workday's native candidate-facing host, not the CXS API host
+      # used by list_url — same fix/reasoning as GM's entry below.
       workday_native: true
       list_url: https://toyota.wd503.myworkdayjobs.com/wday/cxs/toyota/TMNA/jobs
-      public_base_url: https://toyota.wd503.myworkdayjobs.com/wday/cxs/toyota/TMNA/
+      public_base_url: https://toyota.wd503.myworkdayjobs.com/en-US/TMNA/
   - key: gm
     company: General Motors
     adapter: workday
@@ -35,9 +37,13 @@ companies:
       # Workday CXS API with no bot protection at all. Same total job count (~820) as the
       # stealth-rendered site, but plain httpx, real postedOn/startDate, and no ToS
       # exposure — dropped stealth_html for this source entirely.
+      # public_base_url is Workday's native candidate-facing host (a real HTML page), NOT
+      # the CXS API host used by list_url — confirmed via curl that CXS returns raw JSON
+      # when opened directly (a human clicking that link got a JSON dump instead of a job
+      # posting); .../en-US/Careers_GM/ renders correctly and shows the right job.
       workday_native: true
       list_url: https://generalmotors.wd5.myworkdayjobs.com/wday/cxs/generalmotors/Careers_GM/jobs
-      public_base_url: https://generalmotors.wd5.myworkdayjobs.com/wday/cxs/generalmotors/Careers_GM/
+      public_base_url: https://generalmotors.wd5.myworkdayjobs.com/en-US/Careers_GM/
   - key: ford
     company: Ford Motor Company
     adapter: oracle_hcm
@@ -48,12 +54,24 @@ companies:
       # pattern as DENSO — is Oracle HCM at efds.fa.em5.oraclecloud.com, site CX_1. Same
       # job count as the TalentBrew scrape (~824) but with real PostedDate, an official
       # REST API instead of HTML scraping, and no pagination-selector fragility.
+      # detail_base_url is the REST API used internally for the description fetch — it
+      # returns raw JSON, not something to hand a human. public_url_template builds the
+      # *displayed* url instead, pointed at Oracle's own public candidate-experience page
+      # (confirmed via curl: real rendered HTML with the correct job title, same {id}) —
+      # not the same URL as careers.ford.com/Radancy, which needs an unrelated ID this API
+      # doesn't expose, but a genuinely working first-party page for the same posting.
       paginate: true
       list_url: https://efds.fa.em5.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS,limit=200,offset=0
       items_path: items.0.requisitionList
       total_path: items.0.TotalJobsCount
       detail_base_url: https://efds.fa.em5.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
-      detail_description_path: ExternalDescriptionStr
+      # Ford's Oracle tenant splits a posting across three separate fields instead of
+      # putting everything in ExternalDescriptionStr alone — confirmed directly against
+      # the raw API: ExternalDescriptionStr was only the short intro (1.3KB), while
+      # ExternalQualificationsStr (6.6KB) held the actual qualifications *and* each job's
+      # visa-sponsorship statement, entirely missed until this was added.
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
+      public_url_template: https://efds.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/{id}
       fields:
         id: Id
         title: Title
@@ -84,9 +102,11 @@ companies:
     adapter: workday
     platform: workday
     config:
+      # public_base_url is Workday's native candidate-facing host, not the CXS API host
+      # used by list_url — same fix/reasoning as GM's entry above.
       workday_native: true
       list_url: https://alliance.wd3.myworkdayjobs.com/wday/cxs/alliance/nissanjobs/jobs
-      public_base_url: https://alliance.wd3.myworkdayjobs.com/wday/cxs/alliance/nissanjobs/
+      public_base_url: https://alliance.wd3.myworkdayjobs.com/en-US/nissanjobs/
       applied_facets:
         locationCountry: [bc33aa3152ec42d4995f4791a106ed09]
   - key: volkswagen
@@ -127,9 +147,11 @@ companies:
     adapter: workday
     platform: workday
     config:
+      # public_base_url is Workday's native candidate-facing host, not the CXS API host
+      # used by list_url — same fix/reasoning as GM's entry above.
       workday_native: true
       list_url: https://valeo.wd3.myworkdayjobs.com/wday/cxs/valeo/valeo_jobs/jobs
-      public_base_url: https://valeo.wd3.myworkdayjobs.com/wday/cxs/valeo/valeo_jobs/
+      public_base_url: https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs/
   - key: denso
     company: DENSO
     adapter: oracle_hcm
@@ -138,10 +160,18 @@ companies:
       # json_api adapters fetch a single page; limit is set high enough to cover DENSO's
       # ~100 open reqs in one request (Oracle HCM's recruitingCEJobRequisitions has no
       # separate pagination support in this adapter).
+      # public_url_template: same reasoning as Ford's entry — detail_base_url is the
+      # internal REST API (raw JSON), public_url_template builds the displayed url from
+      # Oracle's own candidate-experience page instead (confirmed via curl).
       list_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations,flexFieldsFacet.values&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS%3BWORK_LOCATIONS%3BWORKPLACE_TYPES%3BTITLES%3BCATEGORIES%3BORGANIZATIONS%3BPOSTING_DATES%3BFLEX_FIELDS,limit=500,offset=0
       items_path: items.0.requisitionList
       detail_base_url: https://hcwt.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
-      detail_description_path: ExternalDescriptionStr
+      # DENSO's tenant currently puts everything in ExternalDescriptionStr alone
+      # (Responsibilities/Qualifications come back empty, confirmed directly against the
+      # raw API) — listed as a 3-field concatenation anyway, same as Ford, since that's
+      # safe either way and doesn't silently miss content if DENSO's data entry changes.
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
+      public_url_template: https://hcwt.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/{id}
       fields:
         id: Id
         title: Title

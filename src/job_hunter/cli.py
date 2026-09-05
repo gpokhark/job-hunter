@@ -17,6 +17,7 @@ from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
 from .models import Assessment
+from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
 
@@ -30,9 +31,33 @@ def parser() -> argparse.ArgumentParser:
     seen.add_argument("--include-seen", action="store_true")
     seen.add_argument("--new-only", action="store_true")
     search.add_argument("--refresh-details", action="store_true")
-    search.add_argument("--max-candidates", type=int)
+    search.add_argument(
+        "--max-candidates",
+        type=int,
+        help="optional cap on candidates returned; none by default — every prefilter match is kept",
+    )
+    search.add_argument(
+        "--keyword",
+        help=(
+            "comma-separated keyword(s) (e.g. 'ADAS,Robotics,Product Technical Leader'); "
+            "when set, replaces target_title_terms/target_domains as the prefilter's "
+            "positive-match set for this run only (the profile file itself is untouched)"
+        ),
+    )
     search.add_argument("--json", action="store_true")
-    search.add_argument("--output", type=Path)
+    output_group = search.add_mutually_exclusive_group()
+    output_group.add_argument("--output", type=Path)
+    output_group.add_argument(
+        "--archive",
+        action="store_true",
+        help=(
+            "write to an auto-named data/searches/{keyword-or-default}_{date}.json instead "
+            "of choosing a path yourself with --output. The same keyword on the same day "
+            "overwrites (today's answer refreshing); a new day or a different keyword gets "
+            "its own file, so an earlier run's candidate snapshot is never silently lost. "
+            "Mutually exclusive with --output."
+        ),
+    )
     search.add_argument("--verbose", action="store_true")
     search.add_argument("--debug", action="store_true")
     sub.add_parser("doctor")
@@ -53,6 +78,28 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     sub.add_parser("export-assessments")
+    sub.add_parser(
+        "reevaluate-sponsorship",
+        help=(
+            "re-run visa-sponsorship detection against every stored job's existing "
+            "description (no network) — use after sponsorship.py's phrase list changes, "
+            "or to backfill jobs collected before a source (e.g. a rate-limited one) has "
+            "successfully re-fetched since visa_sponsorship was added"
+        ),
+    )
+    resolve = sub.add_parser(
+        "resolve-search",
+        help=(
+            "resolve which data/searches/*.json archive a downstream stage (review, radar) "
+            "should use, without running a new search — prints the path or exits non-zero "
+            "with what's actually available. See docs/skill-split-plan.md section 4."
+        ),
+    )
+    resolve_group = resolve.add_mutually_exclusive_group()
+    resolve_group.add_argument("--search", type=Path, help="use this exact archive path")
+    resolve_group.add_argument(
+        "--keyword", help="resolve to the newest archive for this keyword's slug"
+    )
     return root
 
 
@@ -147,6 +194,15 @@ def main(argv: list[str] | None = None) -> int:
                 _write_assessments_export(settings, value)
             print(_json(value))
             return 0
+        if args.command == "reevaluate-sponsorship":
+            with Storage(settings.database_path) as storage:
+                changed = storage.reevaluate_sponsorship()
+            print(f"Re-evaluated visa sponsorship for every stored job; {changed} changed.")
+            return 0
+        if args.command == "resolve-search":
+            resolved = resolve_search_path(search=args.search, keyword=args.keyword)
+            print(resolved)
+            return 0
         if args.command == "record-assessment":
             payload = json.loads(args.payload)
             payload.pop("content_hash", None)  # always server-derived, never caller-supplied
@@ -166,18 +222,26 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_source_test(args.company))
         configure_logging(verbose=args.verbose, debug=args.debug)
         companies = select_companies(load_companies(), args.companies)
+        keywords = (
+            [term.strip() for term in args.keyword.split(",") if term.strip()]
+            if args.keyword
+            else None
+        )
         result = asyncio.run(
             Collector(settings, companies, load_profile()).search(
                 include_seen=args.include_seen or not args.new_only,
                 new_only=args.new_only,
                 refresh_details=args.refresh_details,
                 max_candidates=args.max_candidates,
+                keywords=keywords,
             )
         )
         rendered = _json(result.model_dump(mode="json"))
-        if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(rendered + "\n", encoding="utf-8")
+        output_path = archive_path(args.keyword) if args.archive else args.output
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(rendered + "\n", encoding="utf-8")
+            print(f"Archived to: {output_path}")
         if args.json:
             print(rendered)
         else:

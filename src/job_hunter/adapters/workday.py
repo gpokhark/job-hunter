@@ -35,7 +35,11 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                 path = _stringify(item.get("externalPath"))
                 if not title or not path:
                     raise SchemaError("Workday posting lacks title/externalPath")
-                detail_url = f"{cfg.get('public_base_url', url).rstrip('/')}/{path.lstrip('/')}"
+                # public_base_url must be Workday's native candidate-facing host
+                # (".../en-US/{site}/"), never the CXS API host used by list_url — the CXS
+                # host returns raw JSON when opened in a browser, not a page a human can
+                # read. fetch_detail below reconstructs the real CXS API url independently.
+                display_url = f"{cfg.get('public_base_url', url).rstrip('/')}/{path.lstrip('/')}"
                 location = _stringify(item.get("locationsText") or item.get("bulletFields"))
                 native_id = _stringify(item.get("jobId"))
                 jobs.append(
@@ -44,9 +48,9 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                         source_platform="workday",
                         company=self.company.company,
                         job_id=native_id
-                        or fallback_job_id(self.company.company, title, location, detail_url),
+                        or fallback_job_id(self.company.company, title, location, display_url),
                         title=title,
-                        url=detail_url,
+                        url=display_url,
                         location_raw=location,
                         posted_at=parse_relative_posted(_stringify(item.get("postedOn"))),
                         raw=item,
@@ -64,7 +68,14 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
     async def fetch_detail(self, summary: JobSummary) -> JobDetail:
         if not self.company.config.get("workday_native"):
             return await super().fetch_detail(summary)
-        response = await self.request("GET", summary.url)
+        cfg = self.company.config
+        path = _stringify((summary.raw or {}).get("externalPath"))
+        if not path:
+            raise SchemaError("workday summary missing externalPath for detail fetch")
+        list_url = cfg.get("list_url", "")
+        cxs_base = list_url.rsplit("/jobs", 1)[0]
+        api_url = f"{cxs_base}/{path.lstrip('/')}"
+        response = await self.request("GET", api_url)
         data = response.json()
         info = data.get("jobPostingInfo", data)
         return JobDetail(

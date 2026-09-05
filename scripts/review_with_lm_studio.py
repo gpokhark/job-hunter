@@ -5,10 +5,10 @@ one job at a time, sequentially (never in parallel), and persists each verdict i
 via the same SQLite-backed assessment store the `job-hunter` skill uses, so a later run (of
 this script, or a fresh `job-hunter search`) skips any job whose content hasn't changed.
 
-Reviews everything by default — there is no cap on how many jobs get reviewed. Deciding how
-many of the *reviewed* jobs to actually recommend (top N by score) is a separate step the
-`job-hunter` skill does afterward, using `recommendation.max_results`; pass --limit here only
-if you explicitly want to review fewer than all eligible candidates this run.
+Reviews everything by default — there is no cap on how many jobs get reviewed. Grouping the
+*reviewed* jobs for the user (strong matches vs. borderline, flagging standouts) is a separate
+step the `job-hunter` skill does afterward, with no cap on how many it reports either; pass
+--limit here only if you explicitly want to review fewer than all eligible candidates this run.
 
 Setup: in LM Studio, Developer tab > Start Server. Then:
     cp config/lm_studio.example.yaml config/lm_studio.yaml
@@ -36,10 +36,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Assessment
+from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCORING_RUBRIC_PATH = _ROOT / "skills/job-hunter/references/scoring.md"
+_SCORING_RUBRIC_PATH = _ROOT / "skills/job-reviewer/references/scoring.md"
 
 _SYSTEM_PROMPT = """You are a senior hiring manager and technical domain expert responsible
 for hiring the role described in the JOB POSTING. Evaluate the candidate's RESUME against that
@@ -213,7 +214,22 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--input", type=Path, default=Path("data/latest_search.json"), help="search JSON to read"
+        "--input",
+        type=Path,
+        default=None,
+        help=(
+            "search JSON to read; if omitted, resolved via --keyword (newest archive for "
+            "that keyword's slug) or, with neither given, the newest archive overall — see "
+            "docs/skill-split-plan.md section 4. An explicit --input always wins."
+        ),
+    )
+    parser.add_argument(
+        "--keyword",
+        default=None,
+        help=(
+            "resolve --input from the newest data/searches/{slug}_*.json archive matching "
+            "this keyword, instead of passing --input directly; ignored if --input is given"
+        ),
     )
     parser.add_argument(
         "--config", type=Path, default=Path("config/lm_studio.yaml"), help="LM Studio connection config"
@@ -224,14 +240,23 @@ def main() -> int:
         default=None,
         help=(
             "max NEW reviews this run (default: no cap — review every eligible candidate; "
-            "recommendation.max_results governs how many of the *reviewed* jobs get "
-            "recommended afterward, not how many get reviewed)"
+            "the job-hunter skill reports every reviewed job scoring 50+ afterward, with no "
+            "separate cap on how many get reported)"
         ),
     )
     parser.add_argument(
         "--force", action="store_true", help="re-review even jobs with a valid prior assessment"
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help=(
+            "print the resolved input path and how many candidates are already cached vs. "
+            "still to review, then exit — no model calls, no changes made"
+        ),
+    )
     args = parser.parse_args()
+    args.input = resolve_search_path(search=args.input, keyword=args.keyword)
 
     settings = load_settings()
     config = _load_config(args.config)
@@ -246,7 +271,27 @@ def main() -> int:
     data = json.loads(args.input.read_text(encoding="utf-8"))
     candidates = [c for c in data.get("candidates", []) if c.get("us_eligible")]
     if not candidates:
-        print("No U.S.-eligible candidates in the input file.")
+        print(f"No U.S.-eligible candidates in {args.input}.")
+        return 0
+
+    skipped_cached = 0
+    with Storage(settings.database_path) as storage:
+        to_review = []
+        for candidate in candidates:
+            source_key, job_id = candidate["source_key"], candidate["job_id"]
+            content_hash = candidate.get("content_hash")
+            if not args.force and storage.get_valid_assessment(source_key, job_id, content_hash):
+                skipped_cached += 1
+                continue
+            to_review.append(candidate)
+    if args.limit is not None:
+        to_review = to_review[: args.limit]
+
+    if args.status:
+        print(
+            f"{args.input}: {len(to_review)} remaining, {skipped_cached} already cached, "
+            f"{len(candidates)} total U.S.-eligible candidates. No model calls made."
+        )
         return 0
 
     base_url = config["base_url"].rstrip("/")
@@ -263,19 +308,7 @@ def main() -> int:
             return 2
 
         reviewed = 0
-        skipped_cached = 0
         with Storage(settings.database_path) as storage:
-            to_review = []
-            for candidate in candidates:
-                source_key, job_id = candidate["source_key"], candidate["job_id"]
-                content_hash = candidate.get("content_hash")
-                if not args.force and storage.get_valid_assessment(source_key, job_id, content_hash):
-                    skipped_cached += 1
-                    continue
-                to_review.append(candidate)
-            if args.limit is not None:
-                to_review = to_review[: args.limit]
-
             for candidate in to_review:
                 source_key, job_id = candidate["source_key"], candidate["job_id"]
                 content_hash = candidate.get("content_hash")

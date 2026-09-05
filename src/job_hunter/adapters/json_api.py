@@ -34,6 +34,7 @@ class ConfigurableJsonAdapter(JobAdapter):
         cfg = self.company.config
         jobs: list[JobSummary] = []
         fields = cfg.get("fields", {})
+        public_url_template = cfg.get("public_url_template")
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -42,17 +43,23 @@ class ConfigurableJsonAdapter(JobAdapter):
             location = _stringify(nested(item, fields.get("location", "location")))
             if not title or not raw_url:
                 raise SchemaError("required title/url disappeared from listing response")
-            url_value = urljoin(cfg.get("detail_base_url", url), raw_url)
+            api_url = urljoin(cfg.get("detail_base_url", url), raw_url)
             native_id = str(nested(item, fields.get("id", "id"), "")).strip()
+            # public_url_template is opt-in: some platforms' REST detail endpoint (used to
+            # fetch a description) returns raw JSON, not a page a human should be handed —
+            # e.g. Ford's Oracle HCM API vs. its actual candidate-facing job page. When set,
+            # it builds the *displayed* url separately; fetch_detail below still hits the
+            # real API endpoint, reconstructed the same way, independent of this override.
+            display_url = public_url_template.format(id=native_id) if public_url_template else api_url
             jobs.append(
                 JobSummary(
                     source_key=self.source_key,
                     source_platform=self.company.platform or self.company.adapter,
                     company=self.company.company,
                     job_id=native_id
-                    or fallback_job_id(self.company.company, title, location, url_value),
+                    or fallback_job_id(self.company.company, title, location, api_url),
                     title=title,
-                    url=url_value,
+                    url=display_url,
                     location_raw=location,
                     city=_stringify(nested(item, fields.get("city", "city"))),
                     state=_stringify(nested(item, fields.get("state", "state"))),
@@ -75,9 +82,25 @@ class ConfigurableJsonAdapter(JobAdapter):
                 summary.raw, cfg.get("listing_description_path", "description")
             )
             return JobDetail(description=_stringify(listing_description))
-        response = await self.request("GET", summary.url)
+        api_url = summary.url
+        if cfg.get("public_url_template"):
+            # summary.url is the display page, not the API — rebuild the real detail
+            # endpoint the same way _items_to_jobs did, from the untouched raw item.
+            fields = cfg.get("fields", {})
+            raw_url = str(nested(summary.raw, fields.get("url", "url"), "")).strip()
+            api_url = urljoin(cfg.get("detail_base_url", summary.url), raw_url)
+        response = await self.request("GET", api_url)
         payload = response.json()
-        return JobDetail(description=_stringify(nested(payload, description_path)))
+        # detail_description_path may be a single dot-path (most platforms put the full
+        # posting in one field) or a list of them — needed because some Oracle HCM
+        # tenants (confirmed: Ford) split a posting across three separate fields
+        # (ExternalDescriptionStr/ExternalResponsibilitiesStr/ExternalQualificationsStr);
+        # reading only the first one silently dropped Qualifications entirely, including
+        # each job's visa-sponsorship statement. Concatenating is safe even for a tenant
+        # that puts everything in the first field alone (DENSO): the rest are just empty.
+        paths = description_path if isinstance(description_path, list) else [description_path]
+        parts = [text for path in paths if (text := _stringify(nested(payload, path)))]
+        return JobDetail(description="\n\n".join(parts) or None)
 
 
 def _stringify(value: Any) -> str | None:

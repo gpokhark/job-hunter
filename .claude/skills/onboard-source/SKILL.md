@@ -1,6 +1,6 @@
 ---
 name: onboard-source
-description: Onboard a new employer career site into job-hunter — identify its real scraping mechanism, wire it up in config/companies.yaml (reusing an existing adapter whenever possible), test it, verify it live, and update README.md/CLAUDE.md. Use when the user gives a careers listing URL and a sample job URL and asks to add/onboard a new company or source.
+description: Onboard a new employer career site into job-hunter — identify its real scraping mechanism, wire it up in config/companies.yaml (reusing an existing adapter whenever possible), test it, verify it live, and update docs/SPEC.md/CLAUDE.md. Use when the user gives a careers listing URL and a sample job URL and asks to add/onboard a new company or source.
 ---
 
 # Onboard a new source
@@ -34,7 +34,7 @@ If either URL is missing, ask for it before starting — don't guess a URL.
   fabricated config that "sort of" works.
 - **Disclose tradeoffs in writing.** Partial coverage, ToS exposure from `stealth_html`, an
   unverified/unstable date field, an unsorted listing — write these down in both the
-  `companies.yaml` comment and the README, the way every existing entry does.
+  `companies.yaml` comment and `docs/SPEC.md` (§5), the way every existing entry does.
 
 See [references/discovery-playbook.md](references/discovery-playbook.md) for the concrete
 platform signatures (Workday, Oracle HCM, Lever, Phenom, SuccessFactors, ADP RM, Next.js/Nuxt/React
@@ -92,8 +92,8 @@ Only after Phase 2 turns up nothing usable:
    here, essentially never a runtime dependency.
 3. If the site is genuinely bot-blocked (Cloudflare Turnstile, Akamai, etc.) with no unprotected
    backend found, and rendering through `stealth_html` reliably gets past it, that adapter is the
-   right, disclosed choice — but say so explicitly in the `companies.yaml` comment and the README
-   (real ToS exposure, not solved by "it's public data").
+   right, disclosed choice — but say so explicitly in the `companies.yaml` comment and
+   `docs/SPEC.md` (real ToS exposure, not solved by "it's public data").
 4. If even `stealth_html` can't get past it (e.g. an IP/ASN-level block, not a JS challenge), or if
    there's a structural reason no filter exists (e.g. no legal-entity facet), the company is
    `adapter: unsupported` with a specific `unsupported_reason`.
@@ -157,17 +157,20 @@ re-deriving it.
 
 ### Phase 9 — Documentation
 
-- **`README.md`**: add/update the company's row in the "Source status" table (Status / Collection /
-  Posted date? / Active-closed detection? / Tools used — match the table's existing terse-but-
-  specific style, citing the real mechanism found, not a generic description). Update the "Posted
-  date" summary counts/bullets if this source contributes a mechanism. If new bespoke adapter code
-  was written, add a `### The `<adapter>` adapter` section mirroring the existing `apple`/
-  `adp_recruiting` ones. Update the `stealth_html` company list (and `cli.py`'s `doctor()` message)
-  if this source uses or drops that adapter.
+- **`docs/SPEC.md`** (the company/adapter table and per-source detail live here, not `README.md`):
+  add/update the company's row in §5.2's table (Adapter / Posted date / Tools used — match the
+  table's existing terse-but-specific style, citing the real mechanism found, not a generic
+  description). Update §5.5's posted-date-mechanism summary if this source contributes a new
+  mechanism, or §5.7 if it has a caveat worth calling out. If new bespoke adapter code was written,
+  add a `### The `<adapter>` adapter` subsection under §5 mirroring the existing `apple`/
+  `adp_recruiting` ones (§5.9/§5.10). Update the `stealth_html` company references (§5.8, and
+  `cli.py`'s `doctor()` message) if this source uses or drops that adapter.
 - **`CLAUDE.md`**: add the new adapter filename to the `adapters/` bullet's file list if new code
   was written. Add a short note only if a genuinely new, reusable *technique* was discovered (a new
   hydration-data shape, a new date-field trap) — CLAUDE.md deliberately does not enumerate every
   company, only load-bearing architecture and reusable lessons.
+- **`README.md`**: no per-source detail lives here any more (see `docs/SPEC.md` instead) — update
+  it only if onboarding this source changes a setup/command/installation instruction itself.
 
 ### Phase 10 — Report back
 
