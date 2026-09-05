@@ -125,7 +125,7 @@ pagination) or `page_number_parameter` (1-indexed page-number pagination), `post
 `html_paginated` key plus `wait_selector`.
 
 Use `scripts/endpoint_probe.py` (or curl) during development to inspect a candidate endpoint
-before writing config for it — never hand-invent an endpoint shape (§5.11).
+before writing config for it — never hand-invent an endpoint shape (§5.12).
 
 ---
 
@@ -185,13 +185,13 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (21, `config/companies.yaml`)
+### 5.2 Currently configured companies (24, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
 code, identically on every run. The only LLM involvement anywhere in the system is later and
 separate: `job-reviewer` scoring the JSON output against a resume — it reads this data, it doesn't
-produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.11), but
+produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.12), but
 that's a cost paid once per company, not per search.
 
 | Key | Company | Adapter | Posted date | Tools used |
@@ -217,10 +217,13 @@ that's a cost paid once per company, not per search.
 | google | Google | stealth_html | No | Scrapling stealth browser + selectolax — not bot-blocked, JS-only "boq-hiring" frontend with Closure-hashed CSS classes (fragile across a redesign) |
 | waymo | Waymo | html_paginated | Conditional — JobPosting JSON-LD when not WAF-challenged (§5.7) | httpx + selectolax, rate-sensitive |
 | hatci | Hyundai America Technical Center | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
+| caterpillar | Caterpillar | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API (~982 jobs), same fix as GM (`careers.caterpillar.com` is only the marketing front end); a first-time full-catalog `--refresh-details` run has been observed to hit 429s from Workday's shared host under this project's default detail-fetch concurrency — same known caveat GM's entry already carries, see §5.7 |
+| nvidia | NVIDIA | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API, ~2,000 jobs visible (real catalog ~2,697 per facet counts; this tenant's search hard-caps at 2,000, see §5.7); rate-limits reproducibly even on a normal (non-`--refresh-details`) run, worse than GM/Caterpillar — see §5.7 |
+| deere | Deere & Company | eightfold | Yes (`postedTs`) | httpx only — Eightfold's public "pcsx" API (`/api/pcsx/search` + `/api/pcsx/position_details`), found by rendering the JS-only listing once and reading its real XHR calls, not guessed (§5.11); ~99 US jobs, no rate-limit issues observed at this catalog size |
 
-Adapter mix: workday ×4, successfactors_rmk ×4, lever ×3, stealth_html ×2, oracle_hcm ×2,
-1 each of unsupported/phenom/html_paginated/html_multi_index/apple/adp_recruiting. Every
-`unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
+Adapter mix: workday ×6, successfactors_rmk ×4, lever ×3, stealth_html ×2, oracle_hcm ×2,
+1 each of unsupported/phenom/html_paginated/html_multi_index/apple/adp_recruiting/eightfold.
+Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.
 
@@ -250,8 +253,11 @@ Three independent mechanisms feed a posting date, in order of coverage:
 1. **Per-field config** — direct field mapping per adapter/company (§5.2's table): Workday's
    `startDate`/`postedOn`, Oracle HCM's `PostedDate`, Lever's `createdAt`, Phenom's
    `postedDate`/`datePosted`, ADP RM's `postingDate`, Apple's `postDateInGMT` (parsed straight from
-   its SSR JSON, §5.9), and the four `successfactors_rmk` sites' shared
-   `posted_at_selector: td.colDate span.jobDate` (via `normalizer.parse_display_date`).
+   its SSR JSON, §5.9), Eightfold's `postedTs` (epoch seconds, listing-level — confirmed against
+   Deere's sample job to match its detail page's JSON-LD `datePosted` exactly, distinct from a
+   separate `creationTs` field on the same record that is *not* the same value), and the four
+   `successfactors_rmk` sites' shared `posted_at_selector: td.colDate span.jobDate` (via
+   `normalizer.parse_display_date`).
 2. **Generic schema.org JSON-LD fallback** — `html_paginated.py`'s `fetch_detail` always checks
    for a JobPosting JSON-LD block (`normalizer.extract_job_posting_ld`) regardless of adapter
    config, using its `datePosted`/`employmentType` without overriding a description a
@@ -318,6 +324,30 @@ false-positive here.
 - **Woven by Toyota's Next.js front end** (`woven.toyota/en/careers/`) is a thin layer over the
   same public Lever API used by TRI/MBRDNA — confirmed by matching a real detail-page posting's
   UUID job ID exactly against `jobs.lever.co/woven-by-toyota/<id>`.
+- **Large Workday tenants can 429 under a first-time full-catalog detail fetch.** GM and
+  Caterpillar's shared Workday CXS hosts have both been observed returning 429 (and GM, separately,
+  403) mid-run when `collector.py` fetches details for every job concurrently (bounded only by
+  `max_concurrent_details`, default 8) — most likely on the very first ingest of a large tenant
+  (~800-1,000 jobs), where every job is new and needs a detail fetch at once. `asyncio.gather`
+  without `return_exceptions=True` means one such failure fails the whole company for that run
+  (`source_health` shows `FAILED`, zero jobs persisted) even though the summaries fetch and most
+  detail fetches succeeded — this is a collection-pipeline concurrency behavior, not specific to
+  either adapter config, and retrying the same run (letting Workday's rate-limit window pass) has
+  been the practical workaround so far rather than a code fix. **NVIDIA's tenant is worse: even the
+  normal recency-skip path (no `--refresh-details`) 429s, reproducibly, across multiple attempts.**
+  Confirmed live: of NVIDIA's 2,000 open postings, 1,206 fall inside the default 30-day recency
+  window and still need a detail fetch each — the recency-skip only trims total volume by ~40%,
+  not nearly enough to stay under this tenant's throttle at 8 concurrent requests. Neither
+  `--keyword` nor any other CLI flag helps here: `passes_prefilter` (which `--keyword` feeds into)
+  runs in `Collector.search()` only *after* `_collect_source()` has already fetched every summary
+  and detail for every company — it filters the in-memory result, never reduces the network calls
+  themselves. Onboarding NVIDIA is otherwise complete and verified (adapter/config confirmed
+  correct by exercising it directly, sample job/date/location/sponsorship all match), but a full
+  `job-hunter search --companies nvidia` run should be expected to need a few retries before it
+  succeeds end-to-end until this is addressed (lowering `max_concurrent_details` globally, or
+  making `_detail_for` resilient to a single 429 instead of failing the whole company, are the
+  two real fixes — neither attempted here, as both are collector-wide changes outside a single
+  source's onboarding).
 
 ### 5.8 `stealth_html` tradeoffs
 
@@ -379,7 +409,36 @@ requisition's full description, qualifications, and `postingDate` in one shot, s
 per-job detail fetch is needed. A future ADP RM customer should generalize to this adapter via
 `career_site_domain` config alone.
 
-### 5.11 Adding a new source
+### 5.11 The `eightfold` adapter and finding it via network-capture
+
+Deere's careers site (`careers.deere.com/careers?query=...`) is Eightfold-branded (`_EF_GROUP_ID`/
+`_EF_PRODUCT` globals, `static.vscdn.net` CDN) and, unlike every other source in this project so
+far, renders **zero** job data server-side on its listing page — not JS-only-but-scrapable, not a
+hydration blob, nothing in the raw HTML at all. Guessing a plausible-looking Eightfold path from
+general platform familiarity (`/api/apply/v2/jobs`) returned a same-shaped-but-wrong 403
+`{"message": "Not authorized for PCSX"}` — a real response, just the wrong endpoint; the "PCSX" in
+that error is what pointed at the actual path. The real one was found by rendering the listing page
+once with Playwright and reading its own XHR/fetch calls: a plain, unauthenticated `GET
+/api/pcsx/search?domain={group_id}&location=...` for the list and `GET
+/api/pcsx/position_details?position_id={id}&domain={group_id}` for the detail — both confirmed to
+need no cookies or session at all (tested cold, no prior page load). Pagination via `start` is
+real (confirmed: different jobs at start=0/10/20) but the page size is fixed server-side at 10 —
+every override tried (`num`, `limit`, `size`, `pageSize`, `per_page`) was silently ignored, so
+`EightfoldAdapter.fetch_summaries()` (`adapters/eightfold.py`) loops in strides of whatever the
+server actually returned until `data.count` (confirmed stable regardless of those ignored params)
+is reached, rather than assuming any particular stride. `postedTs` (epoch seconds) was cross-checked
+against the sample job's detail-page JSON-LD `datePosted` and matched exactly; a separate
+`creationTs` field on the same record is *not* the same value (confirmed different, ~11 days
+earlier) and is not used. `location=united states`/`filter_include_remote=1` are passed as
+server-side params (same ones the sample URLs already used) purely to shrink the fetched catalog
+(226 global → 99 US) — no `query` keyword param is ever passed, since keyword scoping is this
+project's own `passes_prefilter`/`--keyword`, never an adapter's job (see this file's top-level
+division-of-responsibility note). A future Eightfold-powered customer should generalize to this
+adapter via config alone, substituting `domain`/`list_url`/`detail_url` — the "guess the path,
+watch it fail informatively, then network-capture the real one" sequence here is the reusable
+lesson, not any specific path string.
+
+### 5.12 Adding a new source
 
 A one-time reverse-engineering step, not something that happens on every search: fetch the plain
 page (`scripts/endpoint_probe.py` or curl) to check for a real JSON API or clean static HTML
@@ -743,7 +802,7 @@ uv run job-hunter resolve-search                                              # 
   Server running locally (or reachable on the LAN) before `job-reviewer` can score anything.
 - The company catalog's history: started from 22 originally requested companies, gained Woven by
   Toyota (onboarded later), and dropped Audi and Mercedes-Benz entirely (neither ever had a working
-  endpoint) — 21 total (§5.2).
+  endpoint) — 21 total, since grown to 24 with Caterpillar, NVIDIA, and Deere (§5.2).
 
 ---
 

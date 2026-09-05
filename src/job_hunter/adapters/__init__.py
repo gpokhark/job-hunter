@@ -6,6 +6,7 @@ from .adp_recruiting import AdpRecruitingAdapter
 from .apple import AppleAdapter
 from .base import JobAdapter
 from .discovered_api import DiscoveredApiAdapter
+from .eightfold import EightfoldAdapter
 from .html_multi_index import HtmlMultiIndexAdapter
 from .html_paginated import HtmlPaginatedAdapter
 from .lever import LeverAdapter
@@ -29,6 +30,7 @@ ADAPTERS: dict[str, AdapterType] = {
     "stealth_html": StealthHtmlAdapter,
     "adp_recruiting": AdpRecruitingAdapter,
     "apple": AppleAdapter,
+    "eightfold": EightfoldAdapter,
     "unsupported": UnsupportedAdapter,
 }
 

@@ -4,8 +4,10 @@
 report — grouped and tagged exactly as the job-hunter skill's step 9 describes: Strong
 matches (score >= 75) and For review (score 50-74) as two separate groups, [90+]/[80+]
 tags within Strong, and a [New] tag on anything posted within the last --new-days
-(default 10) days. Candidates scoring below 50, and any candidate never reviewed (an
-LM Studio error skipped it, or --limit capped the review), are counted but never listed.
+(default 10) days. A third group lists every candidate scored below 50 — every job the
+local model actually evaluated appears somewhere on the page. Only a candidate never
+reviewed at all (an LM Studio error skipped it, or --limit capped the review) is counted
+but omitted, since there's no verdict to show.
 
 This is pure presentation: it never re-derives, adjusts, or overrides a score — every
 number here is exactly what's already in data/assessments.json.
@@ -171,7 +173,8 @@ def build(
 
     strong = sorted((r for r in rows if r["score"] >= 75), key=lambda r: -r["score"])
     review = sorted((r for r in rows if 50 <= r["score"] < 75), key=lambda r: -r["score"])
-    below_50 = sum(1 for r in rows if r["score"] < 50)
+    below_50_rows = sorted((r for r in rows if r["score"] < 50), key=lambda r: -r["score"])
+    below_50 = len(below_50_rows)
     never_reviewed = len(candidates) - len(rows)
 
     summary = search.get("summary", {})
@@ -187,7 +190,7 @@ def build(
         f"{len(rows)} U.S.-eligible postings {scope}, scored one at a time by a local model "
         "against the resume on file. No cap, nothing discarded before review."
     )
-    skipped_note = f"{never_reviewed} candidate(s) were never reviewed and are also omitted. " if never_reviewed else ""
+    skipped_note = f"{never_reviewed} candidate(s) were never reviewed and are omitted here. " if never_reviewed else ""
 
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     out = (
@@ -208,6 +211,12 @@ def build(
         .replace(
             "__REVIEW_ROWS__",
             _rows_html(review, show_tier_tag=False, empty_message="No candidates scored 50-74 for this search."),
+        )
+        .replace(
+            "__BELOW_50_ROWS__",
+            _rows_html(
+                below_50_rows, show_tier_tag=False, empty_message="No candidates scored below 50 for this search."
+            ),
         )
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)

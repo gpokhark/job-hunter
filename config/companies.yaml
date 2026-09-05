@@ -327,3 +327,82 @@ companies:
       page_size: 25
       description_selector: .jobdescription
       posted_at_selector: td.colDate span.jobDate
+  - key: caterpillar
+    company: Caterpillar
+    adapter: workday
+    platform: workday
+    config:
+      # careers.caterpillar.com is a marketing job board; a real apply link off a sample
+      # posting (Staffed Technologies Validation Engineer, R0000389840) revealed the
+      # actual candidate-facing system is Workday, at cat.wd5.myworkdayjobs.com — a fully
+      # public, unauthenticated CXS API (~982 jobs, no bot protection). Same shape and
+      # same fix as GM/Toyota/Valeo's entries: public_base_url is Workday's native
+      # candidate-facing host, not the CXS API host used by list_url (confirmed via curl
+      # that opening the CXS API url directly returns raw JSON, not a browsable page).
+      # startDate matched the sample job's relative "Posted 8 Days Ago" text exactly
+      # (2026-08-27, 8 days before the 2026-09-04 check) — a stable, absolute date field.
+      workday_native: true
+      list_url: https://cat.wd5.myworkdayjobs.com/wday/cxs/cat/CaterpillarCareers/jobs
+      public_base_url: https://cat.wd5.myworkdayjobs.com/en-US/CaterpillarCareers/
+  - key: nvidia
+    company: NVIDIA
+    adapter: workday
+    platform: workday
+    config:
+      # Sample job (Senior Systems Software Engineer - Autonomous Vehicles, JR2015666) was
+      # given directly as a nvidia.wd5.myworkdayjobs.com link — same public, unauthenticated
+      # Workday CXS API shape as GM/Toyota/Valeo/Caterpillar. startDate (2026-08-29) matched
+      # the listing's relative "Posted 6 Days Ago" exactly against a 2026-09-04 check.
+      # KNOWN COVERAGE GAP: this tenant's search API hard-caps results at 2000 — confirmed by
+      # querying offset=2000, which silently wraps back to the first job instead of erroring
+      # or returning empty, while the listing's own facet counts (jobFamilyGroup) sum to
+      # ~2,697 real open jobs. The generic workday_native loop already stops correctly at
+      # offset==total (captured as 2000 from page one), so it never actually hits the wrap
+      # bug, but roughly 700 of NVIDIA's real postings (~26%) are structurally unreachable
+      # through this API — not a bug in this adapter, a real limit of NVIDIA's Workday
+      # instance. The listing appears sorted newest-first (spot-checked across offsets 100
+      # to 1990: ages increase monotonically), so the missing tail is likely the oldest
+      # postings — partially, not fully, mitigated by the pipeline's own recency cutoff.
+      # KNOWN RATE-LIMIT ISSUE (worse than GM/Caterpillar's, see docs/SPEC.md §5.7): a first
+      # `job-hunter search --companies nvidia` run reproducibly hit 429 on the detail fetch,
+      # even *without* --refresh-details. Confirmed live: 1,206 of the 2,000 listed jobs fall
+      # inside the default 30-day recency window and each still needs a detail fetch, which
+      # is enough concurrent load (max_concurrent_details: 8) to trip this tenant's throttle
+      # on every attempt tried. Not fixed here — would need a collector.py change (lower
+      # concurrency, or make _detail_for resilient to one failure) outside this source's
+      # onboarding scope. Expect to retry a first full ingest of this source.
+      workday_native: true
+      list_url: https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs
+      public_base_url: https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite/
+  - key: deere
+    company: Deere & Company
+    adapter: eightfold
+    platform: eightfold
+    config:
+      # careers.deere.com's listing page (/careers?query=...) renders zero job data
+      # server-side — pure JS shell. The real backend, found by rendering it once with
+      # Playwright and reading its actual XHR calls (not guessed — an initial guess at
+      # /api/apply/v2/jobs, a path seen on other Eightfold-powered sites, returned a
+      # same-shaped 403 "Not authorized for PCSX"), is Eightfold's public "pcsx" API:
+      # /api/pcsx/search (list) and /api/pcsx/position_details (detail), both plain
+      # httpx, no cookies/session/auth needed. location=united states +
+      # filter_include_remote=1 (server-side, same params the user's own sample URLs
+      # used) cuts the catalog from 226 (global) to 99 (US); no `query` keyword is
+      # passed, so this fetches Deere's full US catalog, not just "autonomous" postings
+      # — keyword scoping is this project's job, never the adapter's (see CLAUDE.md).
+      # postedTs (epoch seconds, listing-level) matched the sample job's detail-page
+      # JSON-LD `datePosted` exactly (2026-08-07T16:43:48) — a stable, correct field;
+      # a separate `creationTs` field also exists but is ~11 days earlier and NOT the
+      # same value — confirmed not to use it. Default sort is `distance`, not date
+      # (non-monotonic across a page), so no early-pagination-stop is attempted.
+      list_url: https://careers.deere.com/api/pcsx/search
+      detail_url: https://careers.deere.com/api/pcsx/position_details
+      public_base_url: https://careers.deere.com
+      params:
+        domain: johndeere.com
+        location: united states
+        filter_include_remote: 1
+        filter_include_relocation: 0
+      detail_params:
+        domain: johndeere.com
+        hl: en
