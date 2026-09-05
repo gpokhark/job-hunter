@@ -49,9 +49,11 @@ from `data/assessments.json` as it stands right now.
    uv run python scripts/render_radar.py [--keyword "ADAS,Robotics,Product Technical Leader"]
    ```
    It prints `Wrote <path> | strong=N review=N below_50=N never_reviewed=N`; sanity-check those
-   counts against what you just compiled. A candidate `job-reviewer` hasn't gotten to yet is
-   counted in `never_reviewed` and never listed in either group — say it wasn't reviewed, don't
-   imply a score for it.
+   counts against what you just compiled. The HTML report itself lists every candidate the model
+   actually scored across three sections — Strong, For review, and a third "Below 50" section —
+   even though the chat-facing summary in step 4 only lists 50-and-above and just states the
+   below-50 count. A candidate `job-reviewer` hasn't gotten to yet is counted in `never_reviewed`
+   and never listed anywhere — say it wasn't reviewed, don't imply a score for it.
 6. **Safe to re-run at any point, including mid-review** — it reflects exactly whatever's been
    reviewed so far each time it runs, nothing cached or stale. Re-running against the same archive
    always writes to the same output path (`data/radar/{same-stem}.html`), so "update the radar" is

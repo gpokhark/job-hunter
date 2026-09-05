@@ -89,7 +89,7 @@ before most commands will find a profile (falls back to the example file otherwi
 
 - **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
-  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`
@@ -120,7 +120,7 @@ before most commands will find a profile (falls back to the example file otherwi
   established technique is to render it *once* with Scrapling (`stealth_html`'s
   `AsyncStealthySession`) to read the real DOM/links it generates, then hardcode whatever was
   discovered as static config — a browser is a one-time discovery tool here, essentially never a
-  runtime dependency (see `docs/SPEC.md` §5.11, "Adding a new source").
+  runtime dependency (see `docs/SPEC.md` §5.12, "Adding a new source").
 
 - **`collector.py`** — orchestrates one search run: fetches all companies concurrently (bounded by
   `max_concurrent_sources` semaphore), fetches details only when needed (no prior record, prior has
@@ -270,11 +270,13 @@ before most commands will find a profile (falls back to the example file otherwi
   already-assessed jobs (by design), while any job actually sent to the model is always scored
   against whatever resume is on disk at that moment. `scripts/render_radar.py` is the read-time
   join between the two: given one archived search file plus the (global) assessments, it renders
-  the grouped/tagged HTML report described in `job-radar/SKILL.md` — Strong (≥75) and For-review
-  (50–74) sections, `[90+]`/`[80+]`/`[New]` tags — reusing `scripts/templates/radar_template.html`,
-  to `data/radar/{slug}_{date}.html`. It is pure presentation: it never re-derives, adjusts, or
-  overrides a score, and a candidate the review step skipped (an LM Studio error, or an explicit
-  `--limit`) is counted but never listed in either group.
+  the grouped/tagged HTML report described in `job-radar/SKILL.md` — Strong (≥75), For-review
+  (50–74), and Below-50 sections, `[90+]`/`[80+]`/`[New]` tags — reusing
+  `scripts/templates/radar_template.html`, to `data/radar/{slug}_{date}.html`. It is pure
+  presentation: it never re-derives, adjusts, or overrides a score. Every candidate the model
+  actually scored appears in one of the three sections, however low the score — only a candidate
+  the review step skipped entirely (an LM Studio error, or an explicit `--limit`) has no verdict
+  to show, so it's counted in `never_reviewed` but never listed.
 
 ## Working in this repo
 

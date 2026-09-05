@@ -8,6 +8,7 @@ import respx
 
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
+from job_hunter.adapters.eightfold import EightfoldAdapter
 from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
 from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
 from job_hunter.adapters.json_api import _date
@@ -733,3 +734,80 @@ async def test_page_number_parameter_pagination():
             company, client, CollectionConfig(max_retries=0)
         ).fetch_summaries()
     assert [job.job_id for job in jobs] == ["P0", "P1", "P2"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_eightfold_fixed_page_size_pagination_and_detail_fetch():
+    """Eightfold's pcsx API ignores every page-size override tried (num/limit/size/
+    pageSize/per_page) and always returns a server-fixed page size, so fetch_summaries
+    must paginate by whatever length it actually got back, not a configured page_size,
+    stopping once `start` reaches `data.count`."""
+    list_url = "https://careers.example/api/pcsx/search"
+    detail_url = "https://careers.example/api/pcsx/position_details"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        start = request.url.params.get("start")
+        if start == "2":
+            return httpx.Response(
+                200,
+                json={"data": {"count": 3, "positions": [
+                    {
+                        "id": "3",
+                        "name": "Staff Engineer",
+                        "positionUrl": "/careers/job/3",
+                        "standardizedLocations": ["Austin, TX, US"],
+                        "department": "Engineering",
+                        "postedTs": 1786121028,
+                    }
+                ]}},
+            )
+        return httpx.Response(
+            200,
+            json={"data": {"count": 3, "positions": [
+                {
+                    "id": "1",
+                    "name": "ADAS Engineer",
+                    "positionUrl": "/careers/job/1",
+                    "standardizedLocations": ["Moline, IL, US", "Waterloo, IA, US"],
+                    "department": "Engineering",
+                    "postedTs": 1786121028,
+                },
+                {
+                    "id": "2",
+                    "name": "Robotics Engineer",
+                    "positionUrl": "/careers/job/2",
+                    "standardizedLocations": ["Ames, IA, US"],
+                    "department": "Engineering",
+                    "postedTs": 1786121028,
+                },
+            ]}},
+        )
+
+    respx.get(url__regex=r".*pcsx/search.*").mock(side_effect=_respond)
+    respx.get(url__regex=r".*pcsx/position_details.*").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"jobDescription": "Build autonomous systems."}}
+        )
+    )
+    company = CompanyConfig(
+        key="deere",
+        company="Deere & Company",
+        adapter="eightfold",
+        config={
+            "list_url": list_url,
+            "detail_url": detail_url,
+            "public_base_url": "https://careers.example",
+            "params": {"domain": "example.com", "location": "united states"},
+            "detail_params": {"domain": "example.com"},
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = EightfoldAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert [job.job_id for job in jobs] == ["1", "2", "3"]
+    assert jobs[0].url == "https://careers.example/careers/job/1"
+    assert jobs[0].location_raw == "Moline, IL, US / Waterloo, IA, US"
+    assert jobs[0].posted_at.year == 2026
+    assert detail.description == "Build autonomous systems."

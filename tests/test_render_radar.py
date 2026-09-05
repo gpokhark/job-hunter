@@ -92,7 +92,7 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
     assert stats == {"strong": 2, "review": 1, "below_50": 1, "never_reviewed": 0}
     html = output_path.read_text()
     assert "Exceptional Role" in html
-    assert "Weak Role" not in html  # below 50 must never be listed
+    assert "Weak Role" in html  # below-50 candidates are listed in their own section
     assert 'tag-exceptional">90+' in html
     assert 'tag-strong">80+' in html
 

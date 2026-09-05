@@ -186,7 +186,27 @@ class Collector:
                         return None
                     # Ambiguous remote/detail location must also be inspected before exclusion.
                     async with detail_semaphore:
-                        return await adapter.fetch_detail(summary)
+                        try:
+                            return await adapter.fetch_detail(summary)
+                        except Exception:
+                            # A single job's detail fetch failing (a transient rate limit,
+                            # a one-off timeout) must never cost the whole source its run —
+                            # every other summary already fetched successfully would
+                            # otherwise be silently discarded too, since this used to
+                            # propagate out of asyncio.gather() and abort collection
+                            # entirely (confirmed: one 429 during Caterpillar's first-ever
+                            # full collection dropped all 982 already-fetched summaries).
+                            # Falls back to this summary's existing stored description (if
+                            # any) or no description this run — exactly like should_detail
+                            # being False — and retries automatically next run, since a
+                            # still-missing description keeps should_detail True above.
+                            LOGGER.warning(
+                                "Detail fetch failed for %s/%s — keeping summary-level data, will retry next run",
+                                company.key,
+                                summary.job_id,
+                                exc_info=True,
+                            )
+                            return None
 
                 details = await asyncio.gather(
                     *(_detail_for(summary, prior) for summary, prior in zip(summaries, priors, strict=True))
