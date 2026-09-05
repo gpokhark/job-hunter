@@ -5,10 +5,8 @@ import asyncio
 import importlib.util
 import json
 import os
-import re
 import socket
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +17,7 @@ from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
 from .models import Assessment
+from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
 
@@ -88,30 +87,24 @@ def parser() -> argparse.ArgumentParser:
             "successfully re-fetched since visa_sponsorship was added"
         ),
     )
+    resolve = sub.add_parser(
+        "resolve-search",
+        help=(
+            "resolve which data/searches/*.json archive a downstream stage (review, radar) "
+            "should use, without running a new search — prints the path or exits non-zero "
+            "with what's actually available. See docs/skill-split-plan.md section 4."
+        ),
+    )
+    resolve_group = resolve.add_mutually_exclusive_group()
+    resolve_group.add_argument("--search", type=Path, help="use this exact archive path")
+    resolve_group.add_argument(
+        "--keyword", help="resolve to the newest archive for this keyword's slug"
+    )
     return root
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
-
-
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _slugify(text: str) -> str:
-    return _SLUG_RE.sub("-", text.lower()).strip("-") or "untitled"
-
-
-def archive_path(keyword: str | None, *, now: datetime | None = None) -> Path:
-    """The deterministic data/searches/{slug}_{date}.json path for --archive, computed
-    from the same --keyword string passed to `search` (or "default" without one) and
-    today's UTC date — same inputs always produce the same path, so a caller (the
-    job-hunter skill, or any other agent runtime) can predict it without parsing stdout,
-    and a same-day rerun with the same keyword deliberately overwrites rather than
-    accumulating duplicates."""
-    slug = _slugify(keyword) if keyword else "default"
-    date_str = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
-    return Path("data/searches") / f"{slug}_{date_str}.json"
 
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
@@ -205,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
             with Storage(settings.database_path) as storage:
                 changed = storage.reevaluate_sponsorship()
             print(f"Re-evaluated visa sponsorship for every stored job; {changed} changed.")
+            return 0
+        if args.command == "resolve-search":
+            resolved = resolve_search_path(search=args.search, keyword=args.keyword)
+            print(resolved)
             return 0
         if args.command == "record-assessment":
             payload = json.loads(args.payload)

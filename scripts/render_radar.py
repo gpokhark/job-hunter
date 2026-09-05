@@ -11,7 +11,8 @@ This is pure presentation: it never re-derives, adjusts, or overrides a score â€
 number here is exactly what's already in data/assessments.json.
 
 Usage:
-    uv run python scripts/render_radar.py --search data/searches/default_2026-08-31.json
+    uv run python scripts/render_radar.py                              # newest archive, any keyword
+    uv run python scripts/render_radar.py --keyword "product manager"  # newest archive for that keyword
     uv run python scripts/render_radar.py --search data/searches/product-manager_2026-08-31.json --keyword "product manager"
 """
 
@@ -23,6 +24,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from job_hunter.search_archive import resolve_search_path
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
 
@@ -234,8 +237,12 @@ def _default_title(keyword: str | None) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--search", type=Path, required=True,
-        help="path to a job-hunter search --json/--archive output, e.g. data/searches/product-manager_2026-08-31.json",
+        "--search", type=Path, default=None,
+        help=(
+            "path to a job-hunter search --json/--archive output; if omitted, resolved via "
+            "--keyword (newest archive for that keyword's slug) or, with neither given, the "
+            "newest archive overall â€” see docs/skill-split-plan.md section 4"
+        ),
     )
     parser.add_argument(
         "--assessments", type=Path, default=Path("data/assessments.json"), help="assessments JSON to read"
@@ -251,6 +258,7 @@ def main() -> int:
     )
     parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
     args = parser.parse_args()
+    args.search = resolve_search_path(search=args.search, keyword=args.keyword)
 
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
     title = args.title or _default_title(args.keyword)
