@@ -406,3 +406,61 @@ companies:
       detail_params:
         domain: johndeere.com
         hl: en
+  - key: anthropic
+    company: Anthropic
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # anthropic.com/careers/jobs links directly to job-boards.greenhouse.io/anthropic/
+      # jobs/<id> (confirmed via a real job link) — Greenhouse's public Job Board API
+      # mirrors that board exactly, zero-auth, at boards-api.greenhouse.io. `?content=true`
+      # inlines every job's full description in the one list response (592 jobs, single
+      # request) so no per-job detail fetch is ever needed. `absolute_url` is the same
+      # real candidate-facing page a human lands on, used directly as `url` — no
+      # public_url_template needed. Note (adapters/greenhouse.py): the `content` field is
+      # HTML-entity-double-encoded by Greenhouse itself, unescaped there once, centrally,
+      # for every Greenhouse company, not per-company config.
+      list_url: https://boards-api.greenhouse.io/v1/boards/anthropic/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: openai
+    company: OpenAI
+    adapter: ashby
+    platform: ashby
+    config:
+      # openai.com/careers/search is Cloudflare-challenge-protected on plain requests
+      # (cf-mitigated: challenge) — but the real backing system is Ashby, reachable
+      # directly and unprotected at jobs.ashbyhq.com/openai (confirmed 200, a real board —
+      # not the "Page not found" an invalid Ashby org slug returns, which is exactly what
+      # a first guess at jobs.ashbyhq.com/anthropic turned out to be: Anthropic is not on
+      # Ashby at all, it's Greenhouse, see the anthropic entry above). Ashby's own
+      # documented public posting API (api.ashbyhq.com/posting-api/job-board/<org>)
+      # mirrors the board exactly: zero-auth, the full board (779 jobs) in one request,
+      # each with full descriptionHtml inline (no per-job detail fetch needed) and clean
+      # (non-double-encoded) text throughout. jobUrl is the same real candidate-facing
+      # page a human lands on. address.postalAddress gives clean structured
+      # country/state/city for the high-confidence branch of evaluate_location, better
+      # than most adapters here get; workplaceType ("Hybrid"/"Remote"/"OnSite") maps
+      # straight onto work_arrangement via json_api.py's generic opt-in field.
+      list_url: https://api.ashbyhq.com/posting-api/job-board/openai
+      items_path: jobs
+      listing_description_path: descriptionHtml
+      fields:
+        id: id
+        title: title
+        url: jobUrl
+        location: location
+        department: department
+        employment_type: employmentType
+        posted_at: publishedAt
+        work_arrangement: workplaceType
+        country: address.postalAddress.addressCountry
+        state: address.postalAddress.addressRegion
+        city: address.postalAddress.addressLocality

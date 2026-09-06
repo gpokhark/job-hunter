@@ -172,6 +172,8 @@ is judged still valid.
 | `workday` | `WorkdayAdapter` | Workday CXS JSON API |
 | `successfactors_rmk` | `SuccessFactorsRmkAdapter` | SAP SuccessFactors career-site JSON |
 | `lever` | `LeverAdapter` | Lever public JSON API |
+| `ashby` | `AshbyAdapter` | Ashby public posting API (`api.ashbyhq.com/posting-api/job-board/<org>`) — bare alias like `lever`, pure config, no bespoke code |
+| `greenhouse` | `GreenhouseAdapter` | Greenhouse public Job Board API (`boards-api.greenhouse.io/v1/boards/<token>/jobs`) — subclasses `json_api.ConfigurableJsonAdapter` only to unescape its HTML-entity-double-encoded `content` field |
 | `oracle_hcm` | `OracleHcmAdapter` | Oracle HCM REST, subclasses `json_api.ConfigurableJsonAdapter` with pagination (`config: {paginate: true, total_path: ...}`) |
 | `phenom` | `PhenomAdapter` | Phenom People career-site JSON |
 | `html_paginated` | `HtmlPaginatedAdapter` | generic CSS-selector-driven HTML pagination, always also checks schema.org JobPosting JSON-LD in `fetch_detail` |
@@ -191,7 +193,7 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (24, `config/companies.yaml`)
+### 5.2 Currently configured companies (26, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
@@ -226,9 +228,11 @@ that's a cost paid once per company, not per search.
 | caterpillar | Caterpillar | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API (~982 jobs), same fix as GM (`careers.caterpillar.com` is only the marketing front end); a first-time full-catalog `--refresh-details` run has been observed to hit 429s from Workday's shared host under this project's default detail-fetch concurrency — same known caveat GM's entry already carries, see §5.7 |
 | nvidia | NVIDIA | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API, ~2,000 jobs visible (real catalog ~2,697 per facet counts; this tenant's search hard-caps at 2,000, see §5.7); rate-limits reproducibly even on a normal (non-`--refresh-details`) run, worse than GM/Caterpillar — see §5.7 |
 | deere | Deere & Company | eightfold | Yes (`postedTs`) | httpx only — Eightfold's public "pcsx" API (`/api/pcsx/search` + `/api/pcsx/position_details`), found by rendering the JS-only listing once and reading its real XHR calls, not guessed (§5.11); ~99 US jobs, no rate-limit issues observed at this catalog size |
+| anthropic | Anthropic | greenhouse | Yes (`first_published`) | httpx only — Greenhouse public Job Board API, `?content=true` inlines every description in one request (592 jobs); first guess was Ashby (wrong — see §2/CLAUDE.md) |
+| openai | OpenAI | ashby | Yes (`publishedAt`) | httpx only — Ashby public posting API, one request returns all 779 jobs with full `descriptionHtml` inline; front end (`openai.com/careers`) is Cloudflare-challenge-protected, backend is not |
 
 Adapter mix: workday ×6, successfactors_rmk ×4, lever ×3, stealth_html ×2, oracle_hcm ×2,
-1 each of unsupported/phenom/html_paginated/html_multi_index/apple/adp_recruiting/eightfold.
+1 each of unsupported/phenom/html_paginated/html_multi_index/apple/adp_recruiting/eightfold/ashby/greenhouse.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.

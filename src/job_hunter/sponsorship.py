@@ -56,7 +56,8 @@ _AVAILABLE = [
         r"visa sponsorship available",
         r"sponsorship may be available",
         r"sponsorship\s*:\s*yes\b",
-        r"will sponsor (?:visas|applicants|candidates|employees)",
+        r"will sponsor (?:a )?(?:visas?|applicants|candidates|employees)",
+        r"do sponsor (?:a )?(?:visas?|applicants|candidates|employees)",
         r"eligible for (?:visa )?sponsorship",
         r"(?:offers?|provides?) (?:visa )?sponsorship",
     ]

@@ -4,9 +4,11 @@ from typing import TypeAlias
 
 from .adp_recruiting import AdpRecruitingAdapter
 from .apple import AppleAdapter
+from .ashby import AshbyAdapter
 from .base import JobAdapter
 from .discovered_api import DiscoveredApiAdapter
 from .eightfold import EightfoldAdapter
+from .greenhouse import GreenhouseAdapter
 from .html_multi_index import HtmlMultiIndexAdapter
 from .html_paginated import HtmlPaginatedAdapter
 from .lever import LeverAdapter
@@ -22,6 +24,8 @@ ADAPTERS: dict[str, AdapterType] = {
     "workday": WorkdayAdapter,
     "successfactors_rmk": SuccessFactorsRmkAdapter,
     "lever": LeverAdapter,
+    "ashby": AshbyAdapter,
+    "greenhouse": GreenhouseAdapter,
     "oracle_hcm": OracleHcmAdapter,
     "phenom": PhenomAdapter,
     "html_paginated": HtmlPaginatedAdapter,

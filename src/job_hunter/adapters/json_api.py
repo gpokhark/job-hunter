@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from urllib.parse import urljoin
 
-from ..models import JobDetail, JobSummary
+from ..location import detect_arrangement
+from ..models import JobDetail, JobSummary, WorkArrangement
 from ..normalizer import fallback_job_id, parse_flexible_date, stringify
 from .base import JobAdapter, SchemaError, nested
 
@@ -49,6 +50,13 @@ class ConfigurableJsonAdapter(JobAdapter):
             # it builds the *displayed* url separately; fetch_detail below still hits the
             # real API endpoint, reconstructed the same way, independent of this override.
             display_url = public_url_template.format(id=native_id) if public_url_template else api_url
+            # work_arrangement is opt-in (unlike the other fields above, there's no sane
+            # cross-platform default key to fall back to) — only computed when a company
+            # explicitly configures which field carries it, e.g. Ashby's flat
+            # "workplaceType" ("Hybrid"/"Remote"/"OnSite"). Reuses the same
+            # detect_arrangement() text-precedence every other adapter uses, so a job is
+            # never tagged differently depending on which adapter observed it.
+            work_arrangement_field = fields.get("work_arrangement")
             jobs.append(
                 JobSummary(
                     source_key=self.source_key,
@@ -67,6 +75,11 @@ class ConfigurableJsonAdapter(JobAdapter):
                         nested(item, fields.get("employment_type", "employmentType"))
                     ),
                     posted_at=parse_flexible_date(nested(item, fields.get("posted_at", "postedAt"))),
+                    work_arrangement=(
+                        detect_arrangement(stringify(nested(item, work_arrangement_field)))
+                        if work_arrangement_field
+                        else WorkArrangement.UNKNOWN
+                    ),
                     raw=item,
                 )
             )

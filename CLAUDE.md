@@ -26,7 +26,16 @@ and it dropped `stealth_html` entirely too. Apple was too, once inspecting its p
 JSON snapshot (`apple.py`: `window.__staticRouterHydrationData = JSON.parse("...")`, a
 double-encoded string needing one extra unescape before it's parseable JSON) including exact
 posting dates and full descriptions — no browser needed despite the prior assumption that its
-listing was only reachable as an escaped JSON blob. For
+listing was only reachable as an escaped JSON blob. OpenAI is the same lesson at a platform level:
+`openai.com/careers/search` returns a genuine Cloudflare-managed challenge (`cf-mitigated:
+challenge`) on a plain request — but that's only the marketing front end. The real backing ATS,
+found the same way (a real job link, not a guess), is Ashby, reachable directly and unprotected at
+`jobs.ashbyhq.com/openai` — Ashby's own documented public posting API
+(`api.ashbyhq.com/posting-api/job-board/openai`) mirrors it exactly, zero-auth, no browser. Its
+first guess wasn't free either: `jobs.ashbyhq.com/anthropic` looks like the obvious matching URL
+for Anthropic but is a real Ashby "Page not found" — Anthropic isn't on Ashby at all, it's
+Greenhouse (`anthropic.com/careers/jobs` links directly to `job-boards.greenhouse.io/anthropic/
+jobs/<id>`), confirmed only once a real job link was actually followed. For
 a source where the block genuinely is the only way in, using this adapter is an explicit,
 disclosed choice to defeat that site's own anti-automation controls — real ToS exposure, not
 solved by "it's just reading public data" — so don't reach for it by default; every other adapter
@@ -87,7 +96,8 @@ before most commands will find a profile (falls back to the example file otherwi
   validator, not a convention. A company with no verified anonymous endpoint and no viable
   `stealth_html` path stays `unsupported` rather than faking data.
 
-- **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `oracle_hcm.py`,
+- **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `ashby.py`,
+  `greenhouse.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
   `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
@@ -100,7 +110,17 @@ before most commands will find a profile (falls back to the example file otherwi
   is factored into `_items_to_jobs()` specifically so a subclass can add its own pagination loop
   around it (`oracle_hcm.py` does this: `config: {paginate: true, total_path: ...}`, needed
   because Oracle's finder syntax embeds `offset`/`limit` inside one query value and silently caps
-  page size well below some sites' full job count). HTML adapters use `selectolax` with
+  page size well below some sites' full job count). `ashby.py` (OpenAI) is a bare one-line alias
+  like `lever.py` — pure config, no bespoke code — since Ashby's public posting API returns every
+  field clean and flat in one request (full `descriptionHtml` inline, no per-job detail fetch;
+  structured `address.postalAddress.addressCountry/addressRegion` for the high-confidence branch
+  of `evaluate_location`; `workplaceType` maps straight onto `work_arrangement` via
+  `json_api.py`'s generic opt-in `fields.work_arrangement`, added for this — any
+  `ConfigurableJsonAdapter` company can now set it the same way, not just Ashby).
+  `greenhouse.py` (Anthropic) needed one thing Ashby didn't: its own `content` field comes back
+  HTML-entity-double-encoded (confirmed live: literally `&lt;div class=&quot;...&quot;&gt;`, not
+  `<div class="...">`) — `GreenhouseAdapter.fetch_detail` unescapes it once, centrally, the same
+  double-encoding shape `apple.py` handles for an unrelated reason. HTML adapters use `selectolax` with
   CSS-selector config (`card_selector`, `link_selector`, etc.) instead of a schema path;
   `posted_at_selector` (parsed via `normalizer.parse_display_date`) covers a per-card visible
   date. `html_paginated.py`'s `fetch_detail` additionally always checks for a schema.org
