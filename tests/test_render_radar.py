@@ -21,6 +21,7 @@ def _candidate(
     location_raw="Detroit, MI",
     visa_sponsorship="unmentioned",
     sponsorship_evidence=None,
+    work_arrangement="unknown",
     company="Acme",
     title="Engineer",
     url="https://example.com/1",
@@ -32,6 +33,7 @@ def _candidate(
         "location_raw": location_raw,
         "visa_sponsorship": visa_sponsorship,
         "sponsorship_evidence": sponsorship_evidence,
+        "work_arrangement": work_arrangement,
         "company": company,
         "title": title,
         "url": url,
@@ -276,6 +278,63 @@ def test_sponsorship_tags_and_never_excludes_a_job(tmp_path):
     assert 'tag-sponsor-yes">Sponsorship OK' in html[max(0, yes_idx - 400) : yes_idx]
     assert 'tag-sponsor' not in html[max(0, unmentioned_idx - 400) : unmentioned_idx]
     assert 'tag-sponsor' not in html[max(0, predates_idx - 400) : predates_idx]
+
+
+def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):
+    """Same tag-not-filter requirement as sponsorship: work arrangement never changes
+    inclusion, just which tag (if any) a row carries. Only remote/hybrid get a tag —
+    onsite (the unremarkable default) and unknown (uninformative) carry none, mirroring
+    sponsorship's "unmentioned carries no tag" reasoning."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", work_arrangement="remote", title="Remote Role"),
+                    _candidate("x", "2", work_arrangement="hybrid", title="Hybrid Role"),
+                    _candidate("x", "3", work_arrangement="onsite", title="Onsite Role"),
+                    _candidate("x", "4", work_arrangement="unknown", title="Unknown Role"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 80, title="Remote Role"),
+                _assessment("x", "2", 80, title="Hybrid Role"),
+                _assessment("x", "3", 80, title="Onsite Role"),
+                _assessment("x", "4", 80, title="Unknown Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=now,
+    )
+    # All four land in Strong (score 80) — work arrangement changed nothing about inclusion.
+    assert stats["strong"] == 4
+
+    html = output_path.read_text()
+    remote_idx = html.index("Remote Role")
+    hybrid_idx = html.index("Hybrid Role")
+    onsite_idx = html.index("Onsite Role")
+    unknown_idx = html.index("Unknown Role")
+    assert 'tag-remote">Remote' in html[max(0, remote_idx - 400) : remote_idx]
+    assert 'tag-hybrid">Hybrid' in html[max(0, hybrid_idx - 400) : hybrid_idx]
+    assert "tag-remote" not in html[max(0, onsite_idx - 400) : onsite_idx]
+    assert "tag-hybrid" not in html[max(0, onsite_idx - 400) : onsite_idx]
+    assert "tag-remote" not in html[max(0, unknown_idx - 400) : unknown_idx]
+    assert "tag-hybrid" not in html[max(0, unknown_idx - 400) : unknown_idx]
 
 
 def test_empty_group_renders_fallback_message(tmp_path):

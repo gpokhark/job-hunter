@@ -72,12 +72,22 @@ def _sponsorship_tag(status: str | None) -> str:
     # value; only the two explicit, actionable states are worth a tag.
 
 
+def _arrangement_tag(arrangement: str | None) -> str:
+    if arrangement == "remote":
+        return '<span class="tag tag-remote">Remote</span>'
+    if arrangement == "hybrid":
+        return '<span class="tag tag-hybrid">Hybrid</span>'
+    return ""  # "onsite"/"unknown" carry no tag, same reasoning as sponsorship's
+    # "unmentioned" — onsite is the unremarkable default and unknown says nothing.
+
+
 def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
     tier = _tier(row["score"]) if show_tier_tag else "plain"
     tags = _tier_tag(row["score"]) if show_tier_tag else ""
     if row["new"]:
         tags += '<span class="tag tag-new">New</span>'
     tags += _sponsorship_tag(row.get("visa_sponsorship"))
+    tags += _arrangement_tag(row.get("work_arrangement"))
     date_display = _fmt_date(row["posted_at"]) or "Date unknown"
     matches_html = "".join(f"<li>{_e(m)}</li>" for m in row["matches"])
     gaps_html = "".join(f"<li>{_e(g)}</li>" for g in row["gaps"])
@@ -184,6 +194,7 @@ def build(
                 "gaps": assessment["gaps"],
                 "visa_sponsorship": candidate.get("visa_sponsorship"),
                 "sponsorship_evidence": candidate.get("sponsorship_evidence"),
+                "work_arrangement": candidate.get("work_arrangement"),
             }
         )
 

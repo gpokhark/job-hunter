@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..location import detect_arrangement
 from ..models import JobDetail, JobSummary
 from ..normalizer import fallback_job_id, parse_flexible_date, parse_relative_posted, stringify
 from .base import SchemaError
@@ -52,6 +53,13 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                         title=title,
                         url=display_url,
                         location_raw=location,
+                        # Workday's own "remoteType" facet (e.g. "Hybrid", "Onsite", "Remote",
+                        # "Remote/Hybrid") is real structured signal independent of whatever
+                        # location_raw happens to say — run it through the same text-based
+                        # detect_arrangement() used everywhere else so "Remote/Hybrid" resolves
+                        # to HYBRID via the same hybrid-beats-remote precedence, not a
+                        # bespoke mapping here.
+                        work_arrangement=detect_arrangement(stringify(item.get("remoteType"))),
                         posted_at=parse_relative_posted(stringify(item.get("postedOn"))),
                         raw=item,
                     )
@@ -78,10 +86,15 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
         response = await self.request("GET", api_url)
         data = response.json()
         info = data.get("jobPostingInfo", data)
+        # None (not UNKNOWN) when remoteType is genuinely absent from this response — JobDetail's
+        # work_arrangement=None is what tells evaluate_location to fall back to parsing
+        # location_raw text instead, the same fallback it had before remoteType was read at all.
+        remote_type = stringify(info.get("remoteType"))
         return JobDetail(
             description=stringify(info.get("jobDescription")),
             location_raw=stringify(info.get("location")),
             employment_type=stringify(info.get("timeType")),
             # startDate is an absolute date, more precise than the summary's relative postedOn text.
             posted_at=parse_flexible_date(info.get("startDate")) or parse_relative_posted(stringify(info.get("postedOn"))),
+            work_arrangement=detect_arrangement(remote_type) if remote_type else None,
         )

@@ -16,6 +16,7 @@ from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
+from job_hunter.models import WorkArrangement
 from job_hunter.normalizer import parse_flexible_date
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -276,6 +277,114 @@ async def test_workday_native_public_base_url_used_for_display_not_detail_fetch(
         assert jobs[0].url == "https://tenant.wd1.myworkdayjobs.com/en-US/site/job/Some-City/ADAS-Engineer_JR-1"
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Build ADAS features."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_native_reads_remote_type_from_listing_and_detail():
+    """Workday's own "remoteType" facet ("Hybrid", "Onsite", "Remote", "Remote/Hybrid") is
+    real structured signal the adapter previously never read at all — work_arrangement fell
+    back to text-sniffing location_raw, which says nothing about remote/hybrid for most
+    postings (e.g. a plain "Sunnyvale, California, United States of America"), silently
+    misclassifying real hybrid/remote jobs as unknown. Confirmed live: a GM posting with
+    jobPostingInfo.remoteType == "Hybrid" and no "hybrid"/"remote" text anywhere in
+    location_raw or the description."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "jobPostings": [
+                    {
+                        "title": "Hybrid Role",
+                        "externalPath": "/job/Some-City/Hybrid-Role_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                        "remoteType": "Remote/Hybrid",
+                    },
+                    {
+                        "title": "Onsite Role",
+                        "externalPath": "/job/Some-City/Onsite-Role_JR-2",
+                        "jobId": "JR-2",
+                        "postedOn": "Posted Today",
+                        "remoteType": "Onsite",
+                    },
+                ],
+            },
+        )
+    )
+    respx.get(
+        "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Some-City/Hybrid-Role_JR-1"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jobPostingInfo": {"jobDescription": "Build ADAS features.", "remoteType": "Hybrid"}},
+        )
+    )
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        # "Remote/Hybrid" resolves to HYBRID via the same hybrid-beats-remote text
+        # precedence used everywhere else (detect_arrangement), not a bespoke mapping.
+        assert jobs[0].work_arrangement == WorkArrangement.HYBRID
+        assert jobs[1].work_arrangement == WorkArrangement.ONSITE
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.work_arrangement == WorkArrangement.HYBRID
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_native_detail_arrangement_none_when_remote_type_absent():
+    """A detail response with no remoteType field must yield work_arrangement=None, not
+    UNKNOWN — None is what tells evaluate_location to fall back to parsing location_raw
+    text, the same fallback behavior that existed before remoteType was read at all."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "jobPostings": [
+                    {
+                        "title": "ADAS Engineer",
+                        "externalPath": "/job/Some-City/ADAS-Engineer_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                    }
+                ],
+            },
+        )
+    )
+    respx.get(
+        "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Some-City/ADAS-Engineer_JR-1"
+    ).mock(return_value=httpx.Response(200, json={"jobPostingInfo": {"jobDescription": "Build ADAS features."}}))
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        assert jobs[0].work_arrangement == WorkArrangement.UNKNOWN
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.work_arrangement is None
 
 
 @pytest.mark.asyncio
