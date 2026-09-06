@@ -99,7 +99,8 @@ before most commands will find a profile (falls back to the example file otherwi
 - **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `ashby.py`,
   `greenhouse.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
-  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`,
+  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`
@@ -140,7 +141,20 @@ before most commands will find a profile (falls back to the example file otherwi
   established technique is to render it *once* with Scrapling (`stealth_html`'s
   `AsyncStealthySession`) to read the real DOM/links it generates, then hardcode whatever was
   discovered as static config — a browser is a one-time discovery tool here, essentially never a
-  runtime dependency (see `docs/SPEC.md` §5.12, "Adding a new source").
+  runtime dependency (see `docs/SPEC.md` §5.14, "Adding a new source"). Two more lessons from
+  onboarding BMW and Bosch: a "static public frontend key" — a `Bearer` token or similar embedded
+  directly in a page's own plain HTML rather than fetched from any login/token endpoint — is the
+  same category as Ashby's public posting API key (meant for exactly this client-side use, served
+  to every visitor) and safe to reuse in an adapter the same way (`bosch.py`); and when a
+  server-rendered detail page reuses one CSS class for several different fields' *values*,
+  distinguished only by an adjacent label's text (BMW's `.rtltextaligneligible`, labeled by a
+  sibling `.joblayouttoken-label`), match by that label text rather than by CSS position —
+  `:nth-of-type` was tried and confirmed unreliable, since it counts a node among *all* siblings of
+  its tag, not just siblings sharing its class (`successfactors_rmk_v2.py`'s
+  `_parse_job_layout_tokens`). Also: the same underlying ATS platform can wear two unrelated-looking
+  templates for different customers (BMW and Volkswagen-Group are both SuccessFactors RMK
+  "Job2Web", one server-rendered, one a client-rendered web-component widget over a JSON API) —
+  recognize the platform from shared static-asset hosts/paths, not from how the search page looks.
 
 - **`collector.py`** — orchestrates one search run: fetches all companies concurrently (bounded by
   `max_concurrent_sources` semaphore), fetches details only when needed (no prior record, prior has

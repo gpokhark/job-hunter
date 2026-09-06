@@ -41,7 +41,14 @@ class HtmlPaginatedAdapter(JobAdapter):
             if not cards and not jobs:
                 raise SchemaError("no job cards matched configured selector")
             for card in cards:
-                link = card.css_first(cfg.get("link_selector", "a"))
+                # link_selector: "self" is opt-in for sites (e.g. Wayve's "First" ATS)
+                # whose card_selector already matches the anchor itself with no wrapping
+                # element to hold a distinct nested link — card.css_first() only searches
+                # descendants, so there's otherwise no selector that resolves back to the
+                # card node it was called on.
+                link = card if cfg.get("link_selector") == "self" else card.css_first(
+                    cfg.get("link_selector", "a")
+                )
                 title_node = card.css_first(cfg.get("title_selector", "a"))
                 if not link or not title_node or not link.attributes.get("href"):
                     raise SchemaError("job card missing required link/title")

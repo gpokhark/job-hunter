@@ -9,6 +9,7 @@ import respx
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
+from job_hunter.adapters.bosch import BoschAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
 from job_hunter.adapters.greenhouse import GreenhouseAdapter
 from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
@@ -16,6 +17,7 @@ from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
+from job_hunter.adapters.successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
 from job_hunter.models import WorkArrangement
@@ -1232,3 +1234,192 @@ async def test_eightfold_fixed_page_size_pagination_and_detail_fetch():
     assert jobs[0].location_raw == "Moline, IL, US / Waterloo, IA, US"
     assert jobs[0].posted_at.year == 2026
     assert detail.description == "Build autonomous systems."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bosch_pagination_and_refnumber_detail_lookup():
+    """Confirmed live against bosch-i3-caas-api.e-spirit.cloud: get_jobs paginates by a
+    1-indexed `page` param and reports its total under
+    _embedded.rh:result[0].meta[0].count; the listing payload carries no description, so
+    fetch_detail re-queries the same collection filtered by refNumber and must
+    concatenate all four jobAd.sections fields, not just the first."""
+    list_url = "https://caas.example/get_jobs"
+    detail_url = "https://caas.example/jobs.content"
+
+    def _page(items: list[dict], total: int) -> dict:
+        return {
+            "_embedded": {"rh:result": [{"meta": [{"count": total}], "data": items}]}
+        }
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("authorization") == "Bearer test-key"
+        page = request.url.params.get("page")
+        if page == "1":
+            return httpx.Response(
+                200,
+                json=_page(
+                    [
+                        {
+                            "_id": "REF1",
+                            "refNumber": "REF1",
+                            "name": "Autonomous Systems Engineer",
+                            "jobUrl": "REF1-autonomous-systems-engineer",
+                            "releasedDate": "2026-08-01T00:00:00.000Z",
+                            "location": {"city": "Sunnyvale", "workLocation": "Sunnyvale, CA"},
+                            "country": {"valueLabel": "United States"},
+                            "function": {"label": "Engineering"},
+                            "working_hours": {"valueLabel": "Full-time"},
+                            "work_mode": "on-site",
+                        }
+                    ],
+                    total=2,
+                ),
+            )
+        return httpx.Response(
+            200,
+            json=_page(
+                [
+                    {
+                        "_id": "REF2",
+                        "refNumber": "REF2",
+                        "name": "Quality Engineer",
+                        "jobUrl": "REF2-quality-engineer",
+                        "releasedDate": "2026-08-02T00:00:00.000Z",
+                        "location": {"city": "Fort Lauderdale", "workLocation": "Fort Lauderdale, FL"},
+                        "country": {"valueLabel": "United States"},
+                    }
+                ],
+                total=2,
+            ),
+        )
+
+    respx.get(url__regex=r"https://caas\.example/get_jobs.*").mock(side_effect=_respond)
+    respx.get(url__regex=r"https://caas\.example/jobs\.content.*").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "jobAd": {
+                        "sections": {
+                            "jobDescription": {"text": "Build ADAS."},
+                            "qualifications": {"text": "5+ years."},
+                        }
+                    }
+                }
+            ],
+        )
+    )
+    company = CompanyConfig(
+        key="bosch",
+        company="Bosch",
+        adapter="bosch",
+        config={
+            "list_url": list_url,
+            "detail_url": detail_url,
+            "detail_base_url": "https://jobs.bosch.example/en/job/",
+            "api_key": "test-key",
+            "pagesize": 1,
+            "fields": {
+                "id": "refNumber",
+                "title": "name",
+                "url": "jobUrl",
+                "location": "location.workLocation",
+                "city": "location.city",
+                "country": "country.valueLabel",
+                "department": "function.label",
+                "employment_type": "working_hours.valueLabel",
+                "posted_at": "releasedDate",
+                "work_arrangement": "work_mode",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = BoschAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert [job.job_id for job in jobs] == ["REF1", "REF2"]
+    assert jobs[0].url == "https://jobs.bosch.example/en/job/REF1-autonomous-systems-engineer"
+    assert jobs[0].work_arrangement == WorkArrangement.ONSITE
+    assert detail.description == "Build ADAS.\n\n5+ years."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_successfactors_rmk_v2_pagination_and_label_matched_detail():
+    """Confirmed live against jobs.bmwgroup.com: the search widget POSTs a JSON body
+    paginated by a 0-indexed pageNumber field, and the plain-HTML detail page repeats the
+    same value CSS class (.rtltextaligneligible) for title/date/location/description
+    alike — fetch_detail must match by the adjacent .joblayouttoken-label text
+    ("Job Description:"), not position or a bare class selector."""
+    list_url = "https://rmk.example/services/recruiting/v1/jobs"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["pageNumber"] == 0:
+            return httpx.Response(
+                200,
+                json={
+                    "totalJobs": 2,
+                    "jobSearchResult": [
+                        {
+                            "response": {
+                                "id": "111",
+                                "unifiedStandardTitle": "Manufacturing Engineer",
+                                "urlTitle": "Manufacturing-Engineer",
+                                "jobLocationShort": ["Spartanburg, SC, USA, "],
+                                "unifiedStandardStart": "7/31/26",
+                            }
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "totalJobs": 2,
+                "jobSearchResult": [
+                    {
+                        "response": {
+                            "id": "222",
+                            "unifiedStandardTitle": "Data Analyst",
+                            "urlTitle": "Data-Analyst",
+                            "jobLocationShort": ["Spartanburg, SC, USA, "],
+                            "unifiedStandardStart": "8/1/26",
+                        }
+                    }
+                ],
+            },
+        )
+
+    respx.post(list_url).mock(side_effect=_respond)
+    detail_html = """
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Job Title: </span>
+      <span class="rtltextaligneligible">Manufacturing Engineer</span></div>
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Posting Start Date: </span>
+      <span class="rtltextaligneligible">7/31/26</span></div>
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Job Description: </span>
+      <span class="rtltextaligneligible">Build vehicles.</span></div>
+    """
+    respx.get(url__regex=r"https://rmk\.example/job/.*").mock(
+        return_value=httpx.Response(200, text=detail_html)
+    )
+    company = CompanyConfig(
+        key="bmw",
+        company="BMW Group",
+        adapter="successfactors_rmk_v2",
+        config={
+            "list_url": list_url,
+            "detail_base_url": "https://rmk.example/job/",
+            "locale": "en_US",
+            "location_filter": "United States",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = SuccessFactorsRmkV2Adapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert [job.job_id for job in jobs] == ["111", "222"]
+    assert jobs[0].url == "https://rmk.example/job/Manufacturing-Engineer/111-en_US"
+    assert jobs[0].posted_at.strftime("%Y-%m-%d") == "2026-07-31"
+    assert detail.description == "Build vehicles."
