@@ -1,5 +1,6 @@
 ---
 name: job-scout
+version: 1.0.0
 description: Search configured employer career sites for current U.S.-eligible jobs matching a keyword/title or the candidate profile, and archive the results for review.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: job-feedback
+version: 1.0.0
 description: Turn radar feedback clicks and any candidate_profile.yaml change — a manual edit or a previously-suggested one — into a reviewed, confirmed profile update, showing exactly which jobs it gains/loses. Nothing is ever written to candidate_profile.yaml, or accepted as the new baseline, without your explicit yes.
 ---
 

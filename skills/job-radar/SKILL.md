@@ -1,5 +1,6 @@
 ---
 name: job-radar
+version: 1.0.0
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
 ---
 
