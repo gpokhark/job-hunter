@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from job_hunter.config import CandidateProfile
-from job_hunter.models import Job, LocationConfidence
+from job_hunter.models import (
+    Assessment,
+    Job,
+    LocationConfidence,
+    SponsorshipStatus,
+    WorkArrangement,
+)
 from job_hunter.storage import Storage
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -17,6 +23,7 @@ from diff_profile import (  # noqa: E402
     _non_filter_field_diffs,
     _read_only_jobs,
     _render_field_terms,
+    _render_rows,
     _rollback_baseline,
     _row_to_job,
     apply_edits,
@@ -141,6 +148,88 @@ def test_render_field_terms_empty_profiles_shows_empty_message():
     profile = CandidateProfile(exclude_title_terms=[])  # override the default intern/co-op
     html_out = _render_field_terms(_field_term_diffs(profile, profile))
     assert "No filtering terms configured" in html_out
+
+
+def test_render_rows_includes_job_link_date_and_tags(tmp_path):
+    """The diff report's gained/lost rows must carry the same at-a-glance signal as job-radar's
+    report — a clickable job link, posted date, and sponsorship/hybrid-remote/new tags — without
+    requiring any LLM review to have run (there's no assessment for this job at all)."""
+    db_path = tmp_path / "jobs.sqlite3"
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            make_job(
+                job_id="1",
+                title="Perception Engineer",
+                url="https://example.com/jobs/perception-engineer",
+                posted_at=datetime(2026, 9, 1, tzinfo=UTC),  # 4 days old -> [New]
+                visa_sponsorship=SponsorshipStatus.NOT_AVAILABLE,
+                work_arrangement=WorkArrangement.HYBRID,
+            )
+        )
+    before = CandidateProfile(target_domains=["ADAS"])
+    after = CandidateProfile(target_domains=["ADAS", "perception"])
+    result = compute_diff(
+        before=before, after=after, database_path=db_path, max_age_days=30, keywords=None, now=now
+    )
+    assert len(result.gained) == 1
+
+    html_out = _render_rows(result.gained, result, empty_message="unused")
+    assert 'href="https://example.com/jobs/perception-engineer"' in html_out
+    assert 'target="_blank"' in html_out
+    assert "Sep 1, 2026" in html_out
+    assert 'tag-new">New' in html_out
+    assert 'tag-sponsor-no">No Sponsorship' in html_out
+    assert 'tag-hybrid">Hybrid' in html_out
+    assert "no assessment on record" in html_out
+
+
+def test_render_rows_no_posted_date_shows_unknown_and_no_new_tag(tmp_path):
+    db_path = tmp_path / "jobs.sqlite3"
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(job_id="1", title="Perception Engineer", posted_at=None))
+    before = CandidateProfile(target_domains=["ADAS"])
+    after = CandidateProfile(target_domains=["ADAS", "perception"])
+    result = compute_diff(
+        before=before, after=after, database_path=db_path, max_age_days=30, keywords=None, now=now
+    )
+    html_out = _render_rows(result.gained, result, empty_message="unused")
+    assert "Date unknown" in html_out
+    assert "tag-new" not in html_out
+
+
+def test_render_rows_feedback_buttons_carry_correct_data_attributes(tmp_path):
+    """Same click-and-submit feedback mechanism as job-radar's report — a mismatch here
+    would silently tag the wrong job, or feed suggest_exclusions.py bad data."""
+    db_path = tmp_path / "jobs.sqlite3"
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    with Storage(db_path) as storage:
+        job = make_job(job_id="77", title="Perception Engineer", company="Ford Motor Company")
+        job = job.model_copy(update={"department": "Autonomy Team"})
+        storage.upsert_job(job)
+        storage.upsert_assessment(
+            Assessment(
+                source_key="acme", job_id="77", company="Ford Motor Company",
+                title="Perception Engineer", url="https://example.com/1",
+                content_hash=job.content_hash, score=82, recommended=True,
+            )
+        )
+    before = CandidateProfile(target_domains=["ADAS"])
+    after = CandidateProfile(target_domains=["ADAS", "perception"])
+    result = compute_diff(
+        before=before, after=after, database_path=db_path, max_age_days=30, keywords=None, now=now
+    )
+    html_out = _render_rows(result.gained, result, empty_message="unused")
+    assert 'data-source-key="acme"' in html_out
+    assert 'data-job-id="77"' in html_out
+    assert 'data-company="Ford Motor Company"' in html_out
+    assert 'data-title="Perception Engineer"' in html_out
+    assert 'data-department="Autonomy Team"' in html_out
+    assert 'data-score="82"' in html_out
+    assert 'data-label="relevant"' in html_out
+    assert 'data-label="okay"' in html_out
+    assert 'data-label="irrelevant"' in html_out
 
 
 def test_compute_diff_includes_field_term_diffs(tmp_path):

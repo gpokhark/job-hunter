@@ -5,9 +5,11 @@ report — grouped and tagged exactly as the job-hunter skill's step 9 describes
 matches (score >= 75) and For review (score 50-74) as two separate groups, [90+]/[80+]
 tags within Strong, and a [New] tag on anything posted within the last --new-days
 (default 10) days. A third group lists every candidate scored below 50 — every job the
-local model actually evaluated appears somewhere on the page. Only a candidate never
-reviewed at all (an LM Studio error skipped it, or --limit capped the review) is counted
-but omitted, since there's no verdict to show.
+local model actually evaluated appears somewhere on the page. A fourth group, "Not LLM
+Reviewed", lists every candidate the review step hasn't gotten to at all (an LM Studio
+error skipped it, `--limit` capped the run, or it's a job newly surfaced by a refilter that
+hasn't been scored yet) — title/company/link/date/tags only, no score/matches/gaps since
+there's no verdict to show; feedback buttons still work on these rows.
 
 This is pure presentation: it never re-derives, adjusts, or overrides a score — every
 number here is exactly what's already in data/assessments.json.
@@ -142,6 +144,49 @@ def _rows_html(rows: list[dict[str, Any]], *, show_tier_tag: bool, empty_message
     return "".join(_row_html(row, show_tier_tag=show_tier_tag) for row in rows)
 
 
+def _never_reviewed_row_html(candidate: dict[str, Any], *, now: datetime, new_days: int) -> str:
+    """A candidate with no assessment at all — no score, so no <details>/matches/gaps/tier
+    tag, just the same at-a-glance signal (link/date/[New]/sponsorship/arrangement tags) every
+    other report already shows, plus feedback buttons so it can still be tagged before review."""
+    posted_at = candidate.get("posted_at")
+    is_new = False
+    if posted_at:
+        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        is_new = (now - posted).days <= new_days
+    tags = '<span class="tag tag-new">New</span>' if is_new else ""
+    tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
+    tags += _arrangement_tag(candidate.get("work_arrangement"))
+    date_display = _fmt_date(posted_at) or "Date unknown"
+    feedback_buttons = f'''<span class="feedback-buttons"
+          data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
+          data-company="{_attr(candidate.get("company"))}" data-title="{_attr(candidate.get("title"))}"
+          data-department="{_attr(candidate.get("department"))}" data-score="">
+          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>'''
+    return f'''
+    <div class="plain-row">
+      <div class="plain-row-top">
+        <span class="tags">{tags}</span>
+        <span class="job">
+          <span class="job-title">{_e(candidate.get("title"))}</span>
+          <span class="job-company">{_e(candidate.get("company"))}</span>
+        </span>
+        <span class="job-date">{date_display}</span>
+        <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+      </div>
+      <div class="row-meta">Not yet reviewed by the local model.</div>
+      {feedback_buttons}
+    </div>'''
+
+
+def _never_reviewed_rows_html(candidates: list[dict[str, Any]], *, now: datetime, new_days: int) -> str:
+    if not candidates:
+        return '<p class="empty-state">Every candidate has been reviewed.</p>'
+    return "".join(_never_reviewed_row_html(c, now=now, new_days=new_days) for c in candidates)
+
+
 def build(
     *,
     search_path: Path,
@@ -159,9 +204,11 @@ def build(
 
     now = now or datetime.now(UTC)
     rows: list[dict[str, Any]] = []
+    never_reviewed_candidates: list[dict[str, Any]] = []
     for key, candidate in candidates.items():
         assessment = assess_map.get(key)
         if not assessment:
+            never_reviewed_candidates.append(candidate)  # already has source_key/job_id
             continue
         posted_at = candidate.get("posted_at")
         is_new = False
@@ -202,7 +249,10 @@ def build(
     review = sorted((r for r in rows if 50 <= r["score"] < 75), key=lambda r: -r["score"])
     below_50_rows = sorted((r for r in rows if r["score"] < 50), key=lambda r: -r["score"])
     below_50 = len(below_50_rows)
-    never_reviewed = len(candidates) - len(rows)
+    never_reviewed_candidates.sort(
+        key=lambda c: c.get("posted_at") or "", reverse=True
+    )
+    never_reviewed = len(never_reviewed_candidates)
 
     summary = search.get("summary", {})
     sources = f"{summary.get('sources_succeeded', '?')}/{summary.get('sources_attempted', '?')}"
@@ -217,7 +267,6 @@ def build(
         f"{len(rows)} U.S.-eligible postings {scope}, scored one at a time by a local model "
         "against the resume on file. No cap, nothing discarded before review."
     )
-    skipped_note = f"{never_reviewed} candidate(s) were never reviewed and are omitted here. " if never_reviewed else ""
 
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     out = (
@@ -231,7 +280,7 @@ def build(
         .replace("__REVIEW_COUNT__", str(len(review)))
         .replace("__BELOW_50__", str(below_50))
         .replace("__SOURCES__", _e(sources))
-        .replace("__SKIPPED_NOTE__", _e(skipped_note))
+        .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
         .replace(
             "__STRONG_ROWS__",
             _rows_html(strong, show_tier_tag=True, empty_message="No candidates scored 75 or above for this search."),
@@ -245,6 +294,10 @@ def build(
             _rows_html(
                 below_50_rows, show_tier_tag=False, empty_message="No candidates scored below 50 for this search."
             ),
+        )
+        .replace(
+            "__NEVER_REVIEWED_ROWS__",
+            _never_reviewed_rows_html(never_reviewed_candidates, now=now, new_days=new_days),
         )
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)

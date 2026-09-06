@@ -6,11 +6,13 @@ description: Turn radar feedback clicks and any candidate_profile.yaml change �
 
 # Job Feedback
 
-Use this skill to close the loop after tagging jobs 👍/🟢/👎 in a radar report, or any time you
-want to know "what changed because of my last edit to candidate_profile.yaml" — including an edit
-you made by hand outside of any tool. It replaces running `apply_radar_feedback.py`,
-`suggest_exclusions.py`, and `diff_profile.py` as three separate manual commands with one
-conversational pass over the same three deterministic scripts.
+Use this skill to close the loop after tagging jobs 👍/🟢/👎 in a radar report *or* a
+profile-diff report (both render the identical feedback buttons and export the identical
+`radar-feedback-*.json` shape — this skill never knows or needs to know which report a label
+came from), or any time you want to know "what changed because of my last edit to
+candidate_profile.yaml" — including an edit you made by hand outside of any tool. It replaces
+running `apply_radar_feedback.py`, `suggest_exclusions.py`, and `diff_profile.py` as three
+separate manual commands with one conversational pass over the same three deterministic scripts.
 
 **Nothing here is an LLM judgment call.** Every number this skill reports comes from a
 deterministic script — no job is scored, no term is invented, no exclusion is suggested by this
@@ -41,26 +43,46 @@ baseline. Both are explicit stop-and-ask points, never inferred from silence or 
    unchanged/invalid counts. If it says nothing was found, that's a normal outcome, not an error —
    continue to the next step regardless.
 3. Generate suggestions from every feedback label recorded so far (not only what step 2 just
-   ingested):
+   ingested) — every job with feedback is re-evaluated against the CURRENT profile, so this
+   spans all six filtering fields, not just `soft_exclude_terms`:
    ```bash
    uv run python scripts/suggest_exclusions.py
    ```
-   Relay the high-confidence suggestions verbatim — term, how many distinct irrelevant titles it
-   matched, example titles, and the tool's own diff-preview counts (how many current candidates it
-   would exclude, how many are rescued by `strong_relevance_terms`). Also mention the
+   Relay each bucket the script prints, verbatim, in order — don't skip a bucket just because
+   it's empty ("(none)" is itself information):
+   - **soft_exclude_terms** (add) — irrelevant-tagged jobs currently passing the filter.
+   - **strong_relevance_terms** (add) — relevant/okay-tagged jobs currently soft-excluded with
+     no rescue.
+   - **target_domains / target_title_terms** (add) — relevant/okay-tagged jobs currently
+     matching no positive term at all.
+   - **exclude_title_terms / exclude_terms** (**remove**) — relevant/okay-tagged jobs currently
+     hard-blocked. Flag this bucket loudly: these two fields have no rescue mechanism at all, so
+     a hit here is a real false negative already happening, not a hypothetical one.
+   - **strong_relevance_terms CAUTION** — irrelevant-tagged jobs currently rescued by an
+     existing `strong_relevance_terms` word. No suggested edit comes with this one (narrowing or
+     removing that word is too blunt to propose blind) — just relay it so the user can judge for
+     themselves.
+   - **Not fixable via profile terms** — relevant/okay-tagged jobs failing on U.S.-eligibility;
+     nothing here is a `candidate_profile.yaml` edit.
+
+   For every add/remove candidate, relay the term, how many titles it matched, example titles,
+   and the script's own live preview (`Preview vs. every stored job: retained=... gained=...
+   lost=...`, plus up to 5 example jobs on each side) — this preview is a real `evaluate_prefilter`
+   sweep via `diff_profile.py`'s own `compute_diff`, not an approximation. Also mention the
    below-confidence (single-occurrence) list exists, without pushing the user toward it. Don't
    editorialize about whether a suggestion looks safe beyond what the script itself reports — its
-   zero-collision-with-a-known-good-match property is the safety guarantee, not your judgment.
-   If there are no irrelevant-tagged jobs yet, the script says so — skip straight to step 5.
+   zero-collision-with-the-opposing-label property is the safety guarantee, not your judgment.
+   If there's no feedback at all yet, the script says so — skip straight to step 5.
 4. **Stop and ask which suggestions, if any, to apply — never assume, never batch-apply.** Accept
    a plain-language answer ("add the first one," "none of these," "add 'platform architecture' to
-   soft_exclude_terms"). For each one the user approves:
-   - Make a minimal, targeted edit to `config/candidate_profile.yaml` — insert one new list item
-     into the correct field (almost always `soft_exclude_terms`). Never regenerate or re-serialize
-     the whole file: a surgical text insertion is what keeps the file's existing comments and
-     formatting intact, which is why this is safe for an agent to do directly (unlike a script
-     doing `yaml.dump()` after a full parse, which would destroy them — see
-     `docs/profile-diff-plan.md` section 7).
+   soft_exclude_terms," "remove 'intern' from exclude_title_terms"). For each one the user
+   approves:
+   - Make a minimal, targeted edit to `config/candidate_profile.yaml` — insert (or, for an
+     exclude_title_terms/exclude_terms suggestion, delete) one list item in the field the
+     suggestion named. Never regenerate or re-serialize the whole file: a surgical text edit is
+     what keeps the file's existing comments and formatting intact, which is why this is safe for
+     an agent to do directly (unlike a script doing `yaml.dump()` after a full parse, which would
+     destroy them — see `docs/profile-diff-plan.md` section 7).
    - If the user approves none, or there were no suggestions, proceed to step 5 anyway — a manual
      edit made outside this conversation is exactly as valid a reason to run it.
 5. Check what actually changed in the profile, regardless of source (step 4's edits, an earlier
@@ -82,6 +104,15 @@ baseline. Both are explicit stop-and-ask points, never inferred from silence or 
    change would now exclude it; this is exactly the failure mode the whole mechanism exists to
    catch. If Retained/Gained/Lost are all zero and the term diff is empty, just say plainly that
    nothing changed since the last accepted baseline — don't manufacture a longer report.
+
+   **If your runtime can publish artifacts, publish this diff report — every time, without being
+   asked.** This is a standard step of running this skill, the same way job-radar always publishes
+   its own report (see that skill's step 8) — never something to wait for an explicit request for.
+   A fresh diff (a new `--add`/`--remove`/`--before`/`--after` comparison, or a genuinely new check
+   mode result since the last one you published) gets its own new link; re-publishing the exact
+   same comparison updates the same link rather than creating a duplicate. If nothing changed
+   (step 6's "nothing changed" case), there's nothing new to publish — don't publish a no-op diff.
+   If your runtime has no such capability, give the user the local file path instead.
 7. **Stop and ask before accepting the baseline — a separate confirmation from step 4's.** The
    diff in step 6 can reflect a change from entirely outside this conversation, so "the user
    approved a suggestion in step 4" is never sufficient grounds to accept it on their behalf here.

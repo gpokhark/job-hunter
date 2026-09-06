@@ -10,6 +10,7 @@ collection:
 search:
   country: US
   include_work_arrangements: [onsite, hybrid, remote, unknown]
+  max_posting_age_days: 45
 recommendation:
   minimum_score: 75
 logging:

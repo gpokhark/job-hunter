@@ -280,17 +280,23 @@ before most commands will find a profile (falls back to the example file otherwi
   `record-assessment` CLI command; never produced by Python itself, which only ever persists a
   verdict handed to it), and `job_feedback` (one row per `(source_key, job_id)`, a human's
   click-through "relevant"/"okay"/"irrelevant" verdict from a rendered radar report — see
-  `docs/feedback-exclusion-plan.md`. Upserted, not appended: a later label for the same job
-  replaces the earlier one, since a reviewer correcting an earlier click must land on one current
-  row, not accumulate contradictory history. Written only by `scripts/apply_radar_feedback.py`
-  from a radar report's exported feedback JSON — with no `--file`, it auto-resolves the newest
-  `radar-feedback-*.json` in `~/Downloads` (always printing which file and its mtime, so an
-  auto-pick is never silently the wrong one) and exits cleanly if none exists, so it's always safe
-  to invoke unconditionally; `job-hunter export-feedback` mirrors
+  `docs/feedback-exclusion-plan.md`. As of 2026-09-06, `scripts/diff_profile.py`'s HTML report
+  carries the identical feedback buttons and exports the identical `radar-feedback-*.json` shape,
+  so a label can come from either report — `apply_radar_feedback.py`/`suggest_exclusions.py`
+  never know or need to know which one it came from. Upserted, not appended: a later label for the
+  same job replaces the earlier one, since a reviewer correcting an earlier click must land on one
+  current row, not accumulate contradictory history. Written only by
+  `scripts/apply_radar_feedback.py` from an exported feedback JSON — with no `--file`, it
+  auto-resolves the newest `radar-feedback-*.json` in `~/Downloads` (always printing which file
+  and its mtime, so an auto-pick is never silently the wrong one) and exits cleanly if none
+  exists, so it's always safe to invoke unconditionally; `job-hunter export-feedback` mirrors
   `export-assessments` for read-only inspection (dumps the table, writes `data/job_feedback.json`).
   Read only by `scripts/suggest_exclusions.py` — `prefilter.py` never reads this table directly,
-  only the `soft_exclude_terms`/`strong_relevance_terms` a human approved into
-  `candidate_profile.yaml` from its suggestions). A job is marked `closed` after 3 consecutive runs
+  only whatever a human approved into `candidate_profile.yaml` from its suggestions. That script
+  re-evaluates every feedback-tagged job against the *current* profile via the real
+  `evaluate_prefilter` (not a re-derived guess) to route a suggestion to whichever of all six
+  filtering fields the job's current pass/fail reason implicates — not just `soft_exclude_terms`,
+  the only field it originally covered; see `docs/feedback-exclusion-plan.md` §13. A job is marked `closed` after 3 consecutive runs
   where it's missing from a healthy source's listing (`mark_missing`); it stays `active` otherwise,
   which is why the tool surfaces previously-seen jobs by default (see `--new-only` vs default
   behavior below). `mark_missing`'s `stale_before` parameter excludes jobs already older than a

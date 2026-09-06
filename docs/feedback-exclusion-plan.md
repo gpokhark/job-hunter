@@ -390,3 +390,57 @@ check but are **not recommended** — each would exclude a large number of curre
 only partially rescuing them via `strong_relevance_terms`, exactly the generic-term risk this
 whole design is built to avoid defaulting into. Left for manual review, not auto-applied, per the
 tool's own stated behavior.
+
+## 13. Extension (2026-09-06): profile-diff feedback + suggestions across all six fields
+
+Two additions, both deliberately kept deterministic — see the discussion in-session for why an
+LLM was considered and rejected for the suggestion-generation step itself: the safety properties
+below (zero-collision checks, live `evaluate_prefilter` previews) are things a script can
+*guarantee*, not just estimate, and a missed collision here means a real false positive slipping
+into the profile, exactly the failure mode this whole mechanism exists to prevent.
+
+1. **`scripts/diff_profile.py`'s HTML report gained job links, posted dates, sponsorship/
+   hybrid-remote/[New] tags (reusing `render_radar.py`'s `_sponsorship_tag`/`_arrangement_tag`
+   directly, so a job is never tagged differently between the two reports), and the identical
+   👍/🟢/👎 feedback-button + Export mechanism job-radar's report already had — same
+   `radar-feedback-*.json` export shape, so `apply_radar_feedback.py` ingests either report's
+   export with zero changes. This means feedback can now be captured on exactly the jobs whose
+   candidacy is *changing* (a gained job worth confirming, or — the more valuable direction — a
+   lost job worth catching before it's gone), not only on jobs a live search already surfaced.
+
+2. **`scripts/suggest_exclusions.py`** no longer only proposes `soft_exclude_terms`. Every
+   `job_feedback` row is now re-joined against its *current* SQLite record and re-run through the
+   real `evaluate_prefilter` (imported, not reimplemented) to find out precisely why the profile
+   currently treats it the way it does — that decision (`rule`/`term`/`rescued_by`) is what routes
+   it to one of six buckets:
+   - irrelevant + currently a plain positive match → `soft_exclude_terms` (add) — the original,
+     unchanged mechanism (`_build_title_sets`/`_collect_candidates` untouched, same tests).
+   - relevant/okay + currently soft-excluded, not rescued → `strong_relevance_terms` (add).
+   - relevant/okay + currently no positive match → `target_domains`/`target_title_terms` (add).
+   - relevant/okay + currently hard-excluded → `exclude_title_terms`/`exclude_terms` (**remove**)
+     — flagged as the highest-severity finding this tool can produce, since those two fields have
+     no rescue mechanism at all.
+   - irrelevant + currently rescued by a `strong_relevance_terms` word → surfaced as a named
+     caution, deliberately with **no** auto-generated edit — removing or narrowing a
+     `strong_relevance_terms` word is too blunt an instrument to propose blind, since it could
+     un-rescue other genuinely good jobs sharing that word.
+   - relevant/okay + not `us_eligible` → reported as not fixable via `candidate_profile.yaml` at
+     all (a `location.py` question, not a filter-term one).
+
+   The three add-suggestion buckets reuse `_collect_candidates` symmetrically: the same
+   "repeat across >= `--min-support` titles, zero collisions with the opposing label's titles"
+   shape that originally existed only for `soft_exclude_terms`, just with the target/protected
+   sets swapped for the positive-side buckets. Every candidate is also filtered against what's
+   already in the target field (`_drop_already_present`) so an already-applied term is never
+   re-suggested, and every remaining candidate gets a live preview via `diff_profile.py`'s own
+   `apply_edits`/`compute_diff` — replacing the tool's old bespoke, incomplete
+   `_diff_preview` (a naive substring match against one search archive's candidates that never
+   checked `exclude_title_terms`/`exclude_terms`/recency at all) with the real, full-SQLite sweep.
+
+   Bootstrap run against this session's real 99-row `job_feedback` table (87 irrelevant, 12
+   relevant/okay) immediately surfaced two genuine findings in the CAUTION bucket that predate
+   this extension and were previously invisible: `strong_relevance_terms`' `"control systems"`
+   and `"camera"` entries are each currently rescuing a job separately tagged irrelevant
+   (`"Simulation and Control Systems Engineer - Platform Architecture"` and `"Custom Silicon
+   Validation Engineer - Camera Hardware"`, respectively) — left for manual review per the
+   bucket's own no-auto-suggestion design, not acted on automatically.

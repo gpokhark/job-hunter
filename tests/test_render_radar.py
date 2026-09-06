@@ -99,9 +99,15 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
     assert 'tag-strong">80+' in html
 
 
-def test_never_reviewed_candidate_excluded_and_counted(tmp_path):
+def test_never_reviewed_candidate_excluded_from_scored_groups_but_listed_separately(tmp_path):
+    """A never-reviewed candidate must not appear in Strong/Review/Below-50 (no score to
+    place it), but it must still be listed — in its own "Not LLM Reviewed" section — rather
+    than silently omitted, so a job newly surfaced by a refilter isn't invisible until review
+    catches up to it."""
     search_path = tmp_path / "search.json"
-    search_path.write_text(json.dumps(_search_json([_candidate("x", "1"), _candidate("x", "2")])))
+    search_path.write_text(
+        json.dumps(_search_json([_candidate("x", "1"), _candidate("x", "2", title="Unreviewed Role")]))
+    )
     assessments_path = tmp_path / "assessments.json"
     assessments_path.write_text(json.dumps([_assessment("x", "1", 80, title="Reviewed Role")]))
     output_path = tmp_path / "out.html"
@@ -118,7 +124,11 @@ def test_never_reviewed_candidate_excluded_and_counted(tmp_path):
 
     assert stats["never_reviewed"] == 1
     html = output_path.read_text()
-    assert "1 candidate(s) were never reviewed" in html
+    assert "Not LLM Reviewed" in html
+    assert "Unreviewed Role" in html
+    assert "Not yet reviewed by the local model" in html
+    # Not counted among the scored groups' rows.
+    assert stats["strong"] == 1 and stats["review"] == 0 and stats["below_50"] == 0
 
 
 def test_new_tag_uses_posting_recency_window(tmp_path):
@@ -393,6 +403,43 @@ def test_feedback_buttons_carry_correct_data_attributes(tmp_path):
     assert 'data-label="okay"' in html
     assert 'data-label="irrelevant"' in html
     assert 'radar-feedback-search.json' in html  # __SEARCH_STEM__ substitution
+
+
+def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
+    """A never-reviewed job still gets the same [New]/sponsorship/arrangement tags and
+    feedback buttons as a scored row — just no score/matches/gaps, since there's no
+    assessment to draw them from."""
+    candidate = _candidate(
+        "ford", "77", title="ADAS Engineer", company="Ford Motor Company",
+        posted_at="2026-08-28T00:00:00Z",  # 3 days before `now` below -> [New]
+        visa_sponsorship="not_available",
+    )
+    candidate["department"] = "ADAS Team"
+    candidate["work_arrangement"] = "hybrid"
+    search_path = tmp_path / "search.json"
+    search_path.write_text(json.dumps(_search_json([candidate])))
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    assert stats == {"strong": 0, "review": 0, "below_50": 0, "never_reviewed": 1}
+    html = output_path.read_text()
+    assert 'data-source-key="ford"' in html
+    assert 'data-job-id="77"' in html
+    assert 'data-label="relevant"' in html
+    assert 'tag-new">New' in html
+    assert 'tag-hybrid">Hybrid' in html
+    assert 'tag-sponsor-no">No Sponsorship' in html
+    assert "Not yet reviewed by the local model" in html
 
 
 def test_default_title_derivation():

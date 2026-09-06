@@ -54,6 +54,11 @@ from pathlib import Path
 
 import yaml
 
+# Reused from the sibling script rather than reimplemented: same hybrid-beats-remote text
+# precedence and same "only the two actionable states get a tag" rule as the radar report uses,
+# so a job tagged Hybrid/No Sponsorship here and in job-radar's report never disagrees.
+from render_radar import _arrangement_tag, _sponsorship_tag  # noqa: E402
+
 from job_hunter.config import CandidateProfile, load_settings
 from job_hunter.models import Assessment, Job
 from job_hunter.prefilter import PrefilterDecision, evaluate_prefilter, passes_recency
@@ -112,6 +117,10 @@ _JOB_COLUMNS = (
     "salary_max", "salary_currency", "content_hash", "first_seen_at",
     "last_seen_at",
 )
+
+# Same default freshness window as render_radar.py's --new-days, so a job tagged [New] in one
+# report is tagged [New] in the other.
+_NEW_DAYS = 10
 
 
 class ProfileDiffError(Exception):
@@ -273,6 +282,13 @@ class DiffResult:
     def feedback_label(self, job: Job) -> str | None:
         return self.feedback_labels.get((job.source_key, job.job_id))
 
+    def assessment_score(self, job: Job) -> int | None:
+        """Raw score for the feedback-button's data-score attribute — mirrors what a radar
+        report's row carries, or None for a job never scored (the button still works; export
+        just carries a null score, same as apply_radar_feedback.py already tolerates)."""
+        assessment = self.assessments.get((job.source_key, job.job_id))
+        return assessment.score if assessment else None
+
 
 def compute_diff(
     *,
@@ -390,27 +406,130 @@ def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  body { font-family: system-ui, sans-serif; background: #F3F6F7; color: #14191F; margin: 0; }
+  :root {
+    --paper: #F3F6F7;
+    --ink: #14191F;
+    --ink-soft: #4B5560;
+    --surface: #FFFFFF;
+    --line: #DCE3E7;
+    --accent: #0C7F91;
+    --accent-soft: #E4F1F3;
+    --tier-exceptional: #1D9A66;
+    --tier-exceptional-soft: #E4F5EC;
+    --danger: #C1443A;
+    --danger-soft: #FBEAE8;
+    --arrangement-remote: #2D6FB0;
+    --arrangement-remote-soft: #E4EEF8;
+    --arrangement-hybrid: #7B5CAE;
+    --arrangement-hybrid-soft: #EFE8F7;
+    --muted: #6B7480;
+    --shadow: 0 1px 2px rgba(20, 25, 31, 0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #10151A;
+      --ink: #E9EDEF;
+      --ink-soft: #A6B0B8;
+      --surface: #171E24;
+      --line: #2A333A;
+      --accent: #3FC1D4;
+      --accent-soft: #17323A;
+      --tier-exceptional: #3FCC8C;
+      --tier-exceptional-soft: #163829;
+      --danger: #E2695E;
+      --danger-soft: #3A1F1C;
+      --arrangement-remote: #6FB1EE;
+      --arrangement-remote-soft: #17293A;
+      --arrangement-hybrid: #C0A3EA;
+      --arrangement-hybrid-soft: #2A2038;
+      --muted: #8A95A0;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #10151A;
+    --ink: #E9EDEF;
+    --ink-soft: #A6B0B8;
+    --surface: #171E24;
+    --line: #2A333A;
+    --accent: #3FC1D4;
+    --accent-soft: #17323A;
+    --tier-exceptional: #3FCC8C;
+    --tier-exceptional-soft: #163829;
+    --danger: #E2695E;
+    --danger-soft: #3A1F1C;
+    --arrangement-remote: #6FB1EE;
+    --arrangement-remote-soft: #17293A;
+    --arrangement-hybrid: #C0A3EA;
+    --arrangement-hybrid-soft: #2A2038;
+    --muted: #8A95A0;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body { font-family: "IBM Plex Sans", system-ui, sans-serif; background: var(--paper); color: var(--ink); margin: 0; line-height: 1.5; }
   main { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
-  h1 { font-size: 28px; }
+  h1 { font-family: "Big Shoulders Display", system-ui, sans-serif; font-weight: 700; font-size: 32px; letter-spacing: -0.005em; margin: 0 0 4px; }
+  h2 { font-family: "Big Shoulders Display", system-ui, sans-serif; font-weight: 700; font-size: 24px; margin: 0 0 6px; }
+  main > p { color: var(--muted); font-size: 13px; }
   .stats { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
-  .stat { background: #fff; border: 1px solid #DCE3E7; border-radius: 4px; padding: 12px 18px; }
-  .stat-value { font-size: 22px; font-weight: 700; display: block; }
-  .stat-label { font-size: 12px; color: #6B7480; text-transform: uppercase; }
-  .warning { background: #FBEAE8; border: 1px solid #C1443A; color: #C1443A; padding: 12px 16px; border-radius: 4px; margin: 16px 0; }
-  .flag { background: #FBEAE8; border: 1px solid #C1443A; color: #C1443A; padding: 2px 8px; border-radius: 3px; font-size: 12px; margin-left: 8px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 12px 18px; box-shadow: var(--shadow); }
+  .stat-value { font-family: "IBM Plex Mono", monospace; font-size: 22px; font-weight: 700; display: block; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); text-transform: uppercase; }
+  .warning { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 12px 16px; border-radius: 4px; margin: 16px 0; font-size: 13.5px; }
+  .flag { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-left: 8px; vertical-align: middle; }
   section { margin: 32px 0; }
-  .row { background: #fff; border: 1px solid #DCE3E7; border-radius: 4px; padding: 12px 16px; margin-bottom: 8px; }
-  .row-title { font-weight: 600; }
-  .row-company { color: #6B7480; font-size: 13px; }
-  .row-meta { font-size: 12.5px; color: #6B7480; margin-top: 6px; }
-  .empty { color: #6B7480; font-style: italic; }
+  .rows { display: flex; flex-direction: column; gap: 8px; }
+  .row { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow); padding: 12px 16px; }
+  .row-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  .job-title { font-weight: 600; font-size: 15px; }
+  .job-company { font-size: 13px; color: var(--muted); }
+  .job-date { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
+  .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
+  .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
+  .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
+  .tag-hybrid { background: var(--arrangement-hybrid-soft); color: var(--arrangement-hybrid); }
+  .tag-new { display: inline-block; background: var(--accent); color: var(--surface); font-weight: 700; }
+  @media (prefers-reduced-motion: no-preference) {
+    .tag-new { animation: pulse-new 1.4s ease-in-out infinite; }
+  }
+  @keyframes pulse-new { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.12); opacity: 0.72; } }
+  .apply-link { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; white-space: nowrap; }
+  .apply-link:hover, .apply-link:focus-visible { border-bottom-color: var(--accent); }
+  .row-meta { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .empty { color: var(--muted); font-style: italic; }
   .terms-field { margin: 14px 0; }
-  .terms-field-name { font-weight: 600; font-size: 13px; font-family: ui-monospace, monospace; color: #6B7480; margin-bottom: 4px; }
-  .term-tag { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 12.5px; margin: 2px 4px 2px 0; background: #EEF1F3; color: #14191F; }
-  .term-tag-added { background: #E6F4EA; color: #1A7F37; font-weight: 600; }
-  .term-tag-removed { background: #FBEAE8; color: #C1443A; text-decoration: line-through; }
+  .terms-field-name { font-weight: 600; font-size: 13px; font-family: "IBM Plex Mono", monospace; color: var(--muted); margin-bottom: 4px; }
+  .term-tag { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 12.5px; margin: 2px 4px 2px 0; background: var(--accent-soft); color: var(--ink); }
+  .term-tag-added { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); font-weight: 600; }
+  .term-tag-removed { background: var(--danger-soft); color: var(--danger); text-decoration: line-through; }
+
+  /* --- Feedback capture (same mechanism/schema as job-radar's report — see
+     docs/feedback-exclusion-plan.md) --- */
+  .row-feedback { margin-top: 8px; }
+  .feedback-buttons { display: flex; gap: 4px; align-items: center; }
+  .fb-btn { font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+  .fb-btn:hover { border-color: var(--accent); }
+  .fb-btn.fb-active { border-color: var(--accent); background: var(--accent-soft); }
+  .fb-btn.fb-irrelevant.fb-active { border-color: var(--danger); background: var(--danger-soft); }
+  .row.fb-tagged { border-left: 3px solid var(--accent); }
+  .feedback-export { position: fixed; bottom: 24px; right: 24px; z-index: 10; }
+  #feedback-export-btn {
+    font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; padding: 12px 20px;
+    border-radius: 999px; border: 1px solid var(--line); background: var(--accent); color: var(--surface);
+    cursor: pointer; box-shadow: 0 2px 10px rgba(20, 25, 31, 0.2);
+  }
+  #feedback-export-btn:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; box-shadow: var(--shadow); opacity: 0.7; }
 </style>
 <main>
   <h1>__TITLE__</h1>
@@ -430,13 +549,133 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   </section>
   <section>
     <h2>Lost</h2>
-    __LOST_ROWS__
+    <div class="rows">__LOST_ROWS__</div>
   </section>
   <section>
     <h2>Gained</h2>
-    __GAINED_ROWS__
+    <div class="rows">__GAINED_ROWS__</div>
   </section>
 </main>
+
+<div class="feedback-export">
+  <button type="button" id="feedback-export-btn" disabled>Export Feedback (0)</button>
+</div>
+
+<script>
+(function () {
+  // Same click-to-tag / export-on-demand mechanism as job-radar's report (see
+  // docs/feedback-exclusion-plan.md) — exports to the identical radar-feedback-*.json
+  // filename shape so scripts/apply_radar_feedback.py ingests it with no changes, and
+  // scripts/suggest_exclusions.py can then draw on it regardless of which report a job's
+  // feedback came from.
+  var STORAGE_KEY = 'job-hunter-feedback:__DIFF_STEM__';
+  var feedback = {};
+
+  function loadPersisted() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(feedback));
+    } catch (e) {
+      // Private browsing / storage disabled / quota exceeded — feedback still works for
+      // this page load via the in-memory object and the Export button.
+    }
+  }
+
+  function exportButton() {
+    return document.getElementById('feedback-export-btn');
+  }
+
+  function refreshExportButton() {
+    var count = Object.keys(feedback).length;
+    var btn = exportButton();
+    btn.textContent = 'Export Feedback (' + count + ')';
+    btn.disabled = count === 0;
+  }
+
+  feedback = loadPersisted();
+
+  document.querySelectorAll('.feedback-buttons').forEach(function (group) {
+    var buttons = group.querySelectorAll('.fb-btn');
+    var key = group.dataset.sourceKey + '|' + group.dataset.jobId;
+    var row = group.closest('.row');
+
+    // A job already labeled in the database (from a prior export+apply cycle, possibly via
+    // a different report entirely) shows that label by default — localStorage still wins
+    // if this browser already has a newer, not-yet-exported choice for the same job.
+    if (!feedback[key] && group.dataset.dbLabel) {
+      feedback[key] = {
+        source_key: group.dataset.sourceKey,
+        job_id: group.dataset.jobId,
+        company: group.dataset.company,
+        title: group.dataset.title,
+        department: group.dataset.department || null,
+        score: group.dataset.score ? parseInt(group.dataset.score, 10) : null,
+        label: group.dataset.dbLabel
+      };
+    }
+
+    var restored = feedback[key];
+    if (restored) {
+      buttons.forEach(function (b) {
+        if (b.dataset.label === restored.label) b.classList.add('fb-active');
+      });
+      if (row) row.classList.add('fb-tagged');
+    }
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var alreadyActive = btn.classList.contains('fb-active');
+        buttons.forEach(function (b) { b.classList.remove('fb-active'); });
+
+        if (alreadyActive) {
+          delete feedback[key];
+          if (row) row.classList.remove('fb-tagged');
+        } else {
+          btn.classList.add('fb-active');
+          feedback[key] = {
+            source_key: group.dataset.sourceKey,
+            job_id: group.dataset.jobId,
+            company: group.dataset.company,
+            title: group.dataset.title,
+            department: group.dataset.department || null,
+            score: group.dataset.score ? parseInt(group.dataset.score, 10) : null,
+            label: btn.dataset.label
+          };
+          if (row) row.classList.add('fb-tagged');
+        }
+        persist();
+        refreshExportButton();
+      });
+    });
+  });
+
+  refreshExportButton();
+
+  exportButton().addEventListener('click', function () {
+    var rows = Object.keys(feedback).map(function (k) { return feedback[k]; });
+    if (rows.length === 0) {
+      return;
+    }
+    var blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'radar-feedback-__DIFF_STEM__.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
+})();
+</script>
 """
 
 
@@ -444,19 +683,59 @@ def _e(text: str) -> str:
     return html.escape(text or "")
 
 
+def _fmt_posted_date(posted_at: datetime | None) -> str:
+    return posted_at.strftime("%b %-d, %Y") if posted_at else "Date unknown"
+
+
+def _job_tags(job: Job, *, now: datetime) -> str:
+    """[New]/sponsorship/work-arrangement tags — deliberately the same three tags and the
+    same rules job-radar's report uses (see _arrangement_tag/_sponsorship_tag), so a job never
+    looks tagged differently in the two reports. This report never scores anything, so there's
+    no score tier tag ([90+]/[80+]) to show here."""
+    tags = ""
+    if job.posted_at:
+        posted = job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC)
+        if (now - posted).days <= _NEW_DAYS:
+            tags += '<span class="tag tag-new">New</span>'
+    tags += _sponsorship_tag(job.visa_sponsorship)
+    tags += _arrangement_tag(job.work_arrangement)
+    return tags
+
+
 def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: str) -> str:
     if not items:
         return f'<p class="empty">{_e(empty_message)}</p>'
     parts = []
     for item in items:
-        label = result.feedback_label(item.job)
+        job = item.job
+        label = result.feedback_label(job)
         flag = f'<span class="flag">TAGGED {_e(label.upper())}</span>' if label in ("relevant", "okay") else ""
+        tags = _job_tags(job, now=result.evaluated_at)
+        date_display = _fmt_posted_date(job.posted_at)
+        score = result.assessment_score(job)
+        feedback_buttons = f'''<span class="feedback-buttons"
+              data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
+              data-company="{_e(job.company)}" data-title="{_e(job.title)}"
+              data-department="{_e(job.department)}" data-score="{score if score is not None else ''}"
+              data-db-label="{_e(label or '')}">
+              <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+              <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+              <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+            </span>'''
         parts.append(f"""
         <div class="row">
-          <div class="row-title">{_e(item.job.title)}{flag}</div>
-          <div class="row-company">{_e(item.job.company)}</div>
+          <div class="row-top">
+            <span class="tags">{tags}</span>
+            <span class="job">
+              <span class="job-title">{_e(job.title)}{flag}</span>
+              <span class="job-company">{_e(job.company)}</span>
+            </span>
+            <span class="job-date">{_e(date_display)}</span>
+            <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+          </div>
           <div class="row-meta">before: {_e(_decision_str(item.before))} &middot; after: {_e(_decision_str(item.after))}</div>
-          <div class="row-meta">{_e(result.assessment_note(item.job))} &middot; last seen {_e(str(item.job.last_seen_at))}</div>
+          <div class="row-meta">{_e(result.assessment_note(job))} &middot; last seen {_e(str(job.last_seen_at))}</div>
+          <div class="row-feedback">{feedback_buttons}</div>
         </div>""")
     return "".join(parts)
 
@@ -495,6 +774,7 @@ def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
     )
     out = (
         _HTML_TEMPLATE.replace("__TITLE__", _e(title))
+        .replace("__DIFF_STEM__", _e(output_path.stem))
         .replace("__EVALUATED_AT__", _e(result.evaluated_at.isoformat()))
         .replace("__MAX_AGE_DAYS__", str(result.max_age_days))
         .replace("__TOTAL_CONSIDERED__", str(result.total_considered))
