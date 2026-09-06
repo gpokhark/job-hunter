@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from job_hunter.models import Assessment, Job, LocationConfidence
+from job_hunter.models import Assessment, Job, JobFeedback, LocationConfidence
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
 
@@ -94,6 +94,32 @@ def test_export_assessments_matches_all_assessments(tmp_path):
     assert rows[0]["job_id"] == "42"
     assert rows[0]["matches"] == ["Python", "ADAS"]
     assert rows[0]["recommended"] is True
+
+
+def make_feedback(**updates):
+    values = dict(
+        source_key="apple", job_id="99", company="Apple", title="Some Role",
+        department=None, score=68, label="irrelevant",
+    )
+    values.update(updates)
+    return JobFeedback(**values)
+
+
+def test_upsert_job_feedback_corrects_a_label_in_place(tmp_path):
+    """The exact scenario that makes upsert (not append) load-bearing: a reviewer
+    relabels the same job between sessions, and the correction must replace the old
+    row, not create a second, contradictory one — see docs/feedback-exclusion-plan.md
+    section 8."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job_feedback(make_feedback(label="okay"))
+        rows = storage.export_job_feedback()
+        assert len(rows) == 1
+        assert rows[0]["label"] == "okay"
+
+        storage.upsert_job_feedback(make_feedback(label="irrelevant"))
+        rows = storage.export_job_feedback()
+        assert len(rows) == 1
+        assert rows[0]["label"] == "irrelevant"
 
 
 def test_reevaluate_sponsorship_backfills_from_stored_description(tmp_path):

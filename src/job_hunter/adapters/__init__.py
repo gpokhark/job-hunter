@@ -4,24 +4,35 @@ from typing import TypeAlias
 
 from .adp_recruiting import AdpRecruitingAdapter
 from .apple import AppleAdapter
+from .ashby import AshbyAdapter
 from .base import JobAdapter
+from .bosch import BoschAdapter
+from .csod import CsodAdapter
+from .dayforce import DayforceAdapter
 from .discovered_api import DiscoveredApiAdapter
 from .eightfold import EightfoldAdapter
+from .greenhouse import GreenhouseAdapter
 from .html_multi_index import HtmlMultiIndexAdapter
 from .html_paginated import HtmlPaginatedAdapter
+from .icims_attract import IcimsAttractAdapter
 from .lever import LeverAdapter
 from .oracle_hcm import OracleHcmAdapter
 from .phenom import PhenomAdapter
 from .stealth_html import StealthHtmlAdapter
 from .successfactors_rmk import SuccessFactorsRmkAdapter
+from .successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
 from .unsupported import UnsupportedAdapter
 from .workday import WorkdayAdapter
+from .zf import ZfAdapter
 
 AdapterType: TypeAlias = type[JobAdapter]
 ADAPTERS: dict[str, AdapterType] = {
     "workday": WorkdayAdapter,
     "successfactors_rmk": SuccessFactorsRmkAdapter,
+    "successfactors_rmk_v2": SuccessFactorsRmkV2Adapter,
     "lever": LeverAdapter,
+    "ashby": AshbyAdapter,
+    "greenhouse": GreenhouseAdapter,
     "oracle_hcm": OracleHcmAdapter,
     "phenom": PhenomAdapter,
     "html_paginated": HtmlPaginatedAdapter,
@@ -31,6 +42,11 @@ ADAPTERS: dict[str, AdapterType] = {
     "adp_recruiting": AdpRecruitingAdapter,
     "apple": AppleAdapter,
     "eightfold": EightfoldAdapter,
+    "bosch": BoschAdapter,
+    "csod": CsodAdapter,
+    "zf": ZfAdapter,
+    "dayforce": DayforceAdapter,
+    "icims_attract": IcimsAttractAdapter,
     "unsupported": UnsupportedAdapter,
 }
 

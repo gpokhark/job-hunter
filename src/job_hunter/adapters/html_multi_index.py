@@ -9,11 +9,8 @@ class HtmlMultiIndexAdapter(HtmlPaginatedAdapter):
         if not urls:
             return await super().fetch_summaries()
         jobs = []
-        original = self.company.config.get("list_url")
         for url in urls:
-            self.company.config["list_url"] = url
-            jobs.extend(await super().fetch_summaries())
-        self.company.config["list_url"] = original
+            jobs.extend(await super().fetch_summaries(start_url=url))
         return list({job.job_id: job for job in jobs}.values())
 
     async def fetch_detail(self, summary: JobSummary) -> JobDetail:

@@ -6,9 +6,8 @@ import re
 from urllib.parse import urljoin
 
 from ..models import JobDetail, JobSummary
-from ..normalizer import extract_job_posting_ld, normalize_text
+from ..normalizer import extract_job_posting_ld, normalize_text, parse_flexible_date, stringify
 from .base import JobAdapter, SchemaError
-from .json_api import _date, _stringify
 
 
 def _extract_embedded_json(text: str, key: str) -> dict:
@@ -72,12 +71,12 @@ class PhenomAdapter(JobAdapter):
             items = (blob.get("data") or {}).get("jobs")
             if not isinstance(items, list):
                 raise SchemaError("Phenom embedded search data missing jobs list")
-            new_ids = {_stringify(item.get("jobId")) or _stringify(item.get("reqId")) for item in items}
+            new_ids = {stringify(item.get("jobId")) or stringify(item.get("reqId")) for item in items}
             if not items or not (new_ids - seen_ids):
                 break
             for item in items:
-                job_id = _stringify(item.get("jobId")) or _stringify(item.get("reqId"))
-                title = _stringify(item.get("title"))
+                job_id = stringify(item.get("jobId")) or stringify(item.get("reqId"))
+                title = stringify(item.get("title"))
                 if not job_id or not title:
                     raise SchemaError("Phenom job entry missing jobId/title")
                 if job_id in seen_ids:
@@ -92,15 +91,15 @@ class PhenomAdapter(JobAdapter):
                         job_id=job_id,
                         title=title,
                         url=url,
-                        location_raw=_stringify(
+                        location_raw=stringify(
                             item.get("locationName") or item.get("cityStateCountry")
                         ),
-                        city=_stringify(item.get("city")),
-                        state=_stringify(item.get("state")),
-                        country=_stringify(item.get("country")),
-                        department=_stringify(item.get("department")),
-                        employment_type=_stringify(item.get("type")),
-                        posted_at=_date(item.get("postedDate")),
+                        city=stringify(item.get("city")),
+                        state=stringify(item.get("state")),
+                        country=stringify(item.get("country")),
+                        department=stringify(item.get("department")),
+                        employment_type=stringify(item.get("type")),
+                        posted_at=parse_flexible_date(item.get("postedDate")),
                         raw=item,
                     )
                 )
@@ -124,6 +123,6 @@ class PhenomAdapter(JobAdapter):
         # actually happens (see collector.py's should_detail).
         return JobDetail(
             description=normalize_text(html.unescape(description)) if description else None,
-            posted_at=_date(posting.get("datePosted")),
-            employment_type=_stringify(posting.get("employmentType")),
+            posted_at=parse_flexible_date(posting.get("datePosted")),
+            employment_type=stringify(posting.get("employmentType")),
         )

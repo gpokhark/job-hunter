@@ -41,6 +41,20 @@ class HealthStatus(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class PrefilterRule(StrEnum):
+    """Which check in `prefilter.py`'s `evaluate_prefilter` decided a job's pass/fail outcome —
+    see `docs/profile-diff-plan.md` section 6. Short-circuit evaluation means this is the
+    *decisive* check in the code's fixed precedence order, not an exhaustive list of every check
+    that would also have failed."""
+
+    NOT_US_ELIGIBLE = "not_us_eligible"
+    EXCLUDE_TITLE_TERMS = "exclude_title_terms"
+    EXCLUDE_TERMS = "exclude_terms"
+    NO_POSITIVE_MATCH = "no_positive_match"
+    SOFT_EXCLUDED = "soft_excluded"
+    POSITIVE_MATCH = "positive_match"
+
+
 class JobSummary(BaseModel):
     source_key: str
     source_platform: str
@@ -119,6 +133,24 @@ class Job(JobSummary):
     is_new: bool = False
     is_changed: bool = False
     prior_assessment: Assessment | None = None
+
+
+class JobFeedback(BaseModel):
+    """A human's click-through verdict on one job from a rendered radar report — "relevant",
+    "okay", or "irrelevant". Keyed by (source_key, job_id), upserted (never appended): a later
+    label for the same job replaces the earlier one rather than creating a second, contradictory
+    row — see `docs/feedback-exclusion-plan.md` section 8 for why this has to be upsert semantics,
+    not an append-only log. Purely an input to `scripts/suggest_exclusions.py`'s suggestions;
+    `prefilter.py` never reads this table directly."""
+
+    source_key: str
+    job_id: str
+    company: str
+    title: str
+    department: str | None = None
+    score: int | None = None
+    label: str
+    recorded_at: datetime = Field(default_factory=utcnow)
 
 
 class SourceHealth(BaseModel):

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Assessment, HealthStatus, Job, SourceHealth
+from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth
 from .sponsorship import evaluate_sponsorship
 
 
@@ -61,6 +61,12 @@ class Storage:
                 score INTEGER NOT NULL, recommended INTEGER NOT NULL,
                 matches TEXT NOT NULL, gaps TEXT NOT NULL, resume_path TEXT,
                 assessed_at TEXT NOT NULL,
+                PRIMARY KEY(source_key, job_id)
+            );
+            CREATE TABLE IF NOT EXISTS job_feedback (
+                source_key TEXT NOT NULL, job_id TEXT NOT NULL, company TEXT NOT NULL,
+                title TEXT NOT NULL, department TEXT, score INTEGER,
+                label TEXT NOT NULL, recorded_at TEXT NOT NULL,
                 PRIMARY KEY(source_key, job_id)
             );
             """
@@ -367,3 +373,34 @@ class Storage:
             item["recommended"] = bool(item["recommended"])
             results.append(item)
         return results
+
+    def upsert_job_feedback(self, feedback: JobFeedback) -> None:
+        """Upsert, never append — a later label for the same (source_key, job_id) replaces the
+        earlier one. This is load-bearing: a reviewer correcting an earlier click (e.g. relabeling
+        a job from "okay" to "irrelevant" after reconsidering) must land on one current row, not
+        accumulate contradictory history. See docs/feedback-exclusion-plan.md section 8."""
+        self.connection.execute(
+            """INSERT INTO job_feedback(source_key, job_id, company, title, department, score,
+               label, recorded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_key, job_id) DO UPDATE SET company=excluded.company,
+               title=excluded.title, department=excluded.department, score=excluded.score,
+               label=excluded.label, recorded_at=excluded.recorded_at""",
+            (
+                feedback.source_key,
+                feedback.job_id,
+                feedback.company,
+                feedback.title,
+                feedback.department,
+                feedback.score,
+                feedback.label,
+                feedback.recorded_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    def export_job_feedback(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM job_feedback ORDER BY recorded_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]

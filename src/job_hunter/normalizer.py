@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 _RELATIVE_TODAY = re.compile(r"\bposted\s+today\b", re.I)
@@ -86,6 +87,41 @@ def extract_job_posting_ld(text: str) -> dict | None:
             if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
                 return candidate
     return None
+
+
+def stringify(value: Any) -> str | None:
+    """Coerce a JSON-decoded value (str/list/dict/number/None) into display text — shared by
+    every JSON-API-backed adapter (`json_api.py` and its ATS-specific subclasses) for fields
+    that may arrive as a scalar, a list of parts, or a dict of sub-fields depending on platform."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return " / ".join(filter(None, (stringify(item) for item in value))) or None
+    if isinstance(value, dict):
+        return ", ".join(str(v) for v in value.values() if v is not None) or None
+    return str(value).strip() or None
+
+
+def parse_flexible_date(value: Any) -> datetime | None:
+    """Parse a JSON API's posted-at value into a UTC datetime — Unix epoch seconds/milliseconds
+    (e.g. Lever's createdAt) or an ISO-8601 string, whichever the platform uses. Shared by every
+    JSON-API-backed adapter; unlike `parse_display_date`/`parse_relative_posted` above, this
+    covers machine-formatted values, not text meant for a human reader."""
+    if not value:
+        return None
+    text = str(value)
+    if text.isdigit() and len(text) in (10, 13):
+        try:
+            return datetime.fromtimestamp(int(text) / (1000 if len(text) == 13 else 1), tz=UTC)
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # Date-only strings (e.g. "2026-08-26") parse as naive; treat them as UTC for
+    # consistent comparison against other, tz-aware posted_at values.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def description_hash(description: str | None) -> str | None:

@@ -1,14 +1,15 @@
 #!/bin/sh
 set -eu
 
-SKILL_NAMES="job-hunter job-scout job-reviewer job-radar"
+SKILL_NAMES="job-hunter job-scout job-reviewer job-radar job-feedback"
 
 usage() {
   cat >&2 <<EOF
 usage: install_skill.sh [--copy] [--hermes] [--claude-global] [--claude-local] [--opencode] [--all]
 
-Installs all four job-hunter skills ($SKILL_NAMES) — the job-hunter orchestrator plus the
-independently-invocable job-scout/job-reviewer/job-radar stages (see docs/skill-split-plan.md).
+Installs all five job-hunter skills ($SKILL_NAMES) — the job-hunter orchestrator, the
+independently-invocable job-scout/job-reviewer/job-radar stages (see docs/skill-split-plan.md),
+and job-feedback for turning radar feedback/profile edits into a confirmed profile update.
 
 With no target flags, prompts interactively for which runtime(s) to install into.
 Pass one or more target flags to install non-interactively (e.g. for scripting).
@@ -17,7 +18,7 @@ Pass one or more target flags to install non-interactively (e.g. for scripting).
   --claude-global   ~/.claude/skills/<name>
   --claude-local    <this repo>/.claude/skills/<name>
   --opencode        ~/.config/opencode/skills/<name>
-  --all             all four of the above
+  --all             all five of the above
   --copy            copy each skill directory instead of symlinking it
 EOF
 }

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from ..models import JobDetail, JobSummary
-from ..normalizer import normalize_text
+from ..normalizer import normalize_text, parse_flexible_date, stringify
 from ..prefilter import is_recent
 from .base import JobAdapter, SchemaError
-from .json_api import _date, _stringify
 
 _LIST_URL = (
     "https://my.adp.com/myadp_prefix/mycareer/public/staffing/v1/job-requisitions/"
@@ -87,9 +86,9 @@ class AdpRecruitingAdapter(JobAdapter):
             raise SchemaError("ADP job requisition missing reqId/title")
         locations = item.get("requisitionLocations") or []
         address = (locations[0].get("address") or {}) if locations else {}
-        city = _stringify(address.get("cityName"))
-        state = _stringify((address.get("countrySubdivisionLevel1") or {}).get("longName"))
-        country = _stringify((address.get("country") or {}).get("longName"))
+        city = stringify(address.get("cityName"))
+        state = stringify((address.get("countrySubdivisionLevel1") or {}).get("longName"))
+        country = stringify((address.get("country") or {}).get("longName"))
         location_raw = ", ".join(part for part in (city, state, country) if part) or None
         description = "\n\n".join(
             normalize_text(part)
@@ -107,7 +106,7 @@ class AdpRecruitingAdapter(JobAdapter):
             city=city,
             state=state,
             country=country,
-            posted_at=_date(item.get("postingDate")),
+            posted_at=parse_flexible_date(item.get("postingDate")),
             raw={"description": description},
         )
 

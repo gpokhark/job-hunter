@@ -26,7 +26,16 @@ and it dropped `stealth_html` entirely too. Apple was too, once inspecting its p
 JSON snapshot (`apple.py`: `window.__staticRouterHydrationData = JSON.parse("...")`, a
 double-encoded string needing one extra unescape before it's parseable JSON) including exact
 posting dates and full descriptions — no browser needed despite the prior assumption that its
-listing was only reachable as an escaped JSON blob. For
+listing was only reachable as an escaped JSON blob. OpenAI is the same lesson at a platform level:
+`openai.com/careers/search` returns a genuine Cloudflare-managed challenge (`cf-mitigated:
+challenge`) on a plain request — but that's only the marketing front end. The real backing ATS,
+found the same way (a real job link, not a guess), is Ashby, reachable directly and unprotected at
+`jobs.ashbyhq.com/openai` — Ashby's own documented public posting API
+(`api.ashbyhq.com/posting-api/job-board/openai`) mirrors it exactly, zero-auth, no browser. Its
+first guess wasn't free either: `jobs.ashbyhq.com/anthropic` looks like the obvious matching URL
+for Anthropic but is a real Ashby "Page not found" — Anthropic isn't on Ashby at all, it's
+Greenhouse (`anthropic.com/careers/jobs` links directly to `job-boards.greenhouse.io/anthropic/
+jobs/<id>`), confirmed only once a real job link was actually followed. For
 a source where the block genuinely is the only way in, using this adapter is an explicit,
 disclosed choice to defeat that site's own anti-automation controls — real ToS exposure, not
 solved by "it's just reading public data" — so don't reach for it by default; every other adapter
@@ -87,9 +96,11 @@ before most commands will find a profile (falls back to the example file otherwi
   validator, not a convention. A company with no verified anonymous endpoint and no viable
   `stealth_html` path stays `unsupported` rather than faking data.
 
-- **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `oracle_hcm.py`,
+- **`adapters/`** — one class per ATS platform family (`workday.py`, `lever.py`, `ashby.py`,
+  `greenhouse.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
-  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`,
+  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`
@@ -100,7 +111,17 @@ before most commands will find a profile (falls back to the example file otherwi
   is factored into `_items_to_jobs()` specifically so a subclass can add its own pagination loop
   around it (`oracle_hcm.py` does this: `config: {paginate: true, total_path: ...}`, needed
   because Oracle's finder syntax embeds `offset`/`limit` inside one query value and silently caps
-  page size well below some sites' full job count). HTML adapters use `selectolax` with
+  page size well below some sites' full job count). `ashby.py` (OpenAI) is a bare one-line alias
+  like `lever.py` — pure config, no bespoke code — since Ashby's public posting API returns every
+  field clean and flat in one request (full `descriptionHtml` inline, no per-job detail fetch;
+  structured `address.postalAddress.addressCountry/addressRegion` for the high-confidence branch
+  of `evaluate_location`; `workplaceType` maps straight onto `work_arrangement` via
+  `json_api.py`'s generic opt-in `fields.work_arrangement`, added for this — any
+  `ConfigurableJsonAdapter` company can now set it the same way, not just Ashby).
+  `greenhouse.py` (Anthropic) needed one thing Ashby didn't: its own `content` field comes back
+  HTML-entity-double-encoded (confirmed live: literally `&lt;div class=&quot;...&quot;&gt;`, not
+  `<div class="...">`) — `GreenhouseAdapter.fetch_detail` unescapes it once, centrally, the same
+  double-encoding shape `apple.py` handles for an unrelated reason. HTML adapters use `selectolax` with
   CSS-selector config (`card_selector`, `link_selector`, etc.) instead of a schema path;
   `posted_at_selector` (parsed via `normalizer.parse_display_date`) covers a per-card visible
   date. `html_paginated.py`'s `fetch_detail` additionally always checks for a schema.org
@@ -120,7 +141,20 @@ before most commands will find a profile (falls back to the example file otherwi
   established technique is to render it *once* with Scrapling (`stealth_html`'s
   `AsyncStealthySession`) to read the real DOM/links it generates, then hardcode whatever was
   discovered as static config — a browser is a one-time discovery tool here, essentially never a
-  runtime dependency (see `docs/SPEC.md` §5.12, "Adding a new source").
+  runtime dependency (see `docs/SPEC.md` §5.14, "Adding a new source"). Two more lessons from
+  onboarding BMW and Bosch: a "static public frontend key" — a `Bearer` token or similar embedded
+  directly in a page's own plain HTML rather than fetched from any login/token endpoint — is the
+  same category as Ashby's public posting API key (meant for exactly this client-side use, served
+  to every visitor) and safe to reuse in an adapter the same way (`bosch.py`); and when a
+  server-rendered detail page reuses one CSS class for several different fields' *values*,
+  distinguished only by an adjacent label's text (BMW's `.rtltextaligneligible`, labeled by a
+  sibling `.joblayouttoken-label`), match by that label text rather than by CSS position —
+  `:nth-of-type` was tried and confirmed unreliable, since it counts a node among *all* siblings of
+  its tag, not just siblings sharing its class (`successfactors_rmk_v2.py`'s
+  `_parse_job_layout_tokens`). Also: the same underlying ATS platform can wear two unrelated-looking
+  templates for different customers (BMW and Volkswagen-Group are both SuccessFactors RMK
+  "Job2Web", one server-rendered, one a client-rendered web-component widget over a JSON API) —
+  recognize the platform from shared static-asset hosts/paths, not from how the search page looks.
 
 - **`collector.py`** — orchestrates one search run: fetches all companies concurrently (bounded by
   `max_concurrent_sources` semaphore), fetches details only when needed (no prior record, prior has
@@ -206,14 +240,97 @@ before most commands will find a profile (falls back to the example file otherwi
   interrupted review has already covered the freshest postings; final ranking is always the local
   LLM's own score, applied at the skill's compile step, never Python's.
 
-- **`storage.py`** — SQLite (WAL mode) with four tables: `jobs` (one row per `(source_key,
+  `passes_prefilter` also supports two profile fields for click-through feedback-derived
+  exclusions (`docs/feedback-exclusion-plan.md`): `soft_exclude_terms` behaves like
+  `exclude_terms` but scoped to title+department only (never the description — confirmed on live
+  data that description-wide matching here produces real false positives, e.g. Ford's EV
+  "vehicle platform architectures" description text vs. Apple's chip-org "platform architecture"
+  postings the term was meant to catch), and a match is *overridden* whenever title+department
+  also contains one of the separately-curated `strong_relevance_terms` — deliberately not a reuse
+  of `target_domains`, since that list already contains the broad terms (`validation`,
+  `verification`, `simulation`) that caused the false positives `soft_exclude_terms` exists to
+  catch. Both fields empty by default; populated only by human-approved suggestions from
+  `scripts/suggest_exclusions.py`, never automatically.
+
+  The actual gating logic lives in `evaluate_prefilter()`, which returns a `PrefilterDecision`
+  (`passes`, `rule: PrefilterRule`, `term`, `rescued_by`) instead of a bare bool — mirroring
+  `location.py`'s `LocationDecision`/`sponsorship.py`'s `SponsorshipDecision` pattern of a
+  structured verdict plus evidence, not just true/false. `passes_prefilter` is now a thin wrapper
+  (`.passes`) kept for every existing caller; `evaluate_prefilter` exists so `scripts/
+  diff_profile.py` (`docs/profile-diff-plan.md`) can explain *why* a job's candidacy changed
+  between two profiles, not just that it did. Short-circuit evaluation means `rule`/`term` name
+  the *decisive* check in the fixed precedence order above, not an exhaustive list of every check
+  that would also have failed.
+
+- **`scripts/diff_profile.py`** — preview-only tool: compares two `CandidateProfile`s (either two
+  saved YAML files via `--before`/`--after`, or the real on-disk profile plus an in-memory
+  `--add field:term`/`--remove field:term` patch that's never written back) against every stored,
+  `us_eligible`, recency-passing job in SQLite, using `evaluate_prefilter` directly — never an
+  approximation of it. Reports four counts (retained/still-excluded/gained/lost), not one
+  "unchanged" bucket that would hide which side it's mostly made of, plus a terminal summary and
+  an HTML report (`data/profile-diff/{timestamp}.html` by default) with a per-job before/after
+  reason and, for changed jobs, any existing assessment score or `job_feedback` label (a lost job
+  someone already tagged `relevant`/`okay` is flagged loudly, not folded into the general list).
+  Reads via a genuine read-only SQLite connection, not `Storage` (whose `__init__` always runs
+  `CREATE TABLE IF NOT EXISTS`/`_migrate()`/`commit()`, harmless but not actually read-only), and
+  explicitly maps the `jobs` table's `canonical_url` column to `Job.url` — the one column name
+  that doesn't already match a `Job` field. `--keyword` here means exactly what it means in
+  `job-hunter search --keyword` (a full replacement of `target_domains`/`target_title_terms`, not
+  a narrowing of them) — testing an edit to either field while also passing `--keyword` will
+  correctly show zero effect, and the tool says so explicitly rather than leaving that silent.
+  Every mode's report also includes a "Profile terms" section — the actual before/after words for
+  each filtering field (`+added`/`-removed`/unchanged), computed by `_field_term_diffs`, so a
+  reviewer sees exactly which words are driving a Lost/Gained verdict without opening the YAML
+  file separately; in the HTML report these render as tags (green `+term`, red struck-through
+  `-term`). No `--apply` — see `docs/profile-diff-plan.md` section 7 for why that's out of scope
+  for *edits*, not merely deferred — that reasoning is specifically about writing changes into the
+  file, which is why it doesn't block the mechanism below (a verbatim file copy, never a
+  parse/re-serialize).
+
+  With none of `--before`/`--after`/`--add`/`--remove` given, it runs in **check mode** instead of
+  erroring: it diffs the current on-disk profile against a tracked baseline,
+  `data/candidate_profile.snapshot.yaml` — a plain-text copy of "the profile as of the last time a
+  baseline was accepted," not a parsed/re-dumped one, so it can never be the thing that damages the
+  real file's comments/formatting. This is what lets the tool answer "what changed since I last
+  looked" regardless of *how* the file changed — a manual hand-edit and a skill-applied suggestion
+  both flow through the identical on-disk file, so check mode doesn't need to (and can't) tell them
+  apart. Check mode only ever *shows* the diff; it never advances the baseline on its own, by
+  design (an earlier version auto-advanced after every run, but that meant a diff you didn't
+  actually mean to accept could get silently baked in as the new normal before you'd fully looked
+  at it) — advancing requires a separate, explicit `--accept-baseline` run, which keeps the
+  snapshot it replaces at `data/candidate_profile.snapshot.prev.yaml` for exactly one level of
+  undo via `--rollback-baseline` (a true swap — running it twice in a row is a no-op, not a double
+  undo). The very first check-mode run has no snapshot yet, so it bootstraps one from the current
+  profile with nothing to compare — there's no diff to have confirmed yet, so that one step alone
+  doesn't require `--accept-baseline`. See `skills/job-feedback/SKILL.md` for how this is meant to
+  be driven end to end, including the confirmation discipline around it.
+
+- **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
   per search invocation), `source_health` (per-source rolling status, consecutive-failure count,
-  last success time), and `assessments` (one row per `(source_key, job_id)`, a local model's
+  last success time), `assessments` (one row per `(source_key, job_id)`, a local model's
   fitness verdict — score, recommended, matches, gaps — written by `scripts/review_with_lm_studio.py`
   via `upsert_assessment()`/`get_valid_assessment()` directly, or manually via the
   `record-assessment` CLI command; never produced by Python itself, which only ever persists a
-  verdict handed to it). A job is marked `closed` after 3 consecutive runs
+  verdict handed to it), and `job_feedback` (one row per `(source_key, job_id)`, a human's
+  click-through "relevant"/"okay"/"irrelevant" verdict from a rendered radar report — see
+  `docs/feedback-exclusion-plan.md`. As of 2026-09-06, `scripts/diff_profile.py`'s HTML report
+  carries the identical feedback buttons and exports the identical `radar-feedback-*.json` shape,
+  so a label can come from either report — `apply_radar_feedback.py`/`suggest_exclusions.py`
+  never know or need to know which one it came from. Upserted, not appended: a later label for the
+  same job replaces the earlier one, since a reviewer correcting an earlier click must land on one
+  current row, not accumulate contradictory history. Written only by
+  `scripts/apply_radar_feedback.py` from an exported feedback JSON — with no `--file`, it
+  auto-resolves the newest `radar-feedback-*.json` in `~/Downloads` (always printing which file
+  and its mtime, so an auto-pick is never silently the wrong one) and exits cleanly if none
+  exists, so it's always safe to invoke unconditionally; `job-hunter export-feedback` mirrors
+  `export-assessments` for read-only inspection (dumps the table, writes `data/job_feedback.json`).
+  Read only by `scripts/suggest_exclusions.py` — `prefilter.py` never reads this table directly,
+  only whatever a human approved into `candidate_profile.yaml` from its suggestions. That script
+  re-evaluates every feedback-tagged job against the *current* profile via the real
+  `evaluate_prefilter` (not a re-derived guess) to route a suggestion to whichever of all six
+  filtering fields the job's current pass/fail reason implicates — not just `soft_exclude_terms`,
+  the only field it originally covered; see `docs/feedback-exclusion-plan.md` §13. A job is marked `closed` after 3 consecutive runs
   where it's missing from a healthy source's listing (`mark_missing`); it stays `active` otherwise,
   which is why the tool surfaces previously-seen jobs by default (see `--new-only` vs default
   behavior below). `mark_missing`'s `stale_before` parameter excludes jobs already older than a
@@ -234,12 +351,15 @@ before most commands will find a profile (falls back to the example file otherwi
   `Job` (summary + detail + location decision + dedup metadata) is the full record; `SearchResult`
   is the CLI/skill-facing output envelope.
 
-- **`skills/`** — the agent-facing half of the system, split into four independently-invocable
+- **`skills/`** — the agent-facing half of the system, split into five independently-invocable
   skills (see `docs/skill-split-plan.md` for the full design rationale): `job-scout` (search →
-  archive), `job-reviewer` (local-LLM scoring), `job-radar` (compile + render), and `job-hunter`
-  (a thin orchestrator that runs the same three commands end to end, plus the compile/report step
-  — it never invokes the other three skills as sub-calls, since cross-runtime support for that
-  isn't guaranteed). Each stage's `SKILL.md` is the canonical procedure for its own stage: run the
+  archive), `job-reviewer` (local-LLM scoring), `job-radar` (compile + render), `job-feedback`
+  (turn radar feedback and/or a `candidate_profile.yaml` change — manual or suggested — into a
+  confirmed profile update via `diff_profile.py`'s check mode; see that section above), and
+  `job-hunter` (a thin orchestrator that runs the search/review/render three commands end to end
+  — it never invokes the other skills as sub-calls, since cross-runtime support for that isn't
+  guaranteed, and `job-feedback` in particular is a separate, occasionally-invoked loop rather than
+  part of every run). Each stage's `SKILL.md` is the canonical procedure for its own stage: run the
   collector, read only `candidates`, never recommend `us_eligible=false`, never invent
   salary/sponsorship/qualifications. Scoring itself is delegated entirely to
   `scripts/review_with_lm_studio.py` — a deterministic script, not a sub-agent — which sends each
@@ -250,8 +370,12 @@ before most commands will find a profile (falls back to the example file otherwi
   immediately inside its loop, so an interrupted run is already resumable by re-invoking it with
   the same `--keyword`/`--input` — no separate resume logic needed. `job-reviewer/references/
   scoring.md` defines the rubric embedded into that script's prompt; `job-scout/references/
-  troubleshooting.md` covers source-health diagnosis. Install/copy all four skills for other agent
-  runtimes via `scripts/install_skill.sh`.
+  troubleshooting.md` covers source-health diagnosis. `job-feedback` is deliberately the one skill
+  whose own `SKILL.md` mandates two explicit stop-and-confirm points with the user — which
+  suggested terms to write into `candidate_profile.yaml`, and whether to accept a shown diff as the
+  new baseline — never inferred from silence or applied because a prior step wasn't rejected; every
+  number it reports still comes from a deterministic script, never an LLM judgment. Install/copy
+  all five skills for other agent runtimes via `scripts/install_skill.sh`.
 
   `job-hunter search --archive` writes each run's candidate bundle to
   `data/searches/{slug}_{date}.json` (`search_archive.py`'s `archive_path()`) instead of one fixed
@@ -280,6 +404,17 @@ before most commands will find a profile (falls back to the example file otherwi
 
 ## Working in this repo
 
+- **Any filtering mechanism must prefer false negatives over false positives.** An exclude term,
+  a soft-exclude, a future scoring/ranking gate — whatever the mechanism, judge it first by
+  whether it could ever wrongly reject a genuinely relevant/okay posting, and treat that as the
+  risk to eliminate, not merely reduce. A false negative (an irrelevant job slips through) costs a
+  little wasted local-LLM review time, visibly, and is cheap to correct next round. A false
+  positive (a real match gets silently filtered) costs the job itself, invisibly, with nothing in
+  any report to reveal it happened. When a choice must be made between the two — e.g. a soft-exclude
+  override term specific enough to avoid rescuing most irrelevant postings but broad enough that
+  one specific irrelevant posting keeps resurfacing anyway — always resolve it in favor of fewer
+  false positives, even at the cost of more false negatives. See `docs/feedback-exclusion-plan.md`
+  for a concrete worked example of this tradeoff being made deliberately.
 - Adapters and location logic fail loudly (raise `SchemaError`/`AdapterError`) rather than
   guessing or silently returning partial data — preserve that when touching adapter code.
 - Don't add credentials or session/CSRF replay for collection. Browser-based stealth fetching is

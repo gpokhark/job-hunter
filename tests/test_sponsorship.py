@@ -44,6 +44,10 @@ def test_available_phrasings_including_the_users_examples():
         "Visa sponsorship available for well-qualified candidates.",
         "This role is eligible for visa sponsorship.",
         "The company offers visa sponsorship for this role.",
+        # Confirmed live on Anthropic's Greenhouse postings: "We do sponsor visas!"
+        "Visa sponsorship: We do sponsor visas! However, we aren't able to sponsor every role.",
+        # Singular phrasing gap found comparing against career-ops' visa_filter.
+        "For the right candidate, we will sponsor a visa.",
     ]
     for text in examples:
         decision = evaluate_sponsorship(text)

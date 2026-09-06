@@ -8,25 +8,22 @@ import respx
 
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
+from job_hunter.adapters.ashby import AshbyAdapter
+from job_hunter.adapters.bosch import BoschAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
+from job_hunter.adapters.greenhouse import GreenhouseAdapter
 from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
 from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
-from job_hunter.adapters.json_api import _date
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
+from job_hunter.adapters.successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
+from job_hunter.models import WorkArrangement
+from job_hunter.normalizer import parse_flexible_date
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def test_date_parses_epoch_millis_and_seconds():
-    assert _date("1762389866472").year == 2025
-    assert _date("1762389866").year == 2025
-    assert _date("2026-08-20T12:00:00Z").year == 2026
-    assert _date(None) is None
-    assert _date("not a date") is None
 
 
 @pytest.mark.asyncio
@@ -62,6 +59,285 @@ async def test_lever_fixture():
     assert jobs[0].job_id == "tri-1"
     assert jobs[0].location_raw == "Los Altos, CA"
     assert "autonomous" in detail.description
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ashby_reads_structured_location_and_work_arrangement():
+    """Confirmed live against api.ashbyhq.com/posting-api/job-board/openai: a single
+    zero-auth request returns every job with clean (non-double-encoded) descriptionHtml
+    inline and a structured address.postalAddress — no per-job detail fetch needed."""
+    url = "https://api.ashbyhq.com/posting-api/job-board/example"
+    payload = {
+        "jobs": [
+            {
+                "id": "abc-123",
+                "title": "Software Engineer",
+                "jobUrl": "https://jobs.ashbyhq.com/example/abc-123",
+                "location": "San Francisco",
+                "department": "Engineering",
+                "employmentType": "FullTime",
+                "publishedAt": "2026-03-12T16:38:15.322+00:00",
+                "workplaceType": "Hybrid",
+                "descriptionHtml": "<p>Build things.</p>",
+                "address": {
+                    "postalAddress": {
+                        "addressCountry": "United States",
+                        "addressRegion": "California",
+                        "addressLocality": "San Francisco",
+                    }
+                },
+            }
+        ]
+    }
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example",
+        company="Example",
+        adapter="ashby",
+        config={
+            "list_url": url,
+            "items_path": "jobs",
+            "listing_description_path": "descriptionHtml",
+            "fields": {
+                "id": "id",
+                "title": "title",
+                "url": "jobUrl",
+                "location": "location",
+                "department": "department",
+                "employment_type": "employmentType",
+                "posted_at": "publishedAt",
+                "work_arrangement": "workplaceType",
+                "country": "address.postalAddress.addressCountry",
+                "state": "address.postalAddress.addressRegion",
+                "city": "address.postalAddress.addressLocality",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = AshbyAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert jobs[0].job_id == "abc-123"
+    assert jobs[0].url == "https://jobs.ashbyhq.com/example/abc-123"
+    assert jobs[0].country == "United States"
+    assert jobs[0].state == "California"
+    assert jobs[0].city == "San Francisco"
+    assert jobs[0].work_arrangement == WorkArrangement.HYBRID
+    assert detail.description == "<p>Build things.</p>"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ashby_work_arrangement_unknown_when_not_configured():
+    """work_arrangement is opt-in — a company config that doesn't map it must not crash
+    or guess, same as any other unconfigured field."""
+    url = "https://api.ashbyhq.com/posting-api/job-board/example"
+    payload = {"jobs": [{"id": "1", "title": "Engineer", "url": "https://example.com/1"}]}
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example", company="Example", adapter="ashby",
+        config={"list_url": url, "items_path": "jobs"},
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await AshbyAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].work_arrangement == WorkArrangement.UNKNOWN
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ashby_folds_secondary_locations_into_location_raw():
+    """The exact bug career-ops' own ashby.mjs independently hit and fixed: a posting
+    whose PRIMARY label is a non-US city but that's also open to a U.S. secondaryLocation
+    must carry that U.S. evidence in location_raw — otherwise evaluate_location's
+    structured non-US rejection has no location text to defer to and wrongly excludes a
+    genuinely US-eligible multi-location posting."""
+    url = "https://api.ashbyhq.com/posting-api/job-board/example"
+    payload = {
+        "jobs": [
+            {
+                "id": "1",
+                "title": "Engineer",
+                "url": "https://example.com/1",
+                "location": "Toronto",
+                "secondaryLocations": [
+                    {
+                        "location": "United States",
+                        "address": {
+                            "postalAddress": {
+                                "addressLocality": "San Francisco",
+                                "addressCountry": "United States",
+                            }
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example", company="Example", adapter="ashby",
+        config={"list_url": url, "items_path": "jobs", "fields": {"location": "location"}},
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await AshbyAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].location_raw == "Toronto · United States · San Francisco"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ashby_appends_remote_tag_when_workplace_type_remote():
+    url = "https://api.ashbyhq.com/posting-api/job-board/example"
+    payload = {
+        "jobs": [
+            {
+                "id": "1", "title": "Engineer", "url": "https://example.com/1",
+                "location": "San Francisco", "workplaceType": "Remote",
+            }
+        ]
+    }
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example", company="Example", adapter="ashby",
+        config={"list_url": url, "items_path": "jobs", "fields": {"location": "location"}},
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await AshbyAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].location_raw == "San Francisco · Remote"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_greenhouse_unescapes_double_encoded_content():
+    """Confirmed live against boards-api.greenhouse.io/v1/boards/anthropic/jobs: the
+    `content` field is HTML-entity-double-encoded (literally "&lt;div&gt;", not "<div>").
+    GreenhouseAdapter must unescape it once so the description is real, renderable HTML."""
+    url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    payload = {
+        "jobs": [
+            {
+                "id": 1,
+                "title": "Software Engineer",
+                "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1",
+                "location": {"name": "New York City, NY"},
+                "departments": [{"name": "Engineering"}],
+                "first_published": "2024-12-20T13:53:38-05:00",
+                "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;We do sponsor visas!&lt;/p&gt;&lt;/div&gt;",
+            }
+        ]
+    }
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example",
+        company="Example",
+        adapter="greenhouse",
+        config={
+            "list_url": url,
+            "items_path": "jobs",
+            "listing_description_path": "content",
+            "fields": {
+                "id": "id",
+                "title": "title",
+                "url": "absolute_url",
+                "location": "location.name",
+                "department": "departments.0.name",
+                "posted_at": "first_published",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = GreenhouseAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert jobs[0].url == "https://job-boards.greenhouse.io/example/jobs/1"
+    assert jobs[0].department == "Engineering"
+    assert detail.description == '<div class="content-intro"><p>We do sponsor visas!</p></div>'
+    assert "&lt;" not in detail.description
+
+
+def _greenhouse_company(url: str, **extra_fields):
+    fields = {"id": "id", "title": "title", "url": "absolute_url", "location": "location.name"}
+    fields.update(extra_fields)
+    return CompanyConfig(
+        key="example", company="Example", adapter="greenhouse",
+        config={"list_url": url, "items_path": "jobs", "fields": fields},
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_greenhouse_enriches_work_model_only_location_from_offices():
+    """The bug career-ops' greenhouse.mjs independently hit: some boards put ONLY a
+    work-model string ("Hybrid") in location.name with no city at all — the real city
+    lives in a separate /offices endpoint the /jobs list never returns. Without
+    enrichment, evaluate_location has no geography to work with and a genuinely
+    US-eligible job would be wrongly excluded."""
+    jobs_url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    offices_url = "https://boards-api.greenhouse.io/v1/boards/example/offices"
+    respx.get(jobs_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jobs": [{"id": 1, "title": "Engineer", "absolute_url": "https://x/1", "location": {"name": "Hybrid"}}]},
+        )
+    )
+    respx.get(offices_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "offices": [
+                    {
+                        "name": "San Francisco, CA",
+                        "departments": [{"jobs": [{"id": 1}]}],
+                        "children": [],
+                    }
+                ]
+            },
+        )
+    )
+    company = _greenhouse_company(jobs_url)
+    async with httpx.AsyncClient() as client:
+        jobs = await GreenhouseAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].location_raw == "Hybrid · San Francisco, CA"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_greenhouse_skips_offices_fetch_when_no_job_needs_it():
+    """Enrichment is conditional — a board where every job already has a real city
+    must never pay for the (potentially large) /offices request. respx has no mock for
+    the offices URL here; if the adapter fetched it anyway, this test would fail with
+    an unmocked-request error, which is exactly the assertion."""
+    jobs_url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    respx.get(jobs_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jobs": [{"id": 1, "title": "Engineer", "absolute_url": "https://x/1", "location": {"name": "New York City, NY"}}]},
+        )
+    )
+    company = _greenhouse_company(jobs_url)
+    async with httpx.AsyncClient() as client:
+        jobs = await GreenhouseAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].location_raw == "New York City, NY"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_greenhouse_offices_fetch_failure_falls_back_gracefully():
+    """Best-effort enrichment: a board with no /offices (or a failed fetch) must not
+    break the whole listing — just keep the bare work-model string."""
+    jobs_url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    offices_url = "https://boards-api.greenhouse.io/v1/boards/example/offices"
+    respx.get(jobs_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jobs": [{"id": 1, "title": "Engineer", "absolute_url": "https://x/1", "location": {"name": "Hybrid"}}]},
+        )
+    )
+    respx.get(offices_url).mock(return_value=httpx.Response(404))
+    company = _greenhouse_company(jobs_url)
+    async with httpx.AsyncClient() as client:
+        jobs = await GreenhouseAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert jobs[0].location_raw == "Hybrid"
 
 
 @pytest.mark.asyncio
@@ -288,6 +564,114 @@ async def test_workday_native_public_base_url_used_for_display_not_detail_fetch(
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_workday_native_reads_remote_type_from_listing_and_detail():
+    """Workday's own "remoteType" facet ("Hybrid", "Onsite", "Remote", "Remote/Hybrid") is
+    real structured signal the adapter previously never read at all — work_arrangement fell
+    back to text-sniffing location_raw, which says nothing about remote/hybrid for most
+    postings (e.g. a plain "Sunnyvale, California, United States of America"), silently
+    misclassifying real hybrid/remote jobs as unknown. Confirmed live: a GM posting with
+    jobPostingInfo.remoteType == "Hybrid" and no "hybrid"/"remote" text anywhere in
+    location_raw or the description."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "jobPostings": [
+                    {
+                        "title": "Hybrid Role",
+                        "externalPath": "/job/Some-City/Hybrid-Role_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                        "remoteType": "Remote/Hybrid",
+                    },
+                    {
+                        "title": "Onsite Role",
+                        "externalPath": "/job/Some-City/Onsite-Role_JR-2",
+                        "jobId": "JR-2",
+                        "postedOn": "Posted Today",
+                        "remoteType": "Onsite",
+                    },
+                ],
+            },
+        )
+    )
+    respx.get(
+        "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Some-City/Hybrid-Role_JR-1"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jobPostingInfo": {"jobDescription": "Build ADAS features.", "remoteType": "Hybrid"}},
+        )
+    )
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        # "Remote/Hybrid" resolves to HYBRID via the same hybrid-beats-remote text
+        # precedence used everywhere else (detect_arrangement), not a bespoke mapping.
+        assert jobs[0].work_arrangement == WorkArrangement.HYBRID
+        assert jobs[1].work_arrangement == WorkArrangement.ONSITE
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.work_arrangement == WorkArrangement.HYBRID
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_native_detail_arrangement_none_when_remote_type_absent():
+    """A detail response with no remoteType field must yield work_arrangement=None, not
+    UNKNOWN — None is what tells evaluate_location to fall back to parsing location_raw
+    text, the same fallback behavior that existed before remoteType was read at all."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "jobPostings": [
+                    {
+                        "title": "ADAS Engineer",
+                        "externalPath": "/job/Some-City/ADAS-Engineer_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                    }
+                ],
+            },
+        )
+    )
+    respx.get(
+        "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Some-City/ADAS-Engineer_JR-1"
+    ).mock(return_value=httpx.Response(200, json={"jobPostingInfo": {"jobDescription": "Build ADAS features."}}))
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        assert jobs[0].work_arrangement == WorkArrangement.UNKNOWN
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.work_arrangement is None
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_html_fixture():
     url = "https://jobs.example/search"
     respx.get(url).mock(
@@ -352,7 +736,7 @@ async def test_html_detail_json_ld_fallback():
         jobs = await adapter.fetch_summaries()
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Real description"
-    assert detail.posted_at == _date("2026-05-29")
+    assert detail.posted_at == parse_flexible_date("2026-05-29")
     assert detail.employment_type == "FULL_TIME"
 
     company_without_selector = CompanyConfig(
@@ -374,7 +758,7 @@ async def test_html_detail_json_ld_fallback():
         jobs = await adapter.fetch_summaries()
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Fallback description"
-    assert detail.posted_at == _date("2026-05-29")
+    assert detail.posted_at == parse_flexible_date("2026-05-29")
 
 
 @pytest.mark.asyncio
@@ -468,6 +852,45 @@ async def test_html_multi_index_liferay_publication_date():
     assert detail.description == "Real description"
     assert detail.posted_at is not None
     assert detail.posted_at.date().isoformat() == "2026-06-24"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_multi_index_fetches_urls_without_mutating_shared_config():
+    """Regression test: fetch_summaries used to fetch each index_url by temporarily
+    overwriting company.config["list_url"] in place and restoring it afterward — if a
+    later index raised mid-loop, the shared CompanyConfig was left mutated to whichever
+    URL was in flight, since the restore line was never reached. It now passes each
+    index_url through as a call argument instead of mutating shared config, so a failing
+    index can never corrupt it, with nothing to restore."""
+    first_url = "https://careers.example/index-a"
+    second_url = "https://careers.example/index-b"
+    original_list_url = "https://careers.example/original"
+    respx.get(first_url).mock(
+        return_value=httpx.Response(
+            200,
+            text=(
+                '<div class="job"><a href="https://careers.example/job/1">Engineer</a></div>'
+            ),
+        )
+    )
+    respx.get(second_url).mock(return_value=httpx.Response(500))
+
+    company = CompanyConfig(
+        key="multi",
+        company="Multi",
+        adapter="html_multi_index",
+        config={
+            "list_url": original_list_url,
+            "index_urls": [first_url, second_url],
+            "card_selector": ".job",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = HtmlMultiIndexAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.fetch_summaries()
+    assert company.config["list_url"] == original_list_url
 
 
 def _adp_job(req_id: str) -> dict:
@@ -811,3 +1234,192 @@ async def test_eightfold_fixed_page_size_pagination_and_detail_fetch():
     assert jobs[0].location_raw == "Moline, IL, US / Waterloo, IA, US"
     assert jobs[0].posted_at.year == 2026
     assert detail.description == "Build autonomous systems."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bosch_pagination_and_refnumber_detail_lookup():
+    """Confirmed live against bosch-i3-caas-api.e-spirit.cloud: get_jobs paginates by a
+    1-indexed `page` param and reports its total under
+    _embedded.rh:result[0].meta[0].count; the listing payload carries no description, so
+    fetch_detail re-queries the same collection filtered by refNumber and must
+    concatenate all four jobAd.sections fields, not just the first."""
+    list_url = "https://caas.example/get_jobs"
+    detail_url = "https://caas.example/jobs.content"
+
+    def _page(items: list[dict], total: int) -> dict:
+        return {
+            "_embedded": {"rh:result": [{"meta": [{"count": total}], "data": items}]}
+        }
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("authorization") == "Bearer test-key"
+        page = request.url.params.get("page")
+        if page == "1":
+            return httpx.Response(
+                200,
+                json=_page(
+                    [
+                        {
+                            "_id": "REF1",
+                            "refNumber": "REF1",
+                            "name": "Autonomous Systems Engineer",
+                            "jobUrl": "REF1-autonomous-systems-engineer",
+                            "releasedDate": "2026-08-01T00:00:00.000Z",
+                            "location": {"city": "Sunnyvale", "workLocation": "Sunnyvale, CA"},
+                            "country": {"valueLabel": "United States"},
+                            "function": {"label": "Engineering"},
+                            "working_hours": {"valueLabel": "Full-time"},
+                            "work_mode": "on-site",
+                        }
+                    ],
+                    total=2,
+                ),
+            )
+        return httpx.Response(
+            200,
+            json=_page(
+                [
+                    {
+                        "_id": "REF2",
+                        "refNumber": "REF2",
+                        "name": "Quality Engineer",
+                        "jobUrl": "REF2-quality-engineer",
+                        "releasedDate": "2026-08-02T00:00:00.000Z",
+                        "location": {"city": "Fort Lauderdale", "workLocation": "Fort Lauderdale, FL"},
+                        "country": {"valueLabel": "United States"},
+                    }
+                ],
+                total=2,
+            ),
+        )
+
+    respx.get(url__regex=r"https://caas\.example/get_jobs.*").mock(side_effect=_respond)
+    respx.get(url__regex=r"https://caas\.example/jobs\.content.*").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "jobAd": {
+                        "sections": {
+                            "jobDescription": {"text": "Build ADAS."},
+                            "qualifications": {"text": "5+ years."},
+                        }
+                    }
+                }
+            ],
+        )
+    )
+    company = CompanyConfig(
+        key="bosch",
+        company="Bosch",
+        adapter="bosch",
+        config={
+            "list_url": list_url,
+            "detail_url": detail_url,
+            "detail_base_url": "https://jobs.bosch.example/en/job/",
+            "api_key": "test-key",
+            "pagesize": 1,
+            "fields": {
+                "id": "refNumber",
+                "title": "name",
+                "url": "jobUrl",
+                "location": "location.workLocation",
+                "city": "location.city",
+                "country": "country.valueLabel",
+                "department": "function.label",
+                "employment_type": "working_hours.valueLabel",
+                "posted_at": "releasedDate",
+                "work_arrangement": "work_mode",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = BoschAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert [job.job_id for job in jobs] == ["REF1", "REF2"]
+    assert jobs[0].url == "https://jobs.bosch.example/en/job/REF1-autonomous-systems-engineer"
+    assert jobs[0].work_arrangement == WorkArrangement.ONSITE
+    assert detail.description == "Build ADAS.\n\n5+ years."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_successfactors_rmk_v2_pagination_and_label_matched_detail():
+    """Confirmed live against jobs.bmwgroup.com: the search widget POSTs a JSON body
+    paginated by a 0-indexed pageNumber field, and the plain-HTML detail page repeats the
+    same value CSS class (.rtltextaligneligible) for title/date/location/description
+    alike — fetch_detail must match by the adjacent .joblayouttoken-label text
+    ("Job Description:"), not position or a bare class selector."""
+    list_url = "https://rmk.example/services/recruiting/v1/jobs"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["pageNumber"] == 0:
+            return httpx.Response(
+                200,
+                json={
+                    "totalJobs": 2,
+                    "jobSearchResult": [
+                        {
+                            "response": {
+                                "id": "111",
+                                "unifiedStandardTitle": "Manufacturing Engineer",
+                                "urlTitle": "Manufacturing-Engineer",
+                                "jobLocationShort": ["Spartanburg, SC, USA, "],
+                                "unifiedStandardStart": "7/31/26",
+                            }
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "totalJobs": 2,
+                "jobSearchResult": [
+                    {
+                        "response": {
+                            "id": "222",
+                            "unifiedStandardTitle": "Data Analyst",
+                            "urlTitle": "Data-Analyst",
+                            "jobLocationShort": ["Spartanburg, SC, USA, "],
+                            "unifiedStandardStart": "8/1/26",
+                        }
+                    }
+                ],
+            },
+        )
+
+    respx.post(list_url).mock(side_effect=_respond)
+    detail_html = """
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Job Title: </span>
+      <span class="rtltextaligneligible">Manufacturing Engineer</span></div>
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Posting Start Date: </span>
+      <span class="rtltextaligneligible">7/31/26</span></div>
+    <div class="joblayouttoken"><span class="joblayouttoken-label">Job Description: </span>
+      <span class="rtltextaligneligible">Build vehicles.</span></div>
+    """
+    respx.get(url__regex=r"https://rmk\.example/job/.*").mock(
+        return_value=httpx.Response(200, text=detail_html)
+    )
+    company = CompanyConfig(
+        key="bmw",
+        company="BMW Group",
+        adapter="successfactors_rmk_v2",
+        config={
+            "list_url": list_url,
+            "detail_base_url": "https://rmk.example/job/",
+            "locale": "en_US",
+            "location_filter": "United States",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = SuccessFactorsRmkV2Adapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert [job.job_id for job in jobs] == ["111", "222"]
+    assert jobs[0].url == "https://rmk.example/job/Manufacturing-Engineer/111-en_US"
+    assert jobs[0].posted_at.strftime("%Y-%m-%d") == "2026-07-31"
+    assert detail.description == "Build vehicles."

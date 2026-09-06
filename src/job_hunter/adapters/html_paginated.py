@@ -11,15 +11,21 @@ from ..normalizer import (
     fallback_job_id,
     normalize_text,
     parse_display_date,
+    parse_flexible_date,
+    stringify,
 )
 from .base import JobAdapter, SchemaError
-from .json_api import _date, _stringify
 
 
 class HtmlPaginatedAdapter(JobAdapter):
-    async def fetch_summaries(self) -> list[JobSummary]:
+    async def fetch_summaries(self, start_url: str | None = None) -> list[JobSummary]:
+        """`start_url` overrides `config["list_url"]` for this call only — used by
+        `HtmlMultiIndexAdapter` to fetch several independent listing indexes without
+        mutating the shared `CompanyConfig` (which every source's adapter instance for
+        this run reads config from, and which used to get left pointing at whichever
+        index_url was mid-flight if a later one raised)."""
         cfg = self.company.config
-        start_url = cfg.get("list_url")
+        start_url = start_url or cfg.get("list_url")
         if not start_url:
             raise SchemaError("list_url is not configured")
         jobs: list[JobSummary] = []
@@ -35,7 +41,14 @@ class HtmlPaginatedAdapter(JobAdapter):
             if not cards and not jobs:
                 raise SchemaError("no job cards matched configured selector")
             for card in cards:
-                link = card.css_first(cfg.get("link_selector", "a"))
+                # link_selector: "self" is opt-in for sites (e.g. Wayve's "First" ATS)
+                # whose card_selector already matches the anchor itself with no wrapping
+                # element to hold a distinct nested link — card.css_first() only searches
+                # descendants, so there's otherwise no selector that resolves back to the
+                # card node it was called on.
+                link = card if cfg.get("link_selector") == "self" else card.css_first(
+                    cfg.get("link_selector", "a")
+                )
                 title_node = card.css_first(cfg.get("title_selector", "a"))
                 if not link or not title_node or not link.attributes.get("href"):
                     raise SchemaError("job card missing required link/title")
@@ -110,13 +123,13 @@ class HtmlPaginatedAdapter(JobAdapter):
         # doesn't cover it — and, if description_selector found nothing, its own
         # description too.
         posting = extract_job_posting_ld(text)
-        posted_at = _date(posting.get("datePosted")) if posting else None
+        posted_at = parse_flexible_date(posting.get("datePosted")) if posting else None
         if not description and posting and posting.get("description"):
             description = normalize_text(html_module.unescape(posting["description"]))
         return JobDetail(
             description=description or None,
             posted_at=posted_at,
-            employment_type=_stringify(posting.get("employmentType")) if posting else None,
+            employment_type=stringify(posting.get("employmentType")) if posting else None,
         )
 
 

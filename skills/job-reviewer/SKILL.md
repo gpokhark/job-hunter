@@ -1,5 +1,6 @@
 ---
 name: job-reviewer
+version: 1.0.0
 description: Score job-hunter's archived candidates against the user's resume using a local LLM (LM Studio) — resumes automatically from wherever a prior run left off, never spends cloud/agent tokens.
 ---
 

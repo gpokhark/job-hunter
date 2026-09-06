@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | { read -r f; case \"$f\" in */config/candidate_profile.yaml) uv run python scripts/diff_profile.py 2>/dev/null || true ;; esac; }",
+            "statusMessage": "Regenerating candidate_profile.yaml diff report"
+          }
+        ]
+      }
+    ]
+  }
+}

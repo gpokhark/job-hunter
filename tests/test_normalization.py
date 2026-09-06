@@ -5,6 +5,7 @@ from job_hunter.normalizer import (
     description_hash,
     fallback_job_id,
     parse_display_date,
+    parse_flexible_date,
     parse_relative_posted,
 )
 
@@ -39,3 +40,11 @@ def test_parse_display_date():
     assert parse_display_date("  Aug 10, 2026  \n") == datetime(2026, 8, 10, tzinfo=UTC)
     assert parse_display_date("not a date") is None
     assert parse_display_date(None) is None
+
+
+def test_parse_flexible_date_epoch_millis_and_seconds():
+    assert parse_flexible_date("1762389866472").year == 2025
+    assert parse_flexible_date("1762389866").year == 2025
+    assert parse_flexible_date("2026-08-20T12:00:00Z").year == 2026
+    assert parse_flexible_date(None) is None
+    assert parse_flexible_date("not a date") is None

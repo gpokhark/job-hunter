@@ -1,8 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
 from job_hunter.config import CandidateProfile
-from job_hunter.models import Job, LocationConfidence
-from job_hunter.prefilter import passes_prefilter, passes_recency, relevance_score
+from job_hunter.models import Job, LocationConfidence, PrefilterRule
+from job_hunter.prefilter import (
+    evaluate_prefilter,
+    passes_prefilter,
+    passes_recency,
+    relevance_score,
+)
 
 
 def job(**updates):
@@ -89,6 +94,91 @@ def test_exclude_terms_still_checks_full_description():
         job(title="Validation Engineer", description="Focus on cybersecurity compliance"),
         profile,
     )
+
+
+def test_soft_exclude_term_rejects_without_a_rescuing_strong_relevance_term():
+    """A soft_exclude_terms match with nothing in strong_relevance_terms present must be
+    excluded — the real Apple posting that motivated this mechanism."""
+    profile = CandidateProfile(
+        target_domains=["verification"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["ADAS"],
+    )
+    assert not passes_prefilter(
+        job(title="Verification Platform Engineer, Platform Architecture"), profile
+    )
+
+
+def test_strong_relevance_term_rescues_a_soft_excluded_job():
+    """The exact edge case that motivated strong_relevance_terms: a future job matching
+    both a soft_exclude_terms phrase and a strong_relevance_terms phrase must survive —
+    this is what makes the mechanism structurally safe, not just empirically safe
+    against history seen so far. See docs/feedback-exclusion-plan.md section 4."""
+    profile = CandidateProfile(
+        target_domains=["ADAS", "verification"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["ADAS"],
+    )
+    assert passes_prefilter(job(title="ADAS Platform Architecture Engineer"), profile)
+
+
+def test_control_systems_tradeoff_is_deliberate_not_a_bug():
+    """Documented, accepted false negative: "control systems" in strong_relevance_terms
+    rescues this exact Apple posting despite it being confirmed irrelevant, because a
+    narrower override term was judged not worth the added complexity. See
+    docs/feedback-exclusion-plan.md section 3.3 and CLAUDE.md's false-negatives-over-
+    false-positives principle. This test exists so the behavior reads as an intentional
+    decision, not something to "fix" later."""
+    profile = CandidateProfile(
+        target_domains=["simulation"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["control systems"],
+    )
+    assert passes_prefilter(
+        job(title="Simulation and Control Systems Engineer - Platform Architecture"), profile
+    )
+
+
+def test_evaluate_prefilter_reports_rule_and_term_for_each_rejection_path():
+    profile = CandidateProfile(target_domains=["ADAS"], exclude_title_terms=["intern"])
+
+    ineligible = evaluate_prefilter(job(us_eligible=False), profile)
+    assert not ineligible.passes and ineligible.rule == PrefilterRule.NOT_US_ELIGIBLE
+
+    title_excluded = evaluate_prefilter(job(title="ADAS Intern"), profile)
+    assert not title_excluded.passes
+    assert title_excluded.rule == PrefilterRule.EXCLUDE_TITLE_TERMS
+    assert title_excluded.term == "intern"
+
+    no_match = evaluate_prefilter(job(title="Generic Engineer"), profile)
+    assert not no_match.passes and no_match.rule == PrefilterRule.NO_POSITIVE_MATCH
+
+    passing = evaluate_prefilter(job(title="ADAS Engineer"), profile)
+    assert passing.passes
+    assert passing.rule == PrefilterRule.POSITIVE_MATCH
+    assert passing.term == "ADAS"
+    assert passing.rescued_by is None
+
+
+def test_evaluate_prefilter_reports_soft_exclude_and_rescue_terms():
+    profile = CandidateProfile(
+        target_domains=["ADAS", "verification"],
+        soft_exclude_terms=["platform architecture"],
+        strong_relevance_terms=["ADAS"],
+    )
+
+    excluded = evaluate_prefilter(
+        job(title="Verification Platform Engineer, Platform Architecture"), profile
+    )
+    assert not excluded.passes
+    assert excluded.rule == PrefilterRule.SOFT_EXCLUDED
+    assert excluded.term == "platform architecture"
+    assert excluded.rescued_by is None
+
+    rescued = evaluate_prefilter(job(title="ADAS Platform Architecture Engineer"), profile)
+    assert rescued.passes
+    assert rescued.rule == PrefilterRule.POSITIVE_MATCH
+    assert rescued.rescued_by == "ADAS"
 
 
 def test_title_only_domain_terms_still_gate_a_relevant_generic_title():

@@ -1,5 +1,6 @@
 ---
 name: job-hunter
+version: 1.0.0
 description: Run the full job-hunter pipeline — search, local-LLM review, and radar report — end to end for a keyword/title search or the candidate profile's standing criteria.
 ---
 
