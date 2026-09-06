@@ -9,7 +9,15 @@ that was never tagged at all never gets a row created for it either.
 Refreshes `data/job_feedback.csv` afterward for human browsing, same pattern as
 `assessments_to_csv.py`.
 
+With no `--file`, auto-resolves the newest `radar-feedback-*.json` in `--downloads-dir` (default
+`~/Downloads`) — the exact filename the radar report's export button already produces (see
+`scripts/templates/radar_template.html`). Always prints which file it picked and when it was
+last modified, so an auto-pick is never silently the wrong one. If none is found, this exits 0
+having done nothing — safe to call unconditionally (e.g. from a skill) without first checking
+whether a fresh export actually exists. An explicit `--file` always wins over auto-resolution.
+
 Usage:
+    uv run python scripts/apply_radar_feedback.py
     uv run python scripts/apply_radar_feedback.py --file ~/Downloads/radar-feedback-default_2026-09-05.json
 """
 
@@ -19,6 +27,7 @@ import argparse
 import csv
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +38,18 @@ from job_hunter.storage import Storage
 _VALID_LABELS = {"relevant", "okay", "irrelevant"}
 
 _CSV_COLUMNS = ["recorded_at", "label", "score", "company", "title", "department", "source_key", "job_id"]
+
+_DEFAULT_DOWNLOADS_DIR = Path.home() / "Downloads"
+
+
+def resolve_feedback_file(explicit: Path | None, downloads_dir: Path) -> Path | None:
+    """An explicit --file always wins, unresolved. Otherwise, the newest
+    radar-feedback-*.json in downloads_dir by mtime, or None if there isn't one — the caller
+    decides what "nothing to ingest" means for it, this never raises for a missing file."""
+    if explicit is not None:
+        return explicit
+    matches = list(downloads_dir.glob("radar-feedback-*.json")) if downloads_dir.exists() else []
+    return max(matches, key=lambda p: p.stat().st_mtime) if matches else None
 
 
 def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
@@ -78,12 +99,34 @@ def ingest(storage: Storage, payload: list[dict[str, Any]]) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--file", type=Path, required=True, help="the exported radar-feedback JSON file")
+    parser.add_argument(
+        "--file", type=Path, default=None,
+        help="the exported radar-feedback JSON file; if omitted, auto-resolves the newest "
+        "radar-feedback-*.json in --downloads-dir",
+    )
+    parser.add_argument(
+        "--downloads-dir", type=Path, default=_DEFAULT_DOWNLOADS_DIR,
+        help=f"where to look for an un-specified --file (default: {_DEFAULT_DOWNLOADS_DIR})",
+    )
     args = parser.parse_args()
 
-    payload = json.loads(args.file.read_text(encoding="utf-8"))
+    resolved = resolve_feedback_file(args.file, args.downloads_dir)
+    if resolved is None:
+        print(
+            f"No radar-feedback-*.json found in {args.downloads_dir} and no --file given — "
+            "nothing to ingest."
+        )
+        return 0
+    if not resolved.exists():
+        print(f"job-hunter: {resolved} does not exist", file=sys.stderr)
+        return 2
+
+    mtime = datetime.fromtimestamp(resolved.stat().st_mtime).isoformat(timespec="seconds")
+    print(f"Using {resolved} (last modified {mtime})")
+
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
-        print(f"job-hunter: {args.file} must contain a JSON array of feedback entries", file=sys.stderr)
+        print(f"job-hunter: {resolved} must contain a JSON array of feedback entries", file=sys.stderr)
         return 2
 
     settings = load_settings()

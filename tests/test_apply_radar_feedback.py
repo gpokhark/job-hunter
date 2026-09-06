@@ -1,10 +1,11 @@
 import sys
+import time
 from pathlib import Path
 
 from job_hunter.storage import Storage
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from apply_radar_feedback import ingest  # noqa: E402
+from apply_radar_feedback import ingest, resolve_feedback_file  # noqa: E402
 
 
 def _entry(**updates):
@@ -46,3 +47,30 @@ def test_invalid_label_is_skipped_not_stored(tmp_path):
         counts = ingest(storage, [_entry(job_id="7", label="maybe")])
         assert counts["invalid"] == 1
         assert storage.export_job_feedback() == []
+
+
+# --- resolve_feedback_file (auto-resolving the newest download) ---
+
+def test_resolve_feedback_file_explicit_file_wins_even_if_missing(tmp_path):
+    """An explicit --file is never second-guessed against the downloads directory — it's
+    returned verbatim, existence-checking is main()'s job, not the resolver's."""
+    explicit = tmp_path / "does-not-exist.json"
+    assert resolve_feedback_file(explicit, tmp_path) == explicit
+
+
+def test_resolve_feedback_file_picks_newest_by_mtime(tmp_path):
+    older = tmp_path / "radar-feedback-default_2026-09-01.json"
+    newer = tmp_path / "radar-feedback-adas_2026-09-05.json"
+    older.write_text("[]")
+    time.sleep(0.01)
+    newer.write_text("[]")
+    assert resolve_feedback_file(None, tmp_path) == newer
+
+
+def test_resolve_feedback_file_returns_none_when_nothing_matches(tmp_path):
+    (tmp_path / "unrelated.json").write_text("[]")
+    assert resolve_feedback_file(None, tmp_path) is None
+
+
+def test_resolve_feedback_file_returns_none_when_downloads_dir_missing(tmp_path):
+    assert resolve_feedback_file(None, tmp_path / "does-not-exist") is None

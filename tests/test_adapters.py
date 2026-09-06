@@ -11,22 +11,14 @@ from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
 from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
 from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
-from job_hunter.adapters.json_api import _date
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
+from job_hunter.normalizer import parse_flexible_date
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def test_date_parses_epoch_millis_and_seconds():
-    assert _date("1762389866472").year == 2025
-    assert _date("1762389866").year == 2025
-    assert _date("2026-08-20T12:00:00Z").year == 2026
-    assert _date(None) is None
-    assert _date("not a date") is None
 
 
 @pytest.mark.asyncio
@@ -352,7 +344,7 @@ async def test_html_detail_json_ld_fallback():
         jobs = await adapter.fetch_summaries()
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Real description"
-    assert detail.posted_at == _date("2026-05-29")
+    assert detail.posted_at == parse_flexible_date("2026-05-29")
     assert detail.employment_type == "FULL_TIME"
 
     company_without_selector = CompanyConfig(
@@ -374,7 +366,7 @@ async def test_html_detail_json_ld_fallback():
         jobs = await adapter.fetch_summaries()
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Fallback description"
-    assert detail.posted_at == _date("2026-05-29")
+    assert detail.posted_at == parse_flexible_date("2026-05-29")
 
 
 @pytest.mark.asyncio
@@ -468,6 +460,45 @@ async def test_html_multi_index_liferay_publication_date():
     assert detail.description == "Real description"
     assert detail.posted_at is not None
     assert detail.posted_at.date().isoformat() == "2026-06-24"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_multi_index_fetches_urls_without_mutating_shared_config():
+    """Regression test: fetch_summaries used to fetch each index_url by temporarily
+    overwriting company.config["list_url"] in place and restoring it afterward — if a
+    later index raised mid-loop, the shared CompanyConfig was left mutated to whichever
+    URL was in flight, since the restore line was never reached. It now passes each
+    index_url through as a call argument instead of mutating shared config, so a failing
+    index can never corrupt it, with nothing to restore."""
+    first_url = "https://careers.example/index-a"
+    second_url = "https://careers.example/index-b"
+    original_list_url = "https://careers.example/original"
+    respx.get(first_url).mock(
+        return_value=httpx.Response(
+            200,
+            text=(
+                '<div class="job"><a href="https://careers.example/job/1">Engineer</a></div>'
+            ),
+        )
+    )
+    respx.get(second_url).mock(return_value=httpx.Response(500))
+
+    company = CompanyConfig(
+        key="multi",
+        company="Multi",
+        adapter="html_multi_index",
+        config={
+            "list_url": original_list_url,
+            "index_urls": [first_url, second_url],
+            "card_selector": ".job",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = HtmlMultiIndexAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.fetch_summaries()
+    assert company.config["list_url"] == original_list_url
 
 
 def _adp_job(req_id: str) -> dict:

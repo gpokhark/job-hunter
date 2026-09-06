@@ -244,8 +244,32 @@ before most commands will find a profile (falls back to the example file otherwi
   `job-hunter search --keyword` (a full replacement of `target_domains`/`target_title_terms`, not
   a narrowing of them) — testing an edit to either field while also passing `--keyword` will
   correctly show zero effect, and the tool says so explicitly rather than leaving that silent.
-  No `--apply` — see `docs/profile-diff-plan.md` section 7 for why that's out of scope, not
-  merely deferred.
+  Every mode's report also includes a "Profile terms" section — the actual before/after words for
+  each filtering field (`+added`/`-removed`/unchanged), computed by `_field_term_diffs`, so a
+  reviewer sees exactly which words are driving a Lost/Gained verdict without opening the YAML
+  file separately; in the HTML report these render as tags (green `+term`, red struck-through
+  `-term`). No `--apply` — see `docs/profile-diff-plan.md` section 7 for why that's out of scope
+  for *edits*, not merely deferred — that reasoning is specifically about writing changes into the
+  file, which is why it doesn't block the mechanism below (a verbatim file copy, never a
+  parse/re-serialize).
+
+  With none of `--before`/`--after`/`--add`/`--remove` given, it runs in **check mode** instead of
+  erroring: it diffs the current on-disk profile against a tracked baseline,
+  `data/candidate_profile.snapshot.yaml` — a plain-text copy of "the profile as of the last time a
+  baseline was accepted," not a parsed/re-dumped one, so it can never be the thing that damages the
+  real file's comments/formatting. This is what lets the tool answer "what changed since I last
+  looked" regardless of *how* the file changed — a manual hand-edit and a skill-applied suggestion
+  both flow through the identical on-disk file, so check mode doesn't need to (and can't) tell them
+  apart. Check mode only ever *shows* the diff; it never advances the baseline on its own, by
+  design (an earlier version auto-advanced after every run, but that meant a diff you didn't
+  actually mean to accept could get silently baked in as the new normal before you'd fully looked
+  at it) — advancing requires a separate, explicit `--accept-baseline` run, which keeps the
+  snapshot it replaces at `data/candidate_profile.snapshot.prev.yaml` for exactly one level of
+  undo via `--rollback-baseline` (a true swap — running it twice in a row is a no-op, not a double
+  undo). The very first check-mode run has no snapshot yet, so it bootstraps one from the current
+  profile with nothing to compare — there's no diff to have confirmed yet, so that one step alone
+  doesn't require `--accept-baseline`. See `skills/job-feedback/SKILL.md` for how this is meant to
+  be driven end to end, including the confirmation discipline around it.
 
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
@@ -259,7 +283,10 @@ before most commands will find a profile (falls back to the example file otherwi
   `docs/feedback-exclusion-plan.md`. Upserted, not appended: a later label for the same job
   replaces the earlier one, since a reviewer correcting an earlier click must land on one current
   row, not accumulate contradictory history. Written only by `scripts/apply_radar_feedback.py`
-  from a radar report's exported feedback JSON; `job-hunter export-feedback` mirrors
+  from a radar report's exported feedback JSON — with no `--file`, it auto-resolves the newest
+  `radar-feedback-*.json` in `~/Downloads` (always printing which file and its mtime, so an
+  auto-pick is never silently the wrong one) and exits cleanly if none exists, so it's always safe
+  to invoke unconditionally; `job-hunter export-feedback` mirrors
   `export-assessments` for read-only inspection (dumps the table, writes `data/job_feedback.json`).
   Read only by `scripts/suggest_exclusions.py` — `prefilter.py` never reads this table directly,
   only the `soft_exclude_terms`/`strong_relevance_terms` a human approved into
@@ -284,12 +311,15 @@ before most commands will find a profile (falls back to the example file otherwi
   `Job` (summary + detail + location decision + dedup metadata) is the full record; `SearchResult`
   is the CLI/skill-facing output envelope.
 
-- **`skills/`** — the agent-facing half of the system, split into four independently-invocable
+- **`skills/`** — the agent-facing half of the system, split into five independently-invocable
   skills (see `docs/skill-split-plan.md` for the full design rationale): `job-scout` (search →
-  archive), `job-reviewer` (local-LLM scoring), `job-radar` (compile + render), and `job-hunter`
-  (a thin orchestrator that runs the same three commands end to end, plus the compile/report step
-  — it never invokes the other three skills as sub-calls, since cross-runtime support for that
-  isn't guaranteed). Each stage's `SKILL.md` is the canonical procedure for its own stage: run the
+  archive), `job-reviewer` (local-LLM scoring), `job-radar` (compile + render), `job-feedback`
+  (turn radar feedback and/or a `candidate_profile.yaml` change — manual or suggested — into a
+  confirmed profile update via `diff_profile.py`'s check mode; see that section above), and
+  `job-hunter` (a thin orchestrator that runs the search/review/render three commands end to end
+  — it never invokes the other skills as sub-calls, since cross-runtime support for that isn't
+  guaranteed, and `job-feedback` in particular is a separate, occasionally-invoked loop rather than
+  part of every run). Each stage's `SKILL.md` is the canonical procedure for its own stage: run the
   collector, read only `candidates`, never recommend `us_eligible=false`, never invent
   salary/sponsorship/qualifications. Scoring itself is delegated entirely to
   `scripts/review_with_lm_studio.py` — a deterministic script, not a sub-agent — which sends each
@@ -300,8 +330,12 @@ before most commands will find a profile (falls back to the example file otherwi
   immediately inside its loop, so an interrupted run is already resumable by re-invoking it with
   the same `--keyword`/`--input` — no separate resume logic needed. `job-reviewer/references/
   scoring.md` defines the rubric embedded into that script's prompt; `job-scout/references/
-  troubleshooting.md` covers source-health diagnosis. Install/copy all four skills for other agent
-  runtimes via `scripts/install_skill.sh`.
+  troubleshooting.md` covers source-health diagnosis. `job-feedback` is deliberately the one skill
+  whose own `SKILL.md` mandates two explicit stop-and-confirm points with the user — which
+  suggested terms to write into `candidate_profile.yaml`, and whether to accept a shown diff as the
+  new baseline — never inferred from silence or applied because a prior step wasn't rejected; every
+  number it reports still comes from a deterministic script, never an LLM judgment. Install/copy
+  all five skills for other agent runtimes via `scripts/install_skill.sh`.
 
   `job-hunter search --archive` writes each run's candidate bundle to
   `data/searches/{slug}_{date}.json` (`search_archive.py`'s `archive_path()`) instead of one fixed

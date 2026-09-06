@@ -2,8 +2,9 @@
 """Preview the effect of editing `candidate_profile.yaml`'s filtering fields — before you
 actually save the change. See docs/profile-diff-plan.md for the full design.
 
-Compares two profiles (either two saved YAML files, or the real on-disk profile plus a
-hypothetical in-memory `--add`/`--remove` patch — never written back) against every stored,
+Compares two profiles (either two saved YAML files, the real on-disk profile plus a hypothetical
+in-memory `--add`/`--remove` patch never written back, or — with no flags at all — the real
+on-disk profile against a tracked baseline snapshot, see "Check mode" below) against every stored,
 `us_eligible`, recency-passing job in SQLite, using the exact same `evaluate_prefilter` the real
 pipeline uses. Reports which postings would newly become candidates ("gained"), which would newly
 stop being candidates ("lost"), and how many are unaffected in each direction ("retained" /
@@ -11,10 +12,29 @@ stop being candidates ("lost"), and how many are unaffected in each direction ("
 
 This proves candidate *eligibility against stored postings as of this evaluation* — it does not
 guarantee the next live search returns the same jobs (one may have closed, or its stored
-description may be stale). Read-only: never writes to candidate_profile.yaml, never writes to the
-database. No --apply in this version — see docs/profile-diff-plan.md section 7 for why.
+description may be stale). Read-only with respect to candidate_profile.yaml and the job database —
+never writes to either. No --apply in this version — see docs/profile-diff-plan.md section 7 for
+why (that reasoning is specifically about writing *edits* into the file; check mode below only
+ever copies the file's current content verbatim into its own tracked snapshot, never parses and
+re-serializes it, so none of that reasoning applies there).
+
+Check mode (no --before/--after/--add/--remove given): compares the current on-disk profile
+against data/candidate_profile.snapshot.yaml — a plain-copy record of "the profile as of the last
+time a baseline was accepted." This is what makes the tool answer "what changed since I last
+looked," regardless of *how* the file changed — a manual edit in your editor and a change applied
+by a skill both flow through the exact same on-disk file, so this mode can't tell (and doesn't
+need to) which one happened. Check mode only ever *shows* the diff — it never advances the
+baseline itself. Advancing is a separate, explicit --accept-baseline run, so nothing is ever
+silently treated as reviewed; the snapshot it replaces is kept at
+data/candidate_profile.snapshot.prev.yaml — one level of rollback via --rollback-baseline. The
+very first check-mode run has no snapshot yet, so it bootstraps one from the current profile and
+reports nothing to compare (there's nothing to have shown a diff against yet, so this one step
+doesn't need a separate confirmation).
 
 Usage:
+    uv run python scripts/diff_profile.py                                   # check mode: show only
+    uv run python scripts/diff_profile.py --accept-baseline                 # confirm what check mode showed
+    uv run python scripts/diff_profile.py --rollback-baseline
     uv run python scripts/diff_profile.py --add soft_exclude_terms:"post silicon"
     uv run python scripts/diff_profile.py --remove target_domains:"validation"
     uv run python scripts/diff_profile.py --add exclude_terms:"cybersecurity" --remove exclude_terms:"fullstack"
@@ -47,6 +67,38 @@ _FILTER_FIELDS = (
     "soft_exclude_terms",
     "strong_relevance_terms",
 )
+
+_PROFILE_PATH = Path("config/candidate_profile.yaml")
+# Check mode's tracked "last looked at this" state — a verbatim copy of the profile file's
+# text, not a re-serialized/parsed round-trip, so it can never touch the real file's comments
+# or formatting. Lives under data/ (already entirely git-ignored, see .gitignore) alongside
+# every other run-generated artifact — never committed, same as candidate_profile.yaml itself.
+_SNAPSHOT_PATH = Path("data/candidate_profile.snapshot.yaml")
+_SNAPSHOT_PREV_PATH = Path("data/candidate_profile.snapshot.prev.yaml")
+
+
+def _advance_baseline(profile_path: Path) -> None:
+    """Record profile_path's current content as the new check-mode baseline, keeping exactly
+    one prior generation for --rollback-baseline. A plain text copy, never a YAML parse/dump —
+    see this module's docstring for why that distinction matters."""
+    _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _SNAPSHOT_PATH.exists():
+        _SNAPSHOT_PREV_PATH.write_text(_SNAPSHOT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    _SNAPSHOT_PATH.write_text(profile_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _rollback_baseline() -> bool:
+    """Swap the current baseline snapshot with the one it most recently replaced. A true swap
+    (not a one-way restore) so running this twice in a row is a no-op, not a second undo.
+    Returns False if there's nothing to roll back to."""
+    if not _SNAPSHOT_PREV_PATH.exists():
+        return False
+    prev_content = _SNAPSHOT_PREV_PATH.read_text(encoding="utf-8")
+    current_content = _SNAPSHOT_PATH.read_text(encoding="utf-8") if _SNAPSHOT_PATH.exists() else None
+    _SNAPSHOT_PATH.write_text(prev_content, encoding="utf-8")
+    if current_content is not None:
+        _SNAPSHOT_PREV_PATH.write_text(current_content, encoding="utf-8")
+    return True
 
 # jobs.canonical_url -> Job.url is the one required rename; every other column already lines
 # up with a Job field by name. Explicit allowlist, not **row, so a schema column that isn't a
@@ -117,6 +169,46 @@ def apply_edits(before: CandidateProfile, adds: list[str], removes: list[str]) -
     return CandidateProfile.model_validate(after_data)
 
 
+@dataclass
+class FieldTermDiff:
+    """Which specific terms in one filtering field changed between the two profiles being
+    compared — the actual words from candidate_profile.yaml, not just the field name, so a
+    reviewer can see what's driving a Lost/Gained verdict without opening the YAML file
+    separately. `unchanged` still carries the field's other terms for context (a gained/lost
+    job may have matched on one of those instead of the actual edit)."""
+
+    field: str
+    added: list[str]
+    removed: list[str]
+    unchanged: list[str]
+
+
+def _field_term_diffs(before: CandidateProfile, after: CandidateProfile) -> list[FieldTermDiff]:
+    """Per-field term diff for every filtering field, in the same fixed order used
+    everywhere else in this tool (`_FILTER_FIELDS`) — case-insensitive comparison (matching
+    `apply_edits`/`evaluate_prefilter`'s own case-insensitive term matching), but the
+    originally-cased term is what's shown."""
+    diffs = []
+    for field in _FILTER_FIELDS:
+        before_by_lower = {term.lower(): term for term in getattr(before, field)}
+        after_by_lower = {term.lower(): term for term in getattr(after, field)}
+        diffs.append(
+            FieldTermDiff(
+                field=field,
+                added=[
+                    after_by_lower[key] for key in after_by_lower if key not in before_by_lower
+                ],
+                removed=[
+                    before_by_lower[key] for key in before_by_lower if key not in after_by_lower
+                ],
+                unchanged=[
+                    after_by_lower[key] for key in after_by_lower if key in before_by_lower
+                ],
+            )
+        )
+    return diffs
+
+
 def _non_filter_field_diffs(before: CandidateProfile, after: CandidateProfile) -> list[str]:
     notes = []
     for field in CandidateProfile.model_fields:
@@ -166,6 +258,7 @@ class DiffResult:
     lost: list[ChangedJob]
     positive_gate_unrestricted: bool
     non_filter_diffs: list[str]
+    field_term_diffs: list[FieldTermDiff]
     assessments: dict[tuple[str, str], Assessment]
     feedback_labels: dict[tuple[str, str], str]
 
@@ -229,6 +322,7 @@ def compute_diff(
         lost=lost,
         positive_gate_unrestricted=positive_gate_unrestricted,
         non_filter_diffs=_non_filter_field_diffs(before, after),
+        field_term_diffs=_field_term_diffs(before, after),
         assessments=assessments,
         feedback_labels=feedback_labels,
     )
@@ -241,6 +335,11 @@ def _decision_str(decision: PrefilterDecision) -> str:
     if decision.rescued_by:
         text += f", rescued_by={decision.rescued_by!r}"
     return text
+
+
+def _field_term_diff_str(diff: FieldTermDiff) -> str:
+    parts = [*sorted(diff.unchanged), *(f"+{term}" for term in sorted(diff.added)), *(f"-{term}" for term in sorted(diff.removed))]
+    return ", ".join(parts) if parts else "(empty)"
 
 
 def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
@@ -262,6 +361,9 @@ def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
             "target_domains/target_title_terms remain. Every other check still applies, but "
             "nothing gates on domain relevance."
         )
+    print("\nProfile terms (+added, -removed by this comparison; the rest unchanged):")
+    for diff in result.field_term_diffs:
+        print(f"  {diff.field}: {_field_term_diff_str(diff)}")
     print()
     print(
         f"Retained: {result.retained} | Still excluded: {result.still_excluded} | "
@@ -285,7 +387,9 @@ def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
             print(f"    {result.assessment_note(item.job)} | last seen {item.job.last_seen_at}")
 
 
-_HTML_TEMPLATE = """<title>__TITLE__</title>
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<meta charset="utf-8">
+<title>__TITLE__</title>
 <style>
   body { font-family: system-ui, sans-serif; background: #F3F6F7; color: #14191F; margin: 0; }
   main { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
@@ -302,6 +406,11 @@ _HTML_TEMPLATE = """<title>__TITLE__</title>
   .row-company { color: #6B7480; font-size: 13px; }
   .row-meta { font-size: 12.5px; color: #6B7480; margin-top: 6px; }
   .empty { color: #6B7480; font-style: italic; }
+  .terms-field { margin: 14px 0; }
+  .terms-field-name { font-weight: 600; font-size: 13px; font-family: ui-monospace, monospace; color: #6B7480; margin-bottom: 4px; }
+  .term-tag { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 12.5px; margin: 2px 4px 2px 0; background: #EEF1F3; color: #14191F; }
+  .term-tag-added { background: #E6F4EA; color: #1A7F37; font-weight: 600; }
+  .term-tag-removed { background: #FBEAE8; color: #C1443A; text-decoration: line-through; }
 </style>
 <main>
   <h1>__TITLE__</h1>
@@ -313,6 +422,12 @@ _HTML_TEMPLATE = """<title>__TITLE__</title>
     <div class="stat"><span class="stat-value">__GAINED_COUNT__</span><span class="stat-label">Gained</span></div>
     <div class="stat"><span class="stat-value">__LOST_COUNT__</span><span class="stat-label">Lost</span></div>
   </div>
+  <section>
+    <h2>Profile terms</h2>
+    <p class="empty">The actual candidate_profile.yaml words behind this comparison — green
+      = added, red/struck-through = removed, plain = unchanged (still in effect either way).</p>
+    __PROFILE_TERMS__
+  </section>
   <section>
     <h2>Lost</h2>
     __LOST_ROWS__
@@ -346,6 +461,31 @@ def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: 
     return "".join(parts)
 
 
+def _render_field_terms(diffs: list[FieldTermDiff]) -> str:
+    if not any(diff.added or diff.removed or diff.unchanged for diff in diffs):
+        return '<p class="empty">No filtering terms configured in either profile.</p>'
+    parts = []
+    for diff in diffs:
+        if not (diff.added or diff.removed or diff.unchanged):
+            continue
+        tags = "".join(
+            f'<span class="term-tag">{_e(term)}</span>' for term in sorted(diff.unchanged)
+        )
+        tags += "".join(
+            f'<span class="term-tag term-tag-added">+ {_e(term)}</span>'
+            for term in sorted(diff.added)
+        )
+        tags += "".join(
+            f'<span class="term-tag term-tag-removed">{_e(term)}</span>'
+            for term in sorted(diff.removed)
+        )
+        parts.append(
+            f'<div class="terms-field"><div class="terms-field-name">{_e(diff.field)}</div>'
+            f"<div>{tags}</div></div>"
+        )
+    return "".join(parts)
+
+
 def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
     warning = (
         '<div class="warning">The positive gate is unrestricted after this change — no '
@@ -363,6 +503,7 @@ def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
         .replace("__STILL_EXCLUDED__", str(result.still_excluded))
         .replace("__GAINED_COUNT__", str(len(result.gained)))
         .replace("__LOST_COUNT__", str(len(result.lost)))
+        .replace("__PROFILE_TERMS__", _render_field_terms(result.field_term_diffs))
         .replace("__LOST_ROWS__", _render_rows(result.lost, result, empty_message="Nothing lost."))
         .replace("__GAINED_ROWS__", _render_rows(result.gained, result, empty_message="Nothing gained."))
     )
@@ -388,16 +529,62 @@ def main() -> int:
              "job-hunter search --keyword — NOT a narrowing of them",
     )
     parser.add_argument("--output", type=Path, default=None, help="HTML output path")
+    parser.add_argument(
+        "--accept-baseline", action="store_true",
+        help=(
+            "commit the current on-disk profile as the new check-mode baseline — the only way "
+            "the baseline ever advances; check mode itself only ever shows the diff and never "
+            "advances it on its own. Standalone action: takes no other flags, runs no "
+            "comparison, keeps the previous baseline at "
+            "data/candidate_profile.snapshot.prev.yaml (--rollback-baseline to undo)."
+        ),
+    )
+    parser.add_argument(
+        "--rollback-baseline", action="store_true",
+        help=(
+            "undo the most recent --accept-baseline — swaps "
+            "data/candidate_profile.snapshot.yaml with data/candidate_profile.snapshot.prev.yaml. "
+            "Standalone action: takes no other flags, runs no comparison."
+        ),
+    )
     args = parser.parse_args()
 
     file_pair_mode = args.before is not None or args.after is not None
     convenience_mode = bool(args.add) or bool(args.remove)
-    if file_pair_mode and convenience_mode:
-        print("job-hunter: --before/--after and --add/--remove are mutually exclusive", file=sys.stderr)
+    active_modes = [
+        name
+        for name, flag in (
+            ("--before/--after", file_pair_mode),
+            ("--add/--remove", convenience_mode),
+            ("--accept-baseline", args.accept_baseline),
+            ("--rollback-baseline", args.rollback_baseline),
+        )
+        if flag
+    ]
+    if len(active_modes) > 1:
+        print(f"job-hunter: {' and '.join(active_modes)} are mutually exclusive", file=sys.stderr)
         return 2
-    if not file_pair_mode and not convenience_mode:
-        print("job-hunter: specify either --before/--after or --add/--remove", file=sys.stderr)
+
+    if args.rollback_baseline:
+        if _rollback_baseline():
+            print(
+                f"Rolled back: {_SNAPSHOT_PATH} now holds what was previously at "
+                f"{_SNAPSHOT_PREV_PATH} (and vice versa — run again to undo this rollback)."
+            )
+            return 0
+        print(f"job-hunter: nothing to roll back — {_SNAPSHOT_PREV_PATH} does not exist", file=sys.stderr)
         return 2
+
+    if args.accept_baseline:
+        if not _PROFILE_PATH.exists():
+            print(f"job-hunter: {_PROFILE_PATH} does not exist", file=sys.stderr)
+            return 2
+        _advance_baseline(_PROFILE_PATH)
+        print(
+            f"Baseline updated: {_SNAPSHOT_PATH} now matches the current profile. "
+            f"Previous baseline kept at {_SNAPSHOT_PREV_PATH} (--rollback-baseline to undo)."
+        )
+        return 0
 
     try:
         if file_pair_mode:
@@ -405,9 +592,24 @@ def main() -> int:
                 raise ProfileDiffError("both --before and --after are required in file-pair mode")
             before = _load_profile_strict(args.before)
             after = _load_profile_strict(args.after)
-        else:
-            before = _load_profile_strict(Path("config/candidate_profile.yaml"))
+        elif convenience_mode:
+            before = _load_profile_strict(_PROFILE_PATH)
             after = apply_edits(before, args.add, args.remove)
+        else:
+            after = _load_profile_strict(_PROFILE_PATH)
+            if not _SNAPSHOT_PATH.exists():
+                # Nothing to confirm yet — there's no prior state to have shown a diff against,
+                # so establishing the very first baseline isn't something to gate on
+                # confirmation the way advancing an *existing* one is.
+                _advance_baseline(_PROFILE_PATH)
+                print(
+                    f"No prior baseline found — recording the current profile at "
+                    f"{_SNAPSHOT_PATH} as the starting point. Nothing to compare yet; "
+                    "future changes (manual edits or skill-applied ones alike) will be "
+                    "detected from here on."
+                )
+                return 0
+            before = _load_profile_strict(_SNAPSHOT_PATH)
     except ProfileDiffError as exc:
         print(f"job-hunter: {exc}", file=sys.stderr)
         return 2
@@ -427,6 +629,13 @@ def main() -> int:
     output_path = args.output or Path("data/profile-diff") / f"{result.evaluated_at.strftime('%Y%m%dT%H%M%S')}.html"
     render_html(result, output_path, title="Candidate Profile Diff")
     print(f"\nWrote {output_path}")
+
+    if not file_pair_mode and not convenience_mode:
+        print(
+            "\nBaseline NOT updated — this only shows the diff. Run with --accept-baseline to "
+            "commit the current profile as the new baseline once you've confirmed this is what "
+            "you meant to change."
+        )
     return 0
 
 

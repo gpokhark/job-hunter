@@ -11,15 +11,21 @@ from ..normalizer import (
     fallback_job_id,
     normalize_text,
     parse_display_date,
+    parse_flexible_date,
+    stringify,
 )
 from .base import JobAdapter, SchemaError
-from .json_api import _date, _stringify
 
 
 class HtmlPaginatedAdapter(JobAdapter):
-    async def fetch_summaries(self) -> list[JobSummary]:
+    async def fetch_summaries(self, start_url: str | None = None) -> list[JobSummary]:
+        """`start_url` overrides `config["list_url"]` for this call only — used by
+        `HtmlMultiIndexAdapter` to fetch several independent listing indexes without
+        mutating the shared `CompanyConfig` (which every source's adapter instance for
+        this run reads config from, and which used to get left pointing at whichever
+        index_url was mid-flight if a later one raised)."""
         cfg = self.company.config
-        start_url = cfg.get("list_url")
+        start_url = start_url or cfg.get("list_url")
         if not start_url:
             raise SchemaError("list_url is not configured")
         jobs: list[JobSummary] = []
@@ -110,13 +116,13 @@ class HtmlPaginatedAdapter(JobAdapter):
         # doesn't cover it — and, if description_selector found nothing, its own
         # description too.
         posting = extract_job_posting_ld(text)
-        posted_at = _date(posting.get("datePosted")) if posting else None
+        posted_at = parse_flexible_date(posting.get("datePosted")) if posting else None
         if not description and posting and posting.get("description"):
             description = normalize_text(html_module.unescape(posting["description"]))
         return JobDetail(
             description=description or None,
             posted_at=posted_at,
-            employment_type=_stringify(posting.get("employmentType")) if posting else None,
+            employment_type=stringify(posting.get("employmentType")) if posting else None,
         )
 
 

@@ -136,6 +136,34 @@ async def _source_test(key: str) -> int:
     return 0 if health.status.value in {"ok", "warning"} else 1
 
 
+def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
+    """Only actually a check when a configured, enabled company needs it — the stealth
+    headless browser is an opt-in dependency (`--extra stealth`), not a default one, so
+    its absence is only a real failure for a source that would actually invoke it.
+    A pure function of (companies, whether scrapling is importable) so `doctor()`'s
+    control flow around config-loading failures stays simple and this stays unit-testable
+    without touching the filesystem."""
+    stealth_companies = (
+        sorted(c.key for c in companies if c.enabled and c.adapter == "stealth_html")
+        if companies is not None
+        else []
+    )
+    if not stealth_companies:
+        return (
+            "stealth browser",
+            True,
+            "not needed — no enabled company config uses the stealth_html adapter",
+        )
+    installed = importlib.util.find_spec("scrapling") is not None
+    detail = (
+        f"required by: {', '.join(stealth_companies)}"
+        if installed
+        else f"required by: {', '.join(stealth_companies)}, but the 'stealth' dependency "
+        "group is not installed (uv sync --extra stealth && uv run scrapling install)"
+    )
+    return "stealth browser", installed, detail
+
+
 def doctor() -> int:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("python", sys.version_info >= (3, 11), sys.version.split()[0]))
@@ -146,6 +174,7 @@ def doctor() -> int:
             os.environ.get("VIRTUAL_ENV", "not active"),
         )
     )
+    companies = None
     try:
         settings, companies, profile = load_settings(), load_companies(), load_profile()
         checks.append(("configuration", True, f"{len(companies)} companies"))
@@ -167,15 +196,7 @@ def doctor() -> int:
         checks.append(("DNS", True, "available"))
     except OSError as exc:
         checks.append(("DNS", False, str(exc)))
-    checks.append(
-        (
-            "headless",
-            True,
-            "no browser/DISPLAY dependency, except the opt-in stealth_html adapter "
-            "(astemo, google) which runs a headless browser "
-            "and needs `--extra stealth`",
-        )
-    )
+    checks.append(_stealth_browser_check(companies))
     for name, ok, detail in checks:
         print(f"{'OK' if ok else 'FAIL':4} {name}: {detail}")
     return 0 if all(ok for _, ok, _ in checks) else 1
@@ -243,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = asyncio.run(
             Collector(settings, companies, load_profile()).search(
-                include_seen=args.include_seen or not args.new_only,
+                include_seen=not args.new_only,
                 new_only=args.new_only,
                 refresh_details=args.refresh_details,
                 max_candidates=args.max_candidates,

@@ -69,10 +69,38 @@ auto-applied), and `diff_profile.py` previews any filter-field edit's real effec
 stored posting before you save it. See `docs/feedback-exclusion-plan.md`/`docs/profile-diff-plan.md`.
 
 After editing `candidate_profile.yaml` (e.g. approving a `suggest_exclusions.py` suggestion),
-`refilter_archive.py` re-applies the current profile to an already-collected archive **with no
-network/scraper call** — re-running `render_radar.py` afterward updates the same report in place
-to reflect the edit. Use this instead of re-running `search` when you just want an existing
-report to catch up with a filter change, not to fetch anything new.
+`refilter_archive.py` rebuilds an existing archive's candidates **with no network/scraper call**
+— re-running `render_radar.py` afterward updates the same report in place to reflect the edit.
+Use this instead of re-running `search` when you just want an existing report to catch up with a
+filter change, not to fetch anything new. It rebuilds from SQLite's current active/eligible job
+pool (scoped to that archive's own sources) rather than narrowing whatever's already in the
+archive file — this matters for a *loosening* edit (a new `strong_relevance_terms` override, a
+removed `exclude_terms`/`soft_exclude_terms` entry): a prior narrowing edit may have already
+dropped the job from the archive file entirely, and only a rebuild from SQLite can bring it back.
+Every job any run has ever observed stays in SQLite regardless of prefilter outcome, so this is
+always possible offline. Prints both directions — `N removed, M gained` — since a single profile
+edit can do both at once.
+
+### Regenerating the radar without scraping
+
+To refresh the HTML report from what's already in `data/searches/`/SQLite — e.g. after editing
+`candidate_profile.yaml`, or just to re-render — without hitting any employer site, run in order:
+
+```bash
+# 1. (optional) rebuild the archive's candidates from SQLite against the current profile — no network call
+uv run python scripts/refilter_archive.py [--keyword "ADAS,Robotics"]
+
+# 2. (optional) score any not-yet-assessed candidates — hits local LM Studio only, never the network
+uv run python scripts/review_with_lm_studio.py [--keyword "..."] [--status]
+
+# 3. render/update the report
+uv run python scripts/render_radar.py [--keyword "..."]
+```
+
+Step 1 only matters if the profile changed since this archive was collected; step 2 only matters
+if `--status` shows candidates remaining. Both are safe no-ops otherwise. All three resolve to the
+same archive by `--keyword` (or the newest archive overall if omitted) — pass the same keyword
+through all of them. Step 3 alone is enough for "just re-render what's already there."
 
 ## Skills
 
@@ -94,6 +122,8 @@ Example invocations (see `docs/SPEC.md` §11.1 for the full set, including exact
                                       #   this exact command after an interruption just continues
 /job-radar --keyword ADAS            # render/update the report — safe to re-run any time,
                                       #   including mid-review
+/job-radar --keyword ADAS --refilter # re-apply candidate_profile.yaml to an already-collected
+                                      #   archive and re-render — no scraper call
 ```
 
 Install with:

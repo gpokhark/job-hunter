@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from ..models import JobDetail, JobSummary
+from ..normalizer import parse_flexible_date, stringify
 from .base import SchemaError
-from .json_api import ConfigurableJsonAdapter, _date, _stringify
+from .json_api import ConfigurableJsonAdapter
 
 
 class EightfoldAdapter(ConfigurableJsonAdapter):
@@ -49,8 +50,8 @@ class EightfoldAdapter(ConfigurableJsonAdapter):
             if not items:
                 break
             for item in items:
-                title = _stringify(item.get("name"))
-                native_id = _stringify(item.get("id"))
+                title = stringify(item.get("name"))
+                native_id = stringify(item.get("id"))
                 if not title or not native_id:
                     raise SchemaError("Eightfold position lacks name/id")
                 position_url = str(item.get("positionUrl") or "").lstrip("/")
@@ -62,9 +63,9 @@ class EightfoldAdapter(ConfigurableJsonAdapter):
                         job_id=native_id,
                         title=title,
                         url=f"{base_url.rstrip('/')}/{position_url}",
-                        location_raw=_stringify(item.get("standardizedLocations") or item.get("locations")),
-                        department=_stringify(item.get("department")),
-                        posted_at=_date(item.get("postedTs")),
+                        location_raw=stringify(item.get("standardizedLocations") or item.get("locations")),
+                        department=stringify(item.get("department")),
+                        posted_at=parse_flexible_date(item.get("postedTs")),
                         raw=item,
                     )
                 )
@@ -85,6 +86,6 @@ class EightfoldAdapter(ConfigurableJsonAdapter):
         if not isinstance(data, dict):
             raise SchemaError("Eightfold pcsx detail response missing data object")
         return JobDetail(
-            description=_stringify(data.get("jobDescription")),
-            location_raw=_stringify(data.get("standardizedLocations") or data.get("locations")),
+            description=stringify(data.get("jobDescription")),
+            location_raw=stringify(data.get("standardizedLocations") or data.get("locations")),
         )

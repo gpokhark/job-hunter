@@ -501,7 +501,33 @@
 (function () {
   // Per-job relevance feedback — click-to-tag, export-on-demand, nothing auto-assumed for
   // an untouched row. See docs/feedback-exclusion-plan.md for the full mechanism this feeds.
+  //
+  // Persisted to localStorage as you click (not just on export) — this used to live only in
+  // an in-page JS variable, so closing the tab before hitting Export silently threw away
+  // every tag. Scoped to this report's own filename so a different search's report never
+  // collides with or overwrites another's saved tags. Export remains an explicit, separate
+  // action — this only prevents accidental loss, it doesn't change when a file gets written.
+  var STORAGE_KEY = 'job-hunter-feedback:__SEARCH_STEM__';
   var feedback = {};
+
+  function loadPersisted() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(feedback));
+    } catch (e) {
+      // Private browsing / storage disabled / quota exceeded — feedback still works for
+      // this page load via the in-memory object and the Export button; it just won't
+      // survive a reload. Nothing useful to surface to the user for this.
+    }
+  }
 
   function exportButton() {
     return document.getElementById('feedback-export-btn');
@@ -514,10 +540,20 @@
     btn.disabled = count === 0;
   }
 
+  feedback = loadPersisted();
+
   document.querySelectorAll('.feedback-buttons').forEach(function (group) {
     var buttons = group.querySelectorAll('.fb-btn');
     var key = group.dataset.sourceKey + '|' + group.dataset.jobId;
     var row = group.closest('details.row');
+
+    var restored = feedback[key];
+    if (restored) {
+      buttons.forEach(function (b) {
+        if (b.dataset.label === restored.label) b.classList.add('fb-active');
+      });
+      if (row) row.classList.add('fb-tagged');
+    }
 
     buttons.forEach(function (btn) {
       btn.addEventListener('click', function (evt) {
@@ -546,10 +582,13 @@
           };
           if (row) row.classList.add('fb-tagged');
         }
+        persist();
         refreshExportButton();
       });
     });
   });
+
+  refreshExportButton();
 
   exportButton().addEventListener('click', function () {
     var rows = Object.keys(feedback).map(function (k) { return feedback[k]; });

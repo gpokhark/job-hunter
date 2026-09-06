@@ -6,10 +6,9 @@ import re
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 from ..models import JobDetail, JobSummary
-from ..normalizer import normalize_text
+from ..normalizer import normalize_text, parse_flexible_date, stringify
 from ..prefilter import is_recent
 from .base import JobAdapter, SchemaError
-from .json_api import _date, _stringify
 
 _HYDRATION_DATA = re.compile(
     r'window\.__staticRouterHydrationData\s*=\s*JSON\.parse\("(.*?)"\);', re.S
@@ -36,9 +35,9 @@ def _extract_hydration_data(text: str) -> dict:
 
 
 def _location_fields(location: dict) -> tuple[str | None, str | None, str | None]:
-    city = _stringify(location.get("city") or location.get("name"))
-    state = _stringify(location.get("stateProvince"))
-    country = _stringify(location.get("countryName"))
+    city = stringify(location.get("city") or location.get("name"))
+    state = stringify(location.get("stateProvince"))
+    country = stringify(location.get("countryName"))
     return city, state, country
 
 
@@ -95,7 +94,7 @@ class AppleAdapter(JobAdapter):
                 for search in batch:
                     results = search["searchResults"]
                     all_results.extend(results)
-                    last_posted = _date(results[-1].get("postDateInGMT")) if results else None
+                    last_posted = parse_flexible_date(results[-1].get("postDateInGMT")) if results else None
                     if self.max_posting_age_days is not None and not is_recent(
                         last_posted, self.max_posting_age_days
                     ):
@@ -130,7 +129,7 @@ class AppleAdapter(JobAdapter):
                     city=city,
                     state=state,
                     country=country,
-                    posted_at=_date(item.get("postDateInGMT")),
+                    posted_at=parse_flexible_date(item.get("postDateInGMT")),
                     raw={"jobSummary": item.get("jobSummary")},
                 )
             )
@@ -141,7 +140,7 @@ class AppleAdapter(JobAdapter):
         data = _extract_hydration_data(response.text)
         job = (data.get("loaderData", {}).get("jobDetails") or {}).get("jobsData")
         if not job:
-            return JobDetail(description=_stringify(summary.raw.get("jobSummary")))
+            return JobDetail(description=stringify(summary.raw.get("jobSummary")))
         description = job.get("description") or summary.raw.get("jobSummary")
         locations = job.get("locations") or []
         city, state, country = _location_fields(locations[0] if locations else {})
@@ -152,5 +151,5 @@ class AppleAdapter(JobAdapter):
             city=city,
             state=state,
             country=country,
-            posted_at=_date(job.get("postDateInGMT")),
+            posted_at=parse_flexible_date(job.get("postDateInGMT")),
         )

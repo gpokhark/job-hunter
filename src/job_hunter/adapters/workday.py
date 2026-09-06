@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from ..models import JobDetail, JobSummary
-from ..normalizer import fallback_job_id, parse_relative_posted
+from ..normalizer import fallback_job_id, parse_flexible_date, parse_relative_posted, stringify
 from .base import SchemaError
-from .json_api import ConfigurableJsonAdapter, _date, _stringify
+from .json_api import ConfigurableJsonAdapter
 
 
 class WorkdayAdapter(ConfigurableJsonAdapter):
@@ -31,8 +31,8 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
             if not isinstance(items, list):
                 raise SchemaError("Workday response lacks jobPostings list")
             for item in items:
-                title = _stringify(item.get("title"))
-                path = _stringify(item.get("externalPath"))
+                title = stringify(item.get("title"))
+                path = stringify(item.get("externalPath"))
                 if not title or not path:
                     raise SchemaError("Workday posting lacks title/externalPath")
                 # public_base_url must be Workday's native candidate-facing host
@@ -40,8 +40,8 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                 # host returns raw JSON when opened in a browser, not a page a human can
                 # read. fetch_detail below reconstructs the real CXS API url independently.
                 display_url = f"{cfg.get('public_base_url', url).rstrip('/')}/{path.lstrip('/')}"
-                location = _stringify(item.get("locationsText") or item.get("bulletFields"))
-                native_id = _stringify(item.get("jobId"))
+                location = stringify(item.get("locationsText") or item.get("bulletFields"))
+                native_id = stringify(item.get("jobId"))
                 jobs.append(
                     JobSummary(
                         source_key=self.source_key,
@@ -52,7 +52,7 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                         title=title,
                         url=display_url,
                         location_raw=location,
-                        posted_at=parse_relative_posted(_stringify(item.get("postedOn"))),
+                        posted_at=parse_relative_posted(stringify(item.get("postedOn"))),
                         raw=item,
                     )
                 )
@@ -69,7 +69,7 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
         if not self.company.config.get("workday_native"):
             return await super().fetch_detail(summary)
         cfg = self.company.config
-        path = _stringify((summary.raw or {}).get("externalPath"))
+        path = stringify((summary.raw or {}).get("externalPath"))
         if not path:
             raise SchemaError("workday summary missing externalPath for detail fetch")
         list_url = cfg.get("list_url", "")
@@ -79,9 +79,9 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
         data = response.json()
         info = data.get("jobPostingInfo", data)
         return JobDetail(
-            description=_stringify(info.get("jobDescription")),
-            location_raw=_stringify(info.get("location")),
-            employment_type=_stringify(info.get("timeType")),
+            description=stringify(info.get("jobDescription")),
+            location_raw=stringify(info.get("location")),
+            employment_type=stringify(info.get("timeType")),
             # startDate is an absolute date, more precise than the summary's relative postedOn text.
-            posted_at=_date(info.get("startDate")) or parse_relative_posted(_stringify(info.get("postedOn"))),
+            posted_at=parse_flexible_date(info.get("startDate")) or parse_relative_posted(stringify(info.get("postedOn"))),
         )

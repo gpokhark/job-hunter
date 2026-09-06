@@ -38,11 +38,16 @@ from `data/assessments.json` as it stands right now.
    ```bash
    uv run python scripts/refilter_archive.py [--keyword "ADAS,Robotics"]
    ```
-   This makes no network/adapter calls at all — it re-runs `passes_prefilter`/`passes_recency`
-   against the same already-collected `candidates` in place (same archive path, same resolution
-   rule as above) and prints `Re-filtered <path> -> <path>: N candidate(s) (was M, K removed)`.
-   Report that count. Skip this step entirely for a normal render where nothing about the profile
-   changed — it's an explicit opt-in, not part of every render.
+   This makes no network/adapter calls at all — it rebuilds `candidates` from SQLite's current
+   active/US-eligible job pool (scoped to that archive's own sources), re-filtered by
+   `passes_prefilter`/`passes_recency` against the current profile (same archive path, same
+   resolution rule as above), and prints `Re-filtered <path> -> <path>: N candidate(s) (was M, K
+   removed, J gained)`. Report both counts — a profile edit can tighten and loosen at the same
+   time (e.g. a new `soft_exclude_terms` entry alongside a new `strong_relevance_terms` override),
+   and only rebuilding from SQLite (rather than narrowing the archive's own previous output) lets
+   a loosening edit actually restore a job a prior run already dropped. Skip this step entirely
+   for a normal render where nothing about the profile changed — it's an explicit opt-in, not part
+   of every render.
 4. If compiling a text summary yourself (not just the HTML report), read the resolved archive's
    `candidates` plus `data/assessments.json` — or run `uv run job-hunter resolve-search
    [--keyword "..."]` first to get the exact archive path, then read both files directly.
@@ -87,8 +92,10 @@ from `data/assessments.json` as it stands right now.
    scores 50 or above, say so plainly — do not lower the floor to manufacture results.
 11. Mention, when relevant (e.g. the user hasn't seen this before, or asks how to fine-tune future
     results), that each row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export
-    Feedback" button — tagging jobs and exporting produces a JSON file that
-    `scripts/apply_radar_feedback.py --file <path>` ingests, and `scripts/suggest_exclusions.py`
-    turns into safe `soft_exclude_terms` candidates for `candidate_profile.yaml`. See
-    `docs/feedback-exclusion-plan.md` for the full mechanism — never suggests anything that
-    collides with an already-good match, and nothing is ever auto-applied.
+    Feedback" button — tags are also saved to the browser's local storage as you click, so an
+    accidentally-closed tab doesn't lose them before you export. Once tagged and exported, the
+    `job-feedback` skill turns those tags into `candidate_profile.yaml` suggestions and shows the
+    exact before/after effect on candidacy — for any profile change, not just one it applied
+    itself. See `docs/feedback-exclusion-plan.md` for the full mechanism — never suggests
+    anything that collides with an already-good match, and nothing is ever auto-applied without
+    explicit confirmation.
