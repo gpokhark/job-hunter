@@ -162,7 +162,7 @@ before most commands will find a profile (falls back to the example file otherwi
   established technique is to render it *once* with Scrapling (`stealth_html`'s
   `AsyncStealthySession`) to read the real DOM/links it generates, then hardcode whatever was
   discovered as static config — a browser is a one-time discovery tool here, essentially never a
-  runtime dependency (see `docs/SPEC.md` §5.14, "Adding a new source"). Two more lessons from
+  runtime dependency (see `docs/SPEC.md` §5.20, "Adding a new source"). Two more lessons from
   onboarding BMW and Bosch: a "static public frontend key" — a `Bearer` token or similar embedded
   directly in a page's own plain HTML rather than fetched from any login/token endpoint — is the
   same category as Ashby's public posting API key (meant for exactly this client-side use, served
