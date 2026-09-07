@@ -268,7 +268,9 @@ before most commands will find a profile (falls back to the example file otherwi
   `us_eligible`, recency-passing job in SQLite, using `evaluate_prefilter` directly — never an
   approximation of it. Reports four counts (retained/still-excluded/gained/lost), not one
   "unchanged" bucket that would hide which side it's mostly made of, plus a terminal summary and
-  an HTML report (`data/profile-diff/{timestamp}.html` by default) with a per-job before/after
+  an HTML report (`data/profile-diff/{YYYY-MM-DD-T-HH-MM-SS}.html` by default, filename timestamp
+  in US Eastern local time — `_report_timestamp` — for readability; `evaluated_at` inside the
+  report itself stays UTC) with a per-job before/after
   reason and, for changed jobs, any existing assessment score or `job_feedback` label (a lost job
   someone already tagged `relevant`/`okay` is flagged loudly, not folded into the general list).
   Reads via a genuine read-only SQLite connection, not `Storage` (whose `__init__` always runs
@@ -304,6 +306,29 @@ before most commands will find a profile (falls back to the example file otherwi
   profile with nothing to compare — there's no diff to have confirmed yet, so that one step alone
   doesn't require `--accept-baseline`. See `skills/job-feedback/SKILL.md` for how this is meant to
   be driven end to end, including the confirmation discipline around it.
+
+- **`scripts/refilter_archive.py`** — a different tool from `diff_profile.py`, answering a
+  different question: not "what changed between two profiles" but "what would this *already-
+  collected* archived search's candidate list look like if re-run through the *current* profile
+  right now" — no network, no adapter/scraper invoked. Rebuilds `candidates` from scratch out of
+  SQLite's current `status='active' AND us_eligible=1` job pool (scoped to the same source keys
+  the archive's own `source_health` originally attempted, so onboarding a new company later can
+  never cause an old keyword archive to silently gain that company's jobs), rather than narrowing
+  whatever's already sitting in the archive's `candidates` — that narrowing-in-place design was
+  tried first and found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job
+  from `candidates`, its data was gone from the file, so a *later* loosening edit meant to rescue
+  it (a new `strong_relevance_terms` override, a removed `soft_exclude_terms` entry) had nothing
+  left to restore. Rewrites the resolved archive file in place by default (`--output` to write
+  elsewhere instead), and prints a gained/lost/retained count. Unless `--no-report`, also writes
+  an HTML report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (same
+  US-Eastern `_report_timestamp` as `diff_profile.py`, shared via import) — reusing
+  `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical
+  click-to-feedback JS/export mechanism (`job_feedback` rows from either report are
+  indistinguishable to `apply_radar_feedback.py`), but through its own, simpler HTML template
+  with no "Profile terms" word-diff section — there's no second profile to diff against here, only
+  one on-disk profile evaluated against two different job snapshots (an old archive vs. today's
+  live SQLite pool), so `_field_term_diffs` doesn't apply. `--keyword` here means the same full
+  positive-term replacement it means everywhere else in this project.
 
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row

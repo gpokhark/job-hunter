@@ -200,11 +200,73 @@ def test_assessment_note_reflects_prior_assessment_attached_by_active_jobs():
     assert _assessment_note(job) == "has a valid prior assessment (score 82)"
 
 
-def test_main_writes_archive_diff_report_reflecting_full_gain_not_just_profile_term(monkeypatch, tmp_path, capsys):
-    """The exact scenario reported: a source that failed this run (no fresh data) still has
-    previously-active jobs in SQLite, which get pulled back in on refilter even though they
-    were never in the archive's original candidates — the report must show them as gained,
-    not just whatever a term-level profile diff would attribute."""
+def test_refilter_excludes_a_source_that_failed_this_archives_run(monkeypatch, tmp_path):
+    """Regression test for the exact bug reported live: a source that failed THIS archive's run
+    (e.g. a stealth_html source missing its optional dependency) still has previously-active jobs
+    sitting in SQLite from an earlier, unrelated successful run — those must NOT be pulled back in
+    as spurious "Gained" jobs on refilter, since this archive never had them to lose in the first
+    place and no profile change is responsible for their reappearance. Only sources source_health
+    marked as having actually succeeded are in scope, not merely attempted."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(source_key="apple", job_id="1", title="Verification Engineer"))
+        # A job from a source that failed THIS run but is still active from a prior success.
+        storage.upsert_job(make_job(source_key="waymo", job_id="2", title="Verification Lead"))
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile(target_domains=["verification"]))
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings())
+
+    data = _archive(
+        [{"source_key": "apple", "job_id": "1"}],  # waymo's job was never in the original archive
+        source_health=[{"source_key": "apple", "status": "ok"}, {"source_key": "waymo", "status": "failed"}],
+    )
+    result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
+    assert [c["source_key"] for c in result["candidates"]] == ["apple"]
+
+
+def test_refilter_keeps_a_source_with_no_status_field_at_all(monkeypatch, tmp_path):
+    """An opt-out (exclude known-bad), not opt-in (require known-good), design: a source_health
+    row missing its `status` field entirely (a degraded/unexpected shape, distinct from
+    source_health being absent) has no positive evidence of failure, so stays in scope — matching
+    this project's general preference for false negatives over false positives in filtering."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(source_key="apple", job_id="1", title="Verification Engineer"))
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile(target_domains=["verification"]))
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings())
+
+    data = _archive(
+        [{"source_key": "apple", "job_id": "1"}],
+        source_health=[{"source_key": "apple"}],  # no "status" key at all
+    )
+    result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
+    assert [c["source_key"] for c in result["candidates"]] == ["apple"]
+
+
+def test_refilter_all_sources_failed_restricts_to_nothing(monkeypatch, tmp_path):
+    """Distinct from source_health being entirely absent (falls back to unrestricted, see
+    test_refilter_with_no_source_health_falls_back_to_no_restriction): a source_health that
+    exists but recorded every source as failed is a *known* scope of zero, not an unknown one —
+    it must not fall back to unrestricted."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(source_key="apple", job_id="1", title="Verification Engineer"))
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile(target_domains=["verification"]))
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings())
+
+    data = _archive(
+        [{"source_key": "apple", "job_id": "1"}],
+        source_health=[{"source_key": "apple", "status": "failed"}],
+    )
+    result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
+    assert result["candidates"] == []
+
+
+def test_main_writes_archive_diff_report_excluding_a_failed_sources_stale_job(monkeypatch, tmp_path, capsys):
+    """End-to-end: the HTML report's Gained/Lost sections must reflect the same
+    source-scope-excludes-failures fix as refilter() itself, not just the JSON output."""
     db_path = tmp_path / "jobs.sqlite3"
     with Storage(db_path) as storage:
         storage.upsert_job(make_job(source_key="apple", job_id="1", title="Verification Engineer"))
@@ -229,11 +291,11 @@ def test_main_writes_archive_diff_report_reflecting_full_gain_not_just_profile_t
     refilter_archive.main()
 
     out = capsys.readouterr().out
-    assert "1 gained" in out
+    assert "0 gained" in out
     report_line = next(line for line in out.splitlines() if line.startswith("Wrote "))
     report_path = Path(report_line.removeprefix("Wrote "))
     assert report_path.exists()
     report_html = report_path.read_text()
     gained_section = report_html.split("<h2>Gained</h2>")[1].split("<h2>Lost</h2>")[0]
-    assert "Verification Lead" in gained_section  # the resurrected waymo job, shown as gained
-    assert "Verification Engineer" not in gained_section  # already-retained apple job, not gained
+    assert "Verification Lead" not in gained_section  # the failed-source job stays excluded
+    assert "Nothing gained." in gained_section
