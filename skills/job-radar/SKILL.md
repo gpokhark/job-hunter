@@ -69,12 +69,18 @@ from `data/assessments.json` as it stands right now.
    ```bash
    uv run python scripts/render_radar.py [--keyword "ADAS,Robotics,Product Technical Leader"]
    ```
-   It prints `Wrote <path> | strong=N review=N below_50=N never_reviewed=N`; sanity-check those
-   counts against what you just compiled. The HTML report itself lists every candidate the model
-   actually scored across three sections — Strong, For review, and a third "Below 50" section —
-   even though the chat-facing summary in step 4 only lists 50-and-above and just states the
-   below-50 count. A candidate `job-reviewer` hasn't gotten to yet is counted in `never_reviewed`
-   and never listed anywhere — say it wasn't reviewed, don't imply a score for it.
+   It prints `Wrote <path> | strong=N review=N below_50=N never_reviewed=N source_issues=N
+   (failed=N)`; sanity-check those counts against what you just compiled. The HTML report itself
+   lists every candidate the model actually scored across three sections — Strong, For review, and
+   a third "Below 50" section — even though the chat-facing summary in step 4 only lists
+   50-and-above and just states the below-50 count. A candidate `job-reviewer` hasn't gotten to yet
+   is counted in `never_reviewed` and never listed anywhere — say it wasn't reviewed, don't imply a
+   score for it. A leading "Collection issues" section separately lists every source this run's
+   `source_health` marked anything other than `ok` — failed (a transient error), warning (a
+   suspicious job-count drop), or unsupported (a known, permanent state) — each with its company
+   name and message; mention any non-zero `failed`/`source_issues` count in your chat-facing
+   summary too, since a company silently missing from candidates because its collection failed is
+   exactly the kind of thing worth surfacing, not just leaving for the report to show.
 7. **Safe to re-run at any point, including mid-review** — it reflects exactly whatever's been
    reviewed so far each time it runs, nothing cached or stale. Re-running against the same archive
    always writes to the same output path (`data/radar/{same-stem}.html`), so "update the radar" is

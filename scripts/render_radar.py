@@ -187,6 +187,33 @@ def _never_reviewed_rows_html(candidates: list[dict[str, Any]], *, now: datetime
     return "".join(_never_reviewed_row_html(c, now=now, new_days=new_days) for c in candidates)
 
 
+# Ordering/label/CSS-class for each non-OK SourceHealth status this run's collector.py can
+# actually emit (see models.py's HealthStatus) — failed first (this run's own transient
+# problem, the most actionable), then warning (collected, but health.py's count-anomaly
+# check flagged a suspicious drop), then unsupported last (a permanent, already-disclosed
+# config.py state — config_reason lives in companies.yaml, not something new this run).
+_SOURCE_ISSUE_ORDER = {"failed": 0, "warning": 1, "unsupported": 2}
+_SOURCE_ISSUE_LABEL = {"failed": "Failed", "warning": "Warning", "unsupported": "Unsupported"}
+
+
+def _source_issue_row_html(health: dict[str, Any]) -> str:
+    status = health.get("status", "failed")
+    label = _SOURCE_ISSUE_LABEL.get(status, status.title())
+    message = health.get("message") or "No error message recorded."
+    return f'''
+    <div class="source-issue source-issue-{_attr(status)}">
+      <span class="tag tag-source-{_attr(status)}">{_e(label)}</span>
+      <span class="source-issue-company">{_e(health.get("company") or health.get("source_key"))}</span>
+      <span class="source-issue-message">{_e(message)}</span>
+    </div>'''
+
+
+def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return '<p class="empty-state">Every attempted source collected successfully this run.</p>'
+    return "".join(_source_issue_row_html(h) for h in entries)
+
+
 def build(
     *,
     search_path: Path,
@@ -254,6 +281,12 @@ def build(
     )
     never_reviewed = len(never_reviewed_candidates)
 
+    source_issues = sorted(
+        (h for h in search.get("source_health", []) if h.get("status") != "ok"),
+        key=lambda h: (_SOURCE_ISSUE_ORDER.get(h.get("status"), 99), h.get("company") or h.get("source_key") or ""),
+    )
+    failed_count = sum(1 for h in source_issues if h.get("status") == "failed")
+
     summary = search.get("summary", {})
     sources = f"{summary.get('sources_succeeded', '?')}/{summary.get('sources_attempted', '?')}"
     date_str = now.strftime("%Y-%m-%d")
@@ -280,6 +313,8 @@ def build(
         .replace("__REVIEW_COUNT__", str(len(review)))
         .replace("__BELOW_50__", str(below_50))
         .replace("__SOURCES__", _e(sources))
+        .replace("__FAILED_COUNT__", str(failed_count))
+        .replace("__SOURCE_ISSUES_COUNT__", str(len(source_issues)))
         .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
         .replace(
             "__STRONG_ROWS__",
@@ -299,6 +334,7 @@ def build(
             "__NEVER_REVIEWED_ROWS__",
             _never_reviewed_rows_html(never_reviewed_candidates, now=now, new_days=new_days),
         )
+        .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(out, encoding="utf-8")
@@ -307,6 +343,8 @@ def build(
         "review": len(review),
         "below_50": below_50,
         "never_reviewed": never_reviewed,
+        "source_issues": len(source_issues),
+        "failed": failed_count,
     }
 
 
@@ -363,7 +401,8 @@ def main() -> int:
     )
     print(
         f"Wrote {output_path} | strong={stats['strong']} review={stats['review']} "
-        f"below_50={stats['below_50']} never_reviewed={stats['never_reviewed']}"
+        f"below_50={stats['below_50']} never_reviewed={stats['never_reviewed']} "
+        f"source_issues={stats['source_issues']} (failed={stats['failed']})"
     )
     return 0
 

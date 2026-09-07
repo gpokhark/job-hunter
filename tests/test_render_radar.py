@@ -7,10 +7,11 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from render_radar import _default_title, build  # noqa: E402
 
 
-def _search_json(candidates: list[dict]) -> dict:
+def _search_json(candidates: list[dict], source_health: list[dict] | None = None) -> dict:
     return {
         "summary": {"sources_succeeded": 20, "sources_attempted": 21},
         "candidates": candidates,
+        "source_health": source_health or [],
     }
 
 
@@ -91,7 +92,14 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
         now=now,
     )
 
-    assert stats == {"strong": 2, "review": 1, "below_50": 1, "never_reviewed": 0}
+    assert stats == {
+        "strong": 2,
+        "review": 1,
+        "below_50": 1,
+        "never_reviewed": 0,
+        "source_issues": 0,
+        "failed": 0,
+    }
     html = output_path.read_text()
     assert "Exceptional Role" in html
     assert "Weak Role" in html  # below-50 candidates are listed in their own section
@@ -431,7 +439,14 @@ def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
         new_days=10,
         now=datetime(2026, 8, 31, tzinfo=UTC),
     )
-    assert stats == {"strong": 0, "review": 0, "below_50": 0, "never_reviewed": 1}
+    assert stats == {
+        "strong": 0,
+        "review": 0,
+        "below_50": 0,
+        "never_reviewed": 1,
+        "source_issues": 0,
+        "failed": 0,
+    }
     html = output_path.read_text()
     assert 'data-source-key="ford"' in html
     assert 'data-job-id="77"' in html
@@ -440,6 +455,77 @@ def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
     assert 'tag-hybrid">Hybrid' in html
     assert 'tag-sponsor-no">No Sponsorship' in html
     assert "Not yet reviewed by the local model" in html
+
+
+def test_build_surfaces_non_ok_source_health_grouped_and_ordered(tmp_path):
+    """Every source_health entry that isn't 'ok' must appear in the Collection issues
+    section, ordered failed -> warning -> unsupported (most actionable first) and
+    alphabetically by company within each group — a source that collected fine (ok)
+    must not appear at all."""
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[
+                    {"source_key": "acme", "company": "Acme", "status": "ok", "message": None},
+                    {
+                        "source_key": "zeta",
+                        "company": "Zeta Motors",
+                        "status": "unsupported",
+                        "message": "Akamai blocks every request.",
+                    },
+                    {
+                        "source_key": "beta",
+                        "company": "Beta Corp",
+                        "status": "failed",
+                        "message": "Connection timed out.",
+                    },
+                    {
+                        "source_key": "widget",
+                        "company": "Widget Inc",
+                        "status": "warning",
+                        "message": "Job count dropped 80%.",
+                    },
+                    {
+                        "source_key": "alpha",
+                        "company": "Alpha Robotics",
+                        "status": "failed",
+                        "message": "DNS resolution failed.",
+                    },
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    assert stats["source_issues"] == 4
+    assert stats["failed"] == 2
+    html = output_path.read_text()
+    assert "Acme" not in html  # the ok source never appears in Collection issues
+    failed_pos = html.index("Alpha Robotics")
+    beta_pos = html.index("Beta Corp")
+    warning_pos = html.index("Widget Inc")
+    unsupported_pos = html.index("Zeta Motors")
+    assert failed_pos < beta_pos < warning_pos < unsupported_pos
+    assert "Connection timed out." in html
+    assert "DNS resolution failed." in html
+    assert "Job count dropped 80%." in html
+    assert "Akamai blocks every request." in html
+    assert 'tag-source-failed">Failed' in html
+    assert 'tag-source-warning">Warning' in html
+    assert 'tag-source-unsupported">Unsupported' in html
 
 
 def test_default_title_derivation():
