@@ -35,7 +35,13 @@ found the same way (a real job link, not a guess), is Ashby, reachable directly 
 first guess wasn't free either: `jobs.ashbyhq.com/anthropic` looks like the obvious matching URL
 for Anthropic but is a real Ashby "Page not found" — Anthropic isn't on Ashby at all, it's
 Greenhouse (`anthropic.com/careers/jobs` links directly to `job-boards.greenhouse.io/anthropic/
-jobs/<id>`), confirmed only once a real job link was actually followed. For
+jobs/<id>`), confirmed only once a real job link was actually followed. The check isn't only for a
+*blocked* front end, either: Roche's `careers.roche.com` is a Phenom People site that works fine
+unblocked over plain httpx, but each of its own eager-loaded job records carries an `applyUrl`
+pointing at a public, unauthenticated Workday CXS API (`roche.wd3.myworkdayjobs.com`) with the
+full global catalog, where the visible Phenom page only ever shows one category at a time — the
+working front end was itself the tell that pointed at the better backend, not a reason to stop
+looking. For
 a source where the block genuinely is the only way in, using this adapter is an explicit,
 disclosed choice to defeat that site's own anti-automation controls — real ToS exposure, not
 solved by "it's just reading public data" — so don't reach for it by default; every other adapter
@@ -55,6 +61,20 @@ gained an opt-in `public_url_template` (Ford/DENSO) for the same reason, pointed
 `.../hcmUI/CandidateExperience/en/sites/{site}/job/{id}` page — confirmed via curl to render the
 correct job, not guessed. Any new JSON-API-backed adapter should ask this question explicitly: is
 `url` something a human can actually open, or only something `fetch_detail` can `.json()`?
+
+A 200 response with plausible-looking job cards is not proof a query parameter actually filtered
+anything — confirmed the hard way onboarding Molex (koch.avature.net, a shared career portal for
+every Koch Industries subsidiary): its default search page renders the same fixed handful of
+results over plain httpx no matter what's tried (`?query=`, `?keyword=`, or a facet id passed as a
+bare GET param), only ever revealing the real, differently-shaped param it actually reads
+(`732_format=...` alongside the facet id) by driving the page once with Playwright and reading the
+URL its own form submission redirects to. Once found, it's a plain httpx param again — but "it
+returned 200 and the results look real" was never itself sufficient evidence; only two *different*
+facet values producing two *different* result sets proved the filter was real. And the opposite
+lesson matters too: not every Radancy/TalentBrew-branded site is a skin hiding a different real
+backend the way GM's and Stellantis's were — Toro Company's TalentBrew site is genuinely plain,
+unprotected, server-rendered HTML with no hidden system underneath, confirmed only by actually
+finding real job cards in the raw response rather than assuming the brand name implied a skin.
 
 The division of responsibility is intentional and load-bearing: **Python owns networking,
 normalization, persistence, health, and location filtering; the agent skill owns evidence-based
@@ -100,7 +120,8 @@ before most commands will find a profile (falls back to the example file otherwi
   `greenhouse.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
   `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`,
-  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`,
+  `smartrecruiters.py`, `paycom.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`

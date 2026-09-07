@@ -131,7 +131,7 @@ pagination) or `page_number_parameter` (1-indexed page-number pagination), `post
 `html_paginated` key plus `wait_selector`.
 
 Use `scripts/endpoint_probe.py` (or curl) during development to inspect a candidate endpoint
-before writing config for it — never hand-invent an endpoint shape (§5.18).
+before writing config for it — never hand-invent an endpoint shape (§5.21).
 
 ---
 
@@ -189,6 +189,8 @@ is judged still valid.
 | `csod` | `CsodAdapter` | Cornerstone OnDemand "Career Site Player" — a short-lived anonymous JWT embedded in the plain careersite page is replayed as a Bearer token on a public search API; detail comes from each job's own JSON-LD detail page — see §5.15 |
 | `icims_attract` | `IcimsAttractAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for iCIMS's "Attract" widget's own same-origin `/api/jobs`, adding ordinary `page`/`limit` pagination — see §5.16 |
 | `dayforce` | `DayforceAdapter` | Ceridian Dayforce Candidate Portal — a public two-call CSRF handshake (`/api/auth/csrf` token+cookie replayed on the search POST), the same shape as `adp_recruiting` for an unrelated platform — see §5.17 |
+| `smartrecruiters` | `SmartRecruitersAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for SmartRecruiters' public Job Board API, adding ordinary offset/limit pagination (server caps at 100/page) — see §5.18 |
+| `paycom` | `PaycomAdapter` | Paycom's "career-page" ATS widget — a short-lived anonymous bearer token embedded in the plain page HTML, replayed on a public search/detail API — see §5.20 |
 | `unsupported` | `UnsupportedAdapter` | explicit "no viable path" marker; `unsupported_reason` required |
 
 `json_api.ConfigurableJsonAdapter` (not directly registered, but the base several of the above
@@ -200,13 +202,13 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (46, `config/companies.yaml`)
+### 5.2 Currently configured companies (63, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
 code, identically on every run. The only LLM involvement anywhere in the system is later and
 separate: `job-reviewer` scoring the JSON output against a resume — it reads this data, it doesn't
-produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.18), but
+produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.21), but
 that's a cost paid once per company, not per search.
 
 | Key | Company | Adapter | Posted date | Tools used |
@@ -258,10 +260,27 @@ that's a cost paid once per company, not per search.
 | rivian | Rivian | icims_attract | Yes (`posted_date`, confirmed sorted newest-first) | httpx only — iCIMS "Attract" widget's own same-origin `/api/jobs`, found by rendering once and reading its XHR calls; full description inline, no detail fetch needed (738 jobs) |
 | jtekt | JTEKT | dayforce | Yes (`postingStartTimestampUTC`, confirmed sorted newest-first) | httpx only — Ceridian Dayforce Candidate Portal, a public two-call CSRF handshake (`/api/auth/csrf` → token+cookie, replayed on the search POST), same shape as `adp_recruiting.py`; full description inline (46 jobs) |
 | mathworks | MathWorks | **unsupported** | n/a | mechanism fully mapped (plain HTML, real `?page=N` pagination, JSON-LD detail) but MathWorks' Akamai bot-management deterministically 403s this project's own identifying User-Agent — see §5.7 |
+| mazda | Mazda North American Operations | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API served from the same `myworkdaysite.com` vanity host as the real candidate-facing page (only 6 jobs at onboarding time) |
+| zipline | Zipline | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic/scout_motors, `?content=true` inlines every description (339 jobs); real board token is `flyzipline`, not the guessable `zipline` (404s) — found via the sample job page's own embedded (empty) `greenhouse-embed` div |
+| skydio | Skydio | ashby | Yes (`publishedAt`) | httpx only — same Ashby public posting API shape as openai/perplexity, 132 jobs with full `descriptionHtml` inline |
+| intuitive | Intuitive Surgical | smartrecruiters | Yes (`releasedDate`) | httpx only — public SmartRecruiters Job Board API behind an Akamai-blocked branded front end (careers.intuitive.com); a new platform family (§5.18), 677 jobs |
+| jj | Johnson & Johnson | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API behind an Akamai-blocked branded front end (careers.jnj.com), same fix as gm/caterpillar/magna (1,706 jobs); a first-time full-catalog `--refresh-details` run hit an isolated 429 on one job's detail fetch — non-fatal (`collector.py`'s per-job try/except keeps the summary and retries next run), source still completed `ok` |
+| roche | Roche | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API; the visible careers.roche.com is a Phenom site whose own eager-loaded JSON works fine unblocked but only exposes one category at a time, and every job's `applyUrl` pointed at Workday anyway (1,199 jobs, global catalog) |
+| dematic | Dematic | workday | Yes (`startDate`) | httpx only — the given URL was already Workday's native candidate-facing host (KION Group's Supply Chain Solutions tenant, Dematic's parent brand) with no front-end skin to see through; public unauthenticated CXS API, 364 jobs across many "Dematic ..." legal entities |
+| may_mobility | May Mobility | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io is already Greenhouse's own public host, no front end involved; same shape as anthropic/scout_motors (47 jobs) |
+| formlabs | Formlabs | greenhouse | Yes (`first_published`) | httpx only — careers.formlabs.com is a Next.js front end that server-renders Greenhouse's own job data into `__NEXT_DATA__`, but it's a custom-domain Greenhouse board underneath (token `formlabs`); the standard public Job Board API works directly, no hydration parsing needed (206 jobs) |
+| jlr | Jaguar Land Rover | successfactors_rmk | Yes (`span.jobDate`, day-first "D Mon YYYY") | httpx + selectolax — the given `career5.successfactors.eu` URL was zf's exact dead end again (a login-gated widget shell); real site is jaguarlandrovercareers.com, the classic SuccessFactors RMK table, but this tenant's own template has no `colDate` column at all (date only in a mobile-hidden block) and spells September "Sept" (4 letters) — the latter fixed centrally in `normalizer.py` (§5.5) |
+| molex | Molex | html_paginated | No (no date field found anywhere) | httpx only — koch.avature.net is a shared multi-brand Koch Industries career portal; Avature's real search only executes via a client-side wizard (found by driving it once with Playwright), replayed over plain httpx as `?732=6322&...` (732=Company facet, 6322=Molex); ~1,200+ global jobs, capped at 6/page server-side regardless of requested page size (§5.20) |
+| doordash | DoorDash | greenhouse | Yes (`first_published`) | httpx only — careersatdoordash.com is Cloudflare-challenge-protected, but its real Apply link (found by rendering the sample job once) points at Greenhouse board token `doordashusa` (not the guessable `doordash`, which 404s); 456 jobs |
+| microsoft | Microsoft | eightfold | Yes (`postedTs`) | httpx only — apply.careers.microsoft.com is unprotected and runs the same Eightfold "pcsx" platform as deere (SuccessFactors as the underlying ATS per its own frontend config, reached through the same public API regardless); 1,162 US jobs, fixed 10/page |
+| uber | Uber | oracle_hcm | Yes (`PostedDate`) | httpx only — jobs.uber.com is a third-party recruitment-marketing CDN front end; its real Apply link (found by rendering the sample job once) points at a public unauthenticated Oracle Fusion Recruiting Cloud tenant (`iaziqy.fa.ocs.oraclecloud.com`, site UberCareers), same platform as ford/denso/subaru (546 jobs, 200/page cap, not date-sorted) |
+| isuzu | Isuzu Commercial Truck of America | paycom | Yes (JSON-LD `googleJobJson.datePosted`) | httpx only — a new platform family, Paycom (§5.20); a short-lived anonymous JWT embedded in the plain career-page HTML is replayed as a Bearer token on a public search API, same "public frontend key" shape as bosch/csod (19 jobs) |
+| toro | The Toro Company | html_paginated | Yes (JobPosting JSON-LD `datePosted`, non-zero-padded) | httpx + selectolax — a genuinely plain, unprotected Radancy TalentBrew site (unlike GM/Stellantis's TalentBrew fronts, which hid a different real backend) covering multiple in-house brands in one listing; ~128 jobs across 9 pages; JSON-LD's malformed "2026-8-19" date format fixed centrally in `normalizer.py` (§5.5) |
 
-Adapter mix: workday ×12, successfactors_rmk ×5, successfactors_rmk_v2 ×2, lever ×3, ashby ×2,
-stealth_html ×2, oracle_hcm ×3, greenhouse ×2, eightfold ×2, unsupported ×3, 1 each of
-phenom/html_paginated ×2/html_multi_index/apple/adp_recruiting/bosch/zf/csod/icims_attract/dayforce.
+Adapter mix: workday ×16, successfactors_rmk ×6, successfactors_rmk_v2 ×2, lever ×3, ashby ×3,
+stealth_html ×2, oracle_hcm ×4, greenhouse ×6, eightfold ×3, html_paginated ×4, unsupported ×3,
+1 each of smartrecruiters/paycom/phenom/html_multi_index/apple/adp_recruiting/bosch/zf/csod/
+icims_attract/dayforce.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.
@@ -294,14 +313,21 @@ Three independent mechanisms feed a posting date, in order of coverage:
    `postedDate`/`datePosted`, ADP RM's `postingDate`, Apple's `postDateInGMT` (parsed straight from
    its SSR JSON, §5.9), Eightfold's `postedTs` (epoch seconds, listing-level — confirmed against
    Deere's sample job to match its detail page's JSON-LD `datePosted` exactly, distinct from a
-   separate `creationTs` field on the same record that is *not* the same value), and the four
+   separate `creationTs` field on the same record that is *not* the same value), most
    `successfactors_rmk` sites' shared `posted_at_selector: td.colDate span.jobDate` (via
-   `normalizer.parse_display_date`).
+   `normalizer.parse_display_date`) — except jlr, whose own template has no `colDate` column at
+   all, just a bare `span.jobDate` in a mobile-hidden block — and Paycom's embedded schema.org
+   `googleJobJson` (a JSON *string*, needing its own `json.loads`) datePosted (§5.20).
+   `parse_display_date` and `parse_flexible_date` have each grown one non-obvious format fix from
+   onboarding: jlr's tenant spells September's abbreviation "Sept" (4 letters, normalized to "Sep"
+   before any format is tried) and Toro's TalentBrew JSON-LD emits a non-zero-padded
+   `datePosted` ("2026-8-19", zero-padded before `fromisoformat`) — both fixed centrally since
+   either could recur on a future tenant of the same platform.
 2. **Generic schema.org JSON-LD fallback** — `html_paginated.py`'s `fetch_detail` always checks
    for a JobPosting JSON-LD block (`normalizer.extract_job_posting_ld`) regardless of adapter
    config, using its `datePosted`/`employmentType` without overriding a description a
    `description_selector` already found. This is what covers Astemo (no per-field config exists
-   for it) and conditionally Waymo (present only when its AWS WAF challenge isn't currently
+   for it), Toro, and conditionally Waymo (present only when its AWS WAF challenge isn't currently
    blocking the fetch — §5.7). The regex matches `type="application/ld+json"` anywhere in the
    `<script>` tag's attributes, not only immediately after `<script `, since Astemo's markup puts
    another attribute first.
@@ -315,8 +341,9 @@ Three independent mechanisms feed a posting date, in order of coverage:
    30-day cutoff, so most of its jobs filter out as stale rather than being kept for lack of a
    determinable date (the previous behavior, before this extraction existed).
 
-Google is the one working source with no date signal via any of these three mechanisms — confirmed
-by direct testing, not assumed.
+Google and Molex are the two working sources with no date signal via any of these three mechanisms
+— confirmed by direct testing (both the listing and detail pages checked, no JSON-LD either), not
+assumed.
 
 ### 5.6 Active/closed detection — presence-only, by design
 
@@ -657,7 +684,72 @@ and structured `postingLocations` inline, so no separate detail fetch is needed.
 ignored), and the listing is confirmed sorted newest-first, so `max_posting_age_days`-based
 early-pagination-stop is safe here the same way it is for `apple`/`adp_recruiting`.
 
-### 5.18 Adding a new source
+### 5.18 The `smartrecruiters` adapter — a new platform family behind a blocked front end
+
+Intuitive Surgical's branded career site (`careers.intuitive.com`) is Akamai-fronted and 403s on a
+plain request — but unlike the Astemo/OpenAI/GM cases, there's no JSON-LD or hydration payload to
+find on that front end at all to confirm what's behind it; the platform was identified instead by
+recognizing SmartRecruiters' own documented public Job Board API shape
+(`api.smartrecruiters.com/v1/companies/<company>/postings`) and testing it directly. Confirmed
+zero-auth, live, and matching the sample job by `id` (the same numeric ID that appears in
+`careers.intuitive.com`'s own job URL path). Pagination is ordinary `offset`/`limit` query params
+capped at 100/page server-side (`limit=1000` still returns 100) — a plain-query-param version of
+the same gap `oracle_hcm.py` fills for Oracle's URL-embedded offset, needing its own small
+`smartrecruiters.py` subclass (`config: paginate: true`) since `ConfigurableJsonAdapter` has no
+built-in looping. Each listing item's own `ref` field is the absolute per-job detail API URL, but
+like Ford's Oracle REST endpoint and GM's Workday CXS host, it returns raw JSON, not a page a human
+should be handed — `public_url_template` points at SmartRecruiters' own public candidate-facing
+host (`jobs.smartrecruiters.com/<company>/<id>`, confirmed 200, real rendered job, no slug
+required) instead. The full description lives in the detail response's `jobAd.sections.<name>.text`
+— `jobDescription`/`qualifications`/`additionalInformation` are concatenated;
+`companyDescription` (generic boilerplate, not job-specific) is deliberately left out.
+
+### 5.20 The `paycom` adapter, and Molex's Avature wizard-search
+
+Two more onboardings this round each found a new mechanism worth spelling out.
+
+**Molex** (`html_paginated`, no new adapter code) is on koch.avature.net — a single shared career
+portal for every Koch Industries subsidiary (Molex, Georgia-Pacific, INVISTA, ...), not a
+Molex-only site. Its default "SearchJobs" landing page renders a fixed set of results over plain
+httpx regardless of any query string tried (`?query=`, `?keyword=`, a facet id passed as a bare GET
+param) — a real trap, since a plain request "succeeding" with plausible-looking job cards can hide
+that no actual filtering happened. The real mechanism was found only by driving the page once with
+Playwright — selecting the "Company" facet (field id `732`, value `6322` for Molex) and submitting
+— and reading the resulting redirect URL: `?732=6322&732_format=1077&listFilterMode=1&
+jobRecordsPerPage=6`. That extra `732_format` param is what actually makes the facet filter apply;
+confirmed genuinely filtering (not coincidental) by trying a different company's id (Georgia-Pacific,
+`6299`) and getting a completely different result set. The server hard-caps at 6 results/page no
+matter what `jobRecordsPerPage` requests, and Molex's own global catalog is large enough (real,
+distinct postings still appearing past `jobOffset=1100`) that a full crawl runs ~150-200 sequential
+requests — a genuine, disclosed slowness tradeoff, not a bug. One more wrinkle: the search-result
+card and the detail page's free-text body share the exact same `.article__content__view__field__value`
+CSS class Avature uses for *every* labeled field (Location, Job Number, ...) — distinguished not by
+a label (BMW's fix, §5.12) but by an ancestor: the description's wrapping `<article>` carries an
+extra `js_collapsible` class the metadata block's sibling `<article>` doesn't, so
+`description_selector` is scoped to `.js_collapsible .article__content__view__field__value` to avoid
+concatenating Location/Job Number junk into the description.
+
+**Isuzu** is on Paycom (`paycom.py`, a new adapter and platform family). Its career-page widget
+(`paycomonline.net/v4/ats/web.php/portal/<id>/...`) is a heavy client-rendered SPA with no job data
+in its own plain HTML — but every page load (career-page or a job detail page alike) embeds a
+short-lived (~2 hour, per its own JWT `exp`/`iat` claims) anonymous bearer token in a
+`var configsFromHost = {"sessionJWT": "..."}` block, the same "public frontend key minted by an
+unauthenticated page load" shape as `csod.py`'s `csod.context.token` and `bosch.py`'s static Bearer
+key — confirmed genuinely anonymous by re-minting the token from a second, independent plain httpx
+GET (no cookies, no session) and replaying it with the same result. Found by rendering the
+career-page once and reading its XHR calls: the token is replayed as an `Authorization: Bearer`
+header on `POST .../api/ats/job-posting-previews/search`, paginated by ordinary `skip`/`take`. That
+listing endpoint's own `description` field is a truncated preview (confirmed: cut off mid-sentence),
+so `fetch_detail` re-mints its own token against the job's own detail page and calls
+`GET .../api/ats/job-postings/{id}` for the full `description`/`qualifications` plus an embedded
+`googleJobJson` field — a JSON **string** (needs its own `json.loads`, not already-parsed) holding a
+standard schema.org JobPosting, whose `datePosted` is used since the listing-level `postedOn` field
+was confirmed always empty on this tenant. `fetch_detail` re-mints a fresh token per job rather than
+reusing the one from `fetch_summaries` (this adapter carries no cross-call state) — a fine tradeoff
+at the catalog sizes seen so far (19 jobs) but worth revisiting if a much larger Paycom tenant is
+onboarded later.
+
+### 5.21 Adding a new source
 
 A one-time reverse-engineering step, not something that happens on every search: fetch the plain
 page (`scripts/endpoint_probe.py` or curl) to check for a real JSON API or clean static HTML

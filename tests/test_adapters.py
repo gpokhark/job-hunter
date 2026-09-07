@@ -16,11 +16,13 @@ from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
 from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
+from job_hunter.adapters.paycom import PaycomAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
+from job_hunter.adapters.smartrecruiters import SmartRecruitersAdapter
 from job_hunter.adapters.successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
-from job_hunter.models import WorkArrangement
+from job_hunter.models import JobSummary, WorkArrangement
 from job_hunter.normalizer import parse_flexible_date
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -513,6 +515,208 @@ async def test_oracle_hcm_concatenates_multiple_description_fields():
         detail = await adapter.fetch_detail(jobs[0])
     assert "Build ADAS features." in detail.description
     assert "Visa sponsorship is not available" in detail.description
+
+
+def _smartrecruiters_page(job_ids: list[str], total: int) -> dict:
+    return {
+        "totalFound": total,
+        "content": [
+            {
+                "id": job_id,
+                "name": f"Role {job_id}",
+                "ref": f"https://api.example/v1/companies/Acme/postings/{job_id}",
+                "location": {"fullLocation": "Sunnyvale, CA, United States", "city": "Sunnyvale", "region": "CA", "country": "us"},
+                "releasedDate": "2026-09-04T21:32:25.944Z",
+            }
+            for job_id in job_ids
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_smartrecruiters_pagination():
+    """Server caps limit at 100/page regardless of what's requested (confirmed live
+    against Intuitive's board) — paginate:true must keep incrementing offset by however
+    many items actually came back until totalFound is reached, not assume a fixed page
+    size matches what was requested."""
+    list_url = "https://api.example/v1/companies/Acme/postings"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        if params.get("offset") == "0":
+            return httpx.Response(200, json=_smartrecruiters_page(["1", "2"], total=3))
+        return httpx.Response(200, json=_smartrecruiters_page(["3"], total=3))
+
+    respx.get(url__regex=r".*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="acme",
+        company="Acme",
+        adapter="smartrecruiters",
+        config={
+            "paginate": True,
+            "list_url": list_url,
+            "items_path": "content",
+            "total_path": "totalFound",
+            "fields": {
+                "id": "id",
+                "title": "name",
+                "url": "ref",
+                "location": "location.fullLocation",
+                "posted_at": "releasedDate",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await SmartRecruitersAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert [job.job_id for job in jobs] == ["1", "2", "3"]
+    assert jobs[0].posted_at is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_smartrecruiters_public_url_template_and_description_sections():
+    """The listing item's own `ref` field is the raw API detail endpoint (a JSON dump, not
+    a page a human should open) — public_url_template must be what's shown, and
+    fetch_detail must still hit the real API endpoint via that same `ref` for a
+    description, concatenating just the job-specific sections (not the generic
+    companyDescription boilerplate)."""
+    list_url = "https://api.example/v1/companies/Acme/postings"
+    respx.get(list_url).mock(return_value=httpx.Response(200, json=_smartrecruiters_page(["42"], total=1)))
+    respx.get("https://api.example/v1/companies/Acme/postings/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "jobAd": {
+                    "sections": {
+                        "companyDescription": {"text": "About Acme."},
+                        "jobDescription": {"text": "Build robots."},
+                        "qualifications": {"text": "5 years experience."},
+                    }
+                }
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="acme",
+        company="Acme",
+        adapter="smartrecruiters",
+        config={
+            "paginate": True,
+            "list_url": list_url,
+            "items_path": "content",
+            "total_path": "totalFound",
+            "public_url_template": "https://jobs.smartrecruiters.com/Acme/{id}",
+            "detail_description_path": ["jobAd.sections.jobDescription.text", "jobAd.sections.qualifications.text"],
+            "fields": {"id": "id", "title": "name", "url": "ref", "location": "location.fullLocation"},
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = SmartRecruitersAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        assert jobs[0].url == "https://jobs.smartrecruiters.com/Acme/42"
+        detail = await adapter.fetch_detail(jobs[0])
+    assert "Build robots." in detail.description
+    assert "5 years experience." in detail.description
+    assert "About Acme." not in detail.description
+
+
+def _paycom_page_html(token: str) -> str:
+    return f'<html><script>var configsFromHost = {{"sessionJWT":"{token}"}};</script></html>'
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_paycom_token_scrape_and_search():
+    """The career-page widget has no job data in its own plain HTML — every page load
+    embeds a short-lived anonymous bearer token that must be scraped and replayed on the
+    real search API. Regression: the token must come from the page text, never guessed
+    or hardcoded, since a stale token would silently 401."""
+    career_page_url = "https://jobs.example/portal/ABC/career-page"
+    search_url = "https://jobs.example/api/search"
+    respx.get(career_page_url).mock(return_value=httpx.Response(200, text=_paycom_page_html("tok-123")))
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer tok-123"
+        return httpx.Response(
+            200,
+            json={
+                "jobPostingPreviewsCount": 1,
+                "jobPostingPreviews": [
+                    {"jobId": 42, "jobTitle": "Widget Engineer", "locations": "Plymouth, MI"}
+                ],
+            },
+        )
+
+    respx.post(search_url).mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="isuzu",
+        company="Isuzu",
+        adapter="paycom",
+        config={
+            "career_page_url": career_page_url,
+            "search_url": search_url,
+            "detail_api_url": "https://jobs.example/api/job-postings/{id}",
+            "public_base_url": "https://jobs.example/portal/ABC",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await PaycomAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert len(jobs) == 1
+    assert jobs[0].job_id == "42"
+    assert jobs[0].title == "Widget Engineer"
+    assert jobs[0].url == "https://jobs.example/portal/ABC/jobs/42"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_paycom_detail_parses_google_job_json_date():
+    """The listing preview's description is truncated and postedOn is always empty on
+    this platform — fetch_detail must re-mint its own token (a job detail page embeds
+    one too, independent of the listing's) and read the full description plus the
+    embedded googleJobJson *string* (needs its own json.loads) for a real datePosted."""
+    job_url = "https://jobs.example/portal/ABC/jobs/42"
+    detail_url = "https://jobs.example/api/job-postings/42"
+    respx.get(job_url).mock(return_value=httpx.Response(200, text=_paycom_page_html("tok-456")))
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer tok-456"
+        return httpx.Response(
+            200,
+            json={
+                "jobPosting": {
+                    "description": "Build widgets.",
+                    "qualifications": "5 years experience.",
+                    "googleJobJson": '{"datePosted": "2026-07-29"}',
+                }
+            },
+        )
+
+    respx.get(detail_url).mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="isuzu",
+        company="Isuzu",
+        adapter="paycom",
+        config={
+            "career_page_url": "https://jobs.example/portal/ABC/career-page",
+            "search_url": "https://jobs.example/api/search",
+            "detail_api_url": "https://jobs.example/api/job-postings/{id}",
+            "public_base_url": "https://jobs.example/portal/ABC",
+        },
+    )
+    summary = JobSummary(
+        source_key="isuzu",
+        source_platform="paycom",
+        company="Isuzu",
+        job_id="42",
+        title="Widget Engineer",
+        url=job_url,
+    )
+    async with httpx.AsyncClient() as client:
+        detail = await PaycomAdapter(company, client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+    assert "Build widgets." in detail.description
+    assert "5 years experience." in detail.description
+    assert detail.posted_at == datetime(2026, 7, 29, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

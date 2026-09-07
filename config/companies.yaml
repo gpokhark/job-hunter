@@ -1004,3 +1004,454 @@ companies:
     # something to slip in quietly via a per-source header override. Left unsupported
     # by explicit choice rather than silently changing our identification for one site.
     unsupported_reason: mathworks.com's Akamai bot-management deterministically blocks every request carrying this project's own identifying User-Agent (confirmed 403, 100% reproducible); the identical request succeeds with a bare default UA, but this project does not alter its self-identification to get past a site's own anti-automation control.
+  - key: mazda
+    company: Mazda North American Operations
+    adapter: workday
+    platform: workday
+    config:
+      # wd5.myworkdaysite.com/recruiting/mazdausa/Mazda is Workday's own native
+      # candidate-facing host (a "myworkdaysite.com" vanity alias some tenants use
+      # instead of "myworkdayjobs.com") — same host serves both this real page and the
+      # CXS API at .../wday/cxs/mazdausa/Mazda/jobs (confirmed public, zero-auth, POST
+      # with an empty appliedFacets body). Only 6 jobs live at onboarding time. Detail
+      # fetch (fetch_detail) rebuilds the CXS url from list_url independently, so
+      # public_base_url only needs to be the real page a human opens.
+      workday_native: true
+      list_url: https://wd5.myworkdaysite.com/wday/cxs/mazdausa/Mazda/jobs
+      public_base_url: https://wd5.myworkdaysite.com/recruiting/mazdausa/Mazda/
+  - key: zipline
+    company: Zipline
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # www.zipline.com/open-roles is a Next.js site whose job detail page
+      # (.../open-roles/<id>) renders an empty `<div class="...greenhouse-embed">` —
+      # confirmed via curl on the real sample job page (7807377003) that the visible
+      # site is just a styled shell over a Greenhouse job board widget. The org's real
+      # Greenhouse board token isn't "zipline" (boards-api.greenhouse.io/v1/boards/
+      # zipline/jobs 404s) — it's "flyzipline" (matches Zipline's own social handles),
+      # confirmed live: 339 jobs, and the sample job (7807377003, "Ops Standards and
+      # Readiness Lead") present with matching title/location. Same shape as the
+      # anthropic entry above: ?content=true inlines full descriptions in one request,
+      # no per-job detail fetch, absolute_url is the real candidate-facing page,
+      # first_published is Greenhouse's stable original-post date (confirmed distinct
+      # from updated_at, which drifts on any edit).
+      list_url: https://boards-api.greenhouse.io/v1/boards/flyzipline/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: skydio
+    company: Skydio
+    adapter: ashby
+    platform: ashby
+    config:
+      # jobs.ashbyhq.com/skydio is a real, unauthenticated Ashby board (confirmed 200)
+      # and its public posting API mirrors it exactly, same shape as the openai/
+      # perplexity entries above: 132 jobs, full descriptionHtml inline, no per-job
+      # detail fetch, structured address.postalAddress for evaluate_location, and
+      # workplaceType mapped onto work_arrangement. Sample job
+      # c18906d5-12c0-4ea3-8b7e-7474bc72efa5 confirmed present in the live feed
+      # ("Systems Integration and Test Engineer (Senior to Staff Level)", San Mateo, CA).
+      list_url: https://api.ashbyhq.com/posting-api/job-board/skydio
+      items_path: jobs
+      listing_description_path: descriptionHtml
+      fields:
+        id: id
+        title: title
+        url: jobUrl
+        location: location
+        department: department
+        employment_type: employmentType
+        posted_at: publishedAt
+        work_arrangement: workplaceType
+        country: address.postalAddress.addressCountry
+        state: address.postalAddress.addressRegion
+        city: address.postalAddress.addressLocality
+  - key: intuitive
+    company: Intuitive Surgical
+    adapter: smartrecruiters
+    platform: smartrecruiters
+    config:
+      # careers.intuitive.com (the branded front end, confirmed 403/Akamai-blocked on a
+      # plain request, same as the sample job URL given) is only a skin over
+      # SmartRecruiters — found by testing SmartRecruiters' own documented public Job
+      # Board API directly (api.smartrecruiters.com/v1/companies/<company>/postings),
+      # not by rendering the front end (there's no JSON-LD/hydration blob to find there
+      # anyway). Confirmed zero-auth, live: the sample job (744000147606510, "Senior
+      # Mechanical Engineer, Robotic Accessories") present with matching title/location.
+      # Ordinary offset/limit query-param pagination, capped at 100/page server-side
+      # (confirmed: limit=1000 still returns 100) — smartrecruiters.py's bespoke
+      # pagination loop (config: paginate: true) handles this, reading totalFound
+      # (677 US+global jobs at onboarding time; location.evaluate_location filters to
+      # US-eligible downstream, same as every other multi-country board here).
+      # Each listing item's own `ref` field is the absolute per-job API detail URL — used
+      # via fields.url — but that endpoint returns raw JSON, not a page a human should be
+      # handed (same trap as GM's Workday CXS/Ford's Oracle REST), so public_url_template
+      # points at SmartRecruiters' own public candidate-facing host instead
+      # (jobs.smartrecruiters.com/Intuitive/<id>, confirmed 200, correct title, no slug
+      # required). Full description lives on the detail response under
+      # jobAd.sections.<name>.text; companyDescription is generic boilerplate and
+      # deliberately excluded, only jobDescription/qualifications/additionalInformation
+      # are concatenated.
+      list_url: https://api.smartrecruiters.com/v1/companies/Intuitive/postings
+      paginate: true
+      items_path: content
+      total_path: totalFound
+      public_url_template: https://jobs.smartrecruiters.com/Intuitive/{id}
+      detail_description_path:
+        - jobAd.sections.jobDescription.text
+        - jobAd.sections.qualifications.text
+        - jobAd.sections.additionalInformation.text
+      fields:
+        id: id
+        title: name
+        url: ref
+        location: location.fullLocation
+        city: location.city
+        state: location.region
+        country: location.country
+        posted_at: releasedDate
+  - key: jj
+    company: Johnson & Johnson
+    adapter: workday
+    platform: workday
+    config:
+      # careers.jnj.com (Akamai-fronted, confirmed 403 on a plain request for both the
+      # listing and the sample job page) is only the marketing front end — the real
+      # candidate-facing system, found via the sample job's own alternate Workday link
+      # (jj.wd5.myworkdayjobs.com), is a completely public, unauthenticated Workday CXS
+      # API with no bot protection at all (1,706 jobs). Same fix/reasoning as gm/
+      # caterpillar/magna above. public_base_url is Workday's native candidate-facing
+      # host (confirmed 200, real page), not the CXS API host used by list_url. Sample
+      # job R-090148 ("Sr Robotics V&V Engineer", Boston, MA) confirmed present via its
+      # own CXS detail endpoint with matching title/description.
+      workday_native: true
+      list_url: https://jj.wd5.myworkdayjobs.com/wday/cxs/jj/JJ/jobs
+      public_base_url: https://jj.wd5.myworkdayjobs.com/en-US/JJ/
+  - key: roche
+    company: Roche
+    adapter: workday
+    platform: workday
+    config:
+      # careers.roche.com/global/en/c/engineering-jobs is a Phenom People career site
+      # (cdn.phenompeople.com assets) whose eager-loaded SEO JSON blob works fine over
+      # plain httpx (no bot protection, unlike Honda's Phenom site needing from/s
+      # pagination) — but it only ever exposes one category page at a time (25 jobs on
+      # the given engineering-jobs page) and every job's own `applyUrl` field points
+      # straight at Workday (roche.wd3.myworkdayjobs.com/roche-ext/...), the same
+      # "front end is a skin, real backend is Workday" pattern as gm/jj above. Workday's
+      # native CXS API for that tenant/site is public and unauthenticated (confirmed
+      # live: 1,199 jobs total, global catalog, no category scoping needed). The given
+      # sample apply-flow URL's jobSeqNo (ROCHGLOBAL202605113551EXTERNALENGLOBAL) decodes
+      # to reqId 202605-113551 — confirmed present via a CXS full-text search
+      # ("Senior Engineer/Scientist in Electrochemical Method Development", Sant Cugat
+      # del Vallès, Spain — not US-eligible itself, but confirms the mechanism against
+      # the exact job given). public_base_url is Workday's native candidate-facing host
+      # (confirmed 200), not the CXS API host used by list_url.
+      workday_native: true
+      list_url: https://roche.wd3.myworkdayjobs.com/wday/cxs/roche/roche-ext/jobs
+      public_base_url: https://roche.wd3.myworkdayjobs.com/en-US/roche-ext/
+  - key: dematic
+    company: Dematic
+    adapter: workday
+    platform: workday
+    config:
+      # The given URL (kiongroup.wd3.myworkdayjobs.com/en-US/KION_SCS) is already
+      # Workday's own native candidate-facing host for KION Group's Supply Chain
+      # Solutions division (Dematic's parent brand) — confirmed directly, no front-end
+      # skin to see through this time. Its CXS API is public and unauthenticated
+      # (364 jobs, mostly tagged under various "Dematic ..." legal-entity names via the
+      # hiringCompany facet — no scoping needed, location.evaluate_location filters to
+      # US-eligible downstream same as every other multi-entity Workday tenant here).
+      # Sample job JR-0094644 ("Mobile Robots Engineer SME", Grand Rapids, MI) confirmed
+      # present via its own CXS detail endpoint with matching title/description.
+      workday_native: true
+      list_url: https://kiongroup.wd3.myworkdayjobs.com/wday/cxs/kiongroup/KION_SCS/jobs
+      public_base_url: https://kiongroup.wd3.myworkdayjobs.com/en-US/KION_SCS/
+  - key: may_mobility
+    company: May Mobility
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # job-boards.greenhouse.io/maymobility is already Greenhouse's own standard public
+      # Job Board API host — no front end to see through, same shape as anthropic/
+      # scout_motors/zipline/formlabs above. ?content=true inlines every description in
+      # one request (47 jobs). Sample job 8631724002 ("Director, Autonomy Perception",
+      # USA - Remote) confirmed present with matching title/location/date.
+      list_url: https://boards-api.greenhouse.io/v1/boards/maymobility/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: formlabs
+    company: Formlabs
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # careers.formlabs.com is a Next.js front end that server-renders a full snapshot
+      # of Greenhouse's own job data into __NEXT_DATA__ (confirmed live: the embedded
+      # JSON has Greenhouse's exact field shapes — absolute_url with a `?gh_jid=`
+      # query param, data_compliance/gdpr, first_published) — a custom-domain Greenhouse
+      # board, not a bespoke system. Greenhouse's standard public Job Board API works
+      # directly with no need to parse the Next.js hydration blob at all (board token
+      # "formlabs", 206 jobs). Sample job 8168278 ("Senior Technical Program Manager",
+      # Somerville, MA) confirmed present; absolute_url resolves to the exact branded
+      # careers.formlabs.com page given, so it's used as-is for url.
+      list_url: https://boards-api.greenhouse.io/v1/boards/formlabs/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: jlr
+    company: Jaguar Land Rover
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      # The given career5.successfactors.eu/careers?company=C0001130632P URL is the same
+      # dead end zf's onboarding already hit: plain httpx returns 200 but it's an
+      # internal "verp-client" widget shell with a loginFlowRequired redirect, no real
+      # job data anywhere in it. Following the sample job's real host instead
+      # (jaguarlandrovercareers.com) found JLR's actual candidate-facing site: the
+      # classic server-rendered SuccessFactors RMK ("Job2Web") search table — same
+      # platform/template as paccar/volkswagen/zf, but its own template variant: this
+      # tenant's table has no colDate column at all (thead is Title/Location/Salary
+      # only) — the date only exists in a mobile-only hidden block
+      # (.jobdetail-phone span.jobDate), confirmed live; td.colDate (the paccar/
+      # volkswagen/zf selector) matches nothing here. startrow pagination, 25/page,
+      # confirmed via plain curl, no cookies. Job count fluctuates day to day (15-26
+      # observed across checks during onboarding) — sample job 1405751533 ("ADAS Lead
+      # System Integration Engineer"; "Santa Clara" in the given URL is a location slug,
+      # not part of the title) confirmed present via a keyword search (?q=ADAS) on this
+      # same endpoint, with a real description at span.jobdescription on its detail
+      # page. One genuinely new wrinkle: this tenant's listing date ("7 Sept 2026")
+      # spells September's abbreviation "Sept" (4 letters) instead of every other
+      # SuccessFactors RMK tenant's standard 3-letter "Sep" — fixed centrally in
+      # normalizer.py's parse_display_date (a %b-incompatible string normalized to "Sep"
+      # before any format is tried), not with per-company code, since this is a shared
+      # date parser any future British-English tenant could also hit.
+      list_url: https://www.jaguarlandrovercareers.com/search/?q=&optionsFacetsDD_country=US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      posted_at_selector: span.jobDate
+      description_selector: .jobdescription
+      page_parameter: startrow
+      page_size: 25
+  - key: molex
+    company: Molex
+    adapter: html_paginated
+    platform: avature
+    config:
+      # koch.avature.net is a single shared career portal for every Koch Industries
+      # subsidiary (Molex, Georgia-Pacific, INVISTA, Guardian Glass, ...), not a
+      # Molex-only site. The default SearchJobs landing page renders a fixed
+      # "recommended jobs" widget over plain httpx regardless of any query string
+      # (confirmed: identical results for no query, ?query=Molex, ?keyword=Molex, etc.)
+      # — Avature's real search only executes through its client-side wizard, found by
+      # driving it once with Playwright (selecting the "Company" facet field, id 732,
+      # value 6322=Molex, then submitting) and reading the resulting redirect URL:
+      # ?732=6322&732_format=1077&listFilterMode=1&jobRecordsPerPage=6 — confirmed this
+      # exact query string also works over plain httpx afterward, no browser needed at
+      # request time. Real, working pagination via jobOffset (confirmed: a different
+      # company id, e.g. Georgia-Pacific's 6299, returns a completely different result
+      # set, proving the facet filter itself is genuine, not coincidental). Server
+      # hard-caps at 6 results/page regardless of jobRecordsPerPage's requested value
+      # (confirmed: =100 and =1000 both still return 6) — Molex's own global catalog is
+      # large (confirmed real, distinct postings still appearing past jobOffset=1100,
+      # unlike the default landing page's fixed 6), so max_pages is set well above the
+      # html_paginated default; a full crawl issues on the order of 150-200 sequential
+      # requests to this one host — a real, disclosed slowness tradeoff, not a bug.
+      # Two disjoint article blocks share the same field-value CSS class: the plain
+      # `article.article--result` card (search results) holds Location/Job Number as
+      # `.article__content__field__value` (location_selector uses css_first, so it
+      # reliably grabs Location, the first one in DOM order); the detail page's
+      # `article.article--details` for the actual free-text body is distinguished from
+      # its sibling metadata block by an additional `js_collapsible` class, not present
+      # on the metadata block — description_selector is scoped to it for exactly that
+      # reason (an unscoped `.article__content__view__field__value` would concatenate
+      # Location/Job Number junk into the description otherwise). No listing- or
+      # detail-page date field exists anywhere (checked both; no JSON-LD either), so no
+      # posted_at_selector is set — passes_recency keeps undated jobs by design.
+      # Verified live end-to-end against a real job pulled from this same
+      # Molex-filtered feed (193448, "Representative, Customer Service") with matching
+      # title/location/description; the original sample job (185073, "Principal Product
+      # Design Engineer") independently confirmed reachable and correctly parsed via its
+      # own JobDetail page in Phase 1, though its exact position within ~1200 global
+      # postings' pagination wasn't exhaustively located.
+      list_url: https://koch.avature.net/en_US/careers/SearchJobs/?732=6322&732_format=1077&listFilterMode=1&jobRecordsPerPage=6
+      card_selector: article.article--result
+      link_selector: .article__header__text__title a
+      title_selector: .article__header__text__title a
+      location_selector: .article__content__field__value
+      description_selector: .js_collapsible .article__content__view__field__value
+      page_parameter: jobOffset
+      page_size: 6
+      max_pages: 220
+  - key: doordash
+    company: DoorDash
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # careersatdoordash.com is Cloudflare-managed-challenge-protected on a plain
+      # request (confirmed: cf-mitigated: challenge header, same signature as OpenAI's
+      # marketing front end) — but that's only the branded front end. Rendering the
+      # sample job once with stealth_html (Scrapling) found its real Apply button
+      # linking to job-boards.greenhouse.io/doordashusa/jobs/8156042 — the real board
+      # token is "doordashusa", not the guessable "doordash" (which 404s), the same
+      # first-guess-is-wrong lesson as Ashby/anthropic. Greenhouse's standard public Job
+      # Board API works directly from there, zero-auth (456 jobs). Sample job 8156042
+      # ("Hardware Systems Engineer", Oakland, CA) confirmed present with matching
+      # title/location/date.
+      list_url: https://boards-api.greenhouse.io/v1/boards/doordashusa/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: microsoft
+    company: Microsoft
+    adapter: eightfold
+    platform: eightfold
+    config:
+      # apply.careers.microsoft.com renders 200 on a plain request (no bot protection at
+      # all) and its own embedded `<code id="pcsx-data">` config block (data-nosnippet,
+      # not the job data itself, just the frontend's search-widget config) confirmed
+      # this is the same Eightfold "pcsx" platform as deere.com — Microsoft's tenant
+      # backed by SuccessFactors as its underlying ATS per that config's own
+      # `position.system_id:successfactors` filter, but reachable through the same
+      # public, unauthenticated /api/pcsx/search + /api/pcsx/position_details endpoints,
+      # same params/shape as deere, no separate discovery needed. location=united
+      # states + filter_include_remote=1 (US catalog: 1,162 jobs, no keyword). Sample
+      # job 1970393556913038 ("Member of Technical Staff, Microsoft Robotics", Redmond,
+      # WA) confirmed present with matching title/location/description; detail
+      # response's own `publicUrl` field matches the given apply.careers.microsoft.com
+      # URL exactly, used directly via public_base_url + positionUrl (Deere's existing
+      # fallback logic in eightfold.py already handles this).
+      # Page size here is a fixed 10/request (confirmed: num/limit/count/size/per_page
+      # overrides all silently ignored, unlike Deere's default of 10 also happening to
+      # be all that's ever needed there) — max_pages raised well above the eightfold.py
+      # default (50) since Microsoft's 1,162-job US catalog needs roughly 120 requests.
+      list_url: https://apply.careers.microsoft.com/api/pcsx/search
+      detail_url: https://apply.careers.microsoft.com/api/pcsx/position_details
+      public_base_url: https://apply.careers.microsoft.com
+      max_pages: 130
+      params:
+        domain: microsoft.com
+        location: united states
+        filter_include_remote: 1
+        filter_include_relocation: 0
+      detail_params:
+        domain: microsoft.com
+        hl: en
+  - key: uber
+    company: Uber
+    adapter: oracle_hcm
+    platform: oracle_hcm
+    config:
+      # jobs.uber.com is a Next.js front end on a third-party recruitment-marketing CDN
+      # (uber-careers-v2-cdn.happydance.website) — not a bot block, but not the real
+      # system either: rendering the sample job once found its actual "Apply" link
+      # pointing at iaziqy.fa.ocs.oraclecloud.com, site "UberCareers" — the same public,
+      # unauthenticated Oracle Fusion Recruiting Cloud platform as ford/denso/subaru
+      # above, a different tenant host/site. Confirmed live: 546 total jobs, capped at
+      # 200/page like Ford's tenant (paginate: true needed). Sample job 159173 ("Lead
+      # Product Manager, Autonomous Vehicle Integrations", New York, NY) confirmed
+      # present via its own detail endpoint — not on the listing's first page, since
+      # this tenant isn't date-sorted (same caveat as Ford/DENSO, no early-stop
+      # attempted). public_url_template points at the real candidate-facing page
+      # (confirmed via curl, following one redirect: .../sites/UberCareers/job/{id}
+      # renders correctly with the matching title) rather than the raw REST detail
+      # endpoint used internally for the description fetch.
+      paginate: true
+      list_url: https://iaziqy.fa.ocs.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=UberCareers,facetsList=LOCATIONS,limit=200,offset=0
+      items_path: items.0.requisitionList
+      total_path: items.0.TotalJobsCount
+      detail_base_url: https://iaziqy.fa.ocs.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
+      public_url_template: https://iaziqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/UberCareers/job/{id}
+      fields:
+        id: Id
+        title: Title
+        url: Id
+        location: PrimaryLocation
+        country: PrimaryLocationCountry
+        employment_type: WorkplaceType
+        posted_at: PostedDate
+  - key: isuzu
+    company: Isuzu Commercial Truck of America
+    adapter: paycom
+    platform: paycom
+    config:
+      # paycomonline.net's career-page widget is a client-rendered SPA with no job data
+      # in its own plain HTML — but every page load (career-page or a job detail page)
+      # embeds a short-lived (~2hr, per its own JWT exp claim) anonymous bearer token in
+      # a `var configsFromHost = {"sessionJWT": "..."}` block, confirmed genuinely public
+      # by re-minting it from a second, independent plain httpx GET. Replayed as a
+      # Bearer header on the real search API (found by rendering the page once and
+      # reading its XHR calls): POST .../api/ats/job-posting-previews/search, paginated
+      # by ordinary skip/take (only 19 total jobs here, one page). Per-job detail comes
+      # from GET .../api/ats/job-postings/{id} (same token handshake, since the listing
+      # preview's own description field is truncated) — see paycom.py's docstring for
+      # the full mechanism, including its embedded googleJobJson schema.org date field.
+      # Sample job 279630 ("Autonomous Driving Kit System Safety Engineer", Plymouth,
+      # MI) confirmed present with matching title/location/description/date.
+      career_page_url: https://www.paycomonline.net/v4/ats/web.php/portal/F0C262EE53966C5DB93987B5993685E6/career-page
+      search_url: https://portal-applicant-tracking.us-cent.paycomonline.net/api/ats/job-posting-previews/search
+      detail_api_url: https://portal-applicant-tracking.us-cent.paycomonline.net/api/ats/job-postings/{id}
+      public_base_url: https://www.paycomonline.net/v4/ats/web.php/portal/F0C262EE53966C5DB93987B5993685E6
+  - key: toro
+    company: The Toro Company
+    adapter: html_paginated
+    platform: talentbrew
+    config:
+      # jobs.thetorocompany.com is a Radancy TalentBrew site (confirmed via its own CSP
+      # headers: tbcdn.talentbrew.com, radancy.net) but — unlike GM/Stellantis's
+      # TalentBrew-branded front ends, which turned out to be skins over a completely
+      # different backend — this one really is plain server-rendered HTML with no bot
+      # protection at all: /search-jobs returns real job cards directly. Card structure
+      # is one <a data-job-id="..."> per job (also duplicated as a "Save for Later"
+      # <button data-job-id="...">, which is why a naive `data-job-id` element count
+      # looked like 30/page — the real, unique per-page count is 15, confirmed by cards
+      # actually collected matching), covering multiple in-house brands (Toro, Ditch
+      # Witch, Exmark, BOSS Snowplow, ...) in one shared listing — not scoped to any one
+      # brand, since the user asked for "Toro Company" as a whole. Pagination is an
+      # ordinary 1-indexed ?p=N (the site's own links emit a malformed "&p=N" with no
+      # leading "?", but page_number_parameter builds a correct query string
+      # independently, so this is harmless). ~128 jobs across ~9 pages. All three given
+      # sample jobs (99461249536 "Engineer, Robotics", Frederick CO; 99207183024 "Senior
+      # Robotics Engineer", Bloomington MN; 99031373536 "Product Development Engineer
+      # III", Bloomington MN) confirmed present with matching titles/locations. Detail
+      # description/date come from html_paginated's automatic JobPosting JSON-LD
+      # fallback — but that JSON-LD's datePosted is malformed non-zero-padded ISO
+      # ("2026-8-19"), rejected outright by fromisoformat; fixed centrally in
+      # normalizer.py's parse_flexible_date (zero-pads before parsing), not per-company,
+      # since this is a shared date parser any other TalentBrew tenant could also hit.
+      list_url: https://jobs.thetorocompany.com/search-jobs
+      card_selector: a[data-job-id]
+      link_selector: self
+      title_selector: .job-title
+      location_selector: .job-location
+      id_attribute: data-job-id
+      page_number_parameter: p
+      page_size: 15
