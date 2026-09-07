@@ -73,6 +73,8 @@ uv run job-hunter source-status
 uv run job-hunter source-test honda
 uv run job-hunter db-stats
 uv run job-hunter export --format json
+uv run job-hunter cleanup                 # dry run — reports what's eligible, deletes nothing
+uv run job-hunter cleanup --apply         # deletes closed jobs / old reports, writes an export first
 uv run job-hunter resolve-search [--keyword "..."] [--search <path>]
 uv run job-hunter export-assessments
 uv run job-hunter export-feedback
@@ -92,6 +94,14 @@ Searches attempt every enabled source by default; one source's failure doesn't s
 `--archive` writes to a deterministic `data/searches/{keyword-or-default}_{date}.json`; omitting
 `--keyword`/`--search` on the review/radar scripts resolves to the newest archive (see
 `docs/SPEC.md` §11 and `docs/skill-split-plan.md` §4 for the full resolution rule).
+
+Nothing is ever deleted automatically — `data/jobs.sqlite3` and `data/profile-diff/`/`data/radar/`
+only ever grow. `job-hunter cleanup` (dry-run by default, `--apply` to commit, writing an export of
+exactly what it's about to remove first) deletes jobs closed longer than
+`retention.closed_job_after_days` and old generated reports past `retention.report_after_days` —
+keeping the latest `retention.keep_latest_reports_per_slug` of each regardless of age. All three
+are configurable in `config/settings.yaml`; see `docs/SPEC.md` §8.6 and
+`docs/retention-cleanup-plan.md` for the full design.
 
 Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
 button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated

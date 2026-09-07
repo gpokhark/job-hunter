@@ -404,3 +404,53 @@ class Storage:
             "SELECT * FROM job_feedback ORDER BY recorded_at DESC"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def find_stale_closed_jobs(self, before: datetime) -> list[dict[str, Any]]:
+        """Jobs eligible for `job-hunter cleanup`: `status='closed'` and not observed
+        (`last_seen_at`) since `before`. Read-only — `last_seen_at` is never touched by
+        `mark_missing()` when it flips a job to closed, so it's already exactly "the last time
+        this job was confirmed present," the right anchor for "days since closed" with no
+        schema migration needed. Used for both a dry-run preview and, immediately before
+        `delete_closed_jobs`, to know exactly what's about to be removed (for the pre-delete
+        export — see docs/retention-cleanup-plan.md section 3.8/4)."""
+        rows = self.connection.execute(
+            "SELECT * FROM jobs WHERE status='closed' AND last_seen_at < ? ORDER BY last_seen_at",
+            (before.isoformat(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_closed_jobs(self, before: datetime) -> dict[str, list[dict[str, Any]]]:
+        """Deletes every closed job last seen before `before`, cascading to that job's own
+        `assessments`/`job_feedback` rows — an explicit choice (docs/retention-cleanup-plan.md
+        section 3.6/4), not an oversight: neither table has a real foreign key to `jobs`, so
+        leaving them behind wouldn't break anything, but a deleted job's assessment/feedback has
+        nowhere else to attach once its own row is gone. Returns exactly what was deleted from
+        each table — the caller must export this *before* calling this method returns to disk,
+        since the rows won't exist to re-query afterward."""
+        jobs = self.find_stale_closed_jobs(before)
+        deleted: dict[str, list[dict[str, Any]]] = {"jobs": jobs, "assessments": [], "job_feedback": []}
+        for job in jobs:
+            key = (job["source_key"], job["job_id"])
+            assessment_row = self.connection.execute(
+                "SELECT * FROM assessments WHERE source_key=? AND job_id=?", key
+            ).fetchone()
+            if assessment_row:
+                deleted["assessments"].append(dict(assessment_row))
+            feedback_row = self.connection.execute(
+                "SELECT * FROM job_feedback WHERE source_key=? AND job_id=?", key
+            ).fetchone()
+            if feedback_row:
+                deleted["job_feedback"].append(dict(feedback_row))
+            self.connection.execute("DELETE FROM jobs WHERE source_key=? AND job_id=?", key)
+            self.connection.execute("DELETE FROM assessments WHERE source_key=? AND job_id=?", key)
+            self.connection.execute("DELETE FROM job_feedback WHERE source_key=? AND job_id=?", key)
+        self.connection.commit()
+        return deleted
+
+    def vacuum(self) -> None:
+        """Rewrites the whole file to actually reclaim the disk space `delete_closed_jobs`
+        frees — SQLite's DELETE only frees pages for internal reuse, it does not shrink the
+        file on disk on its own (docs/retention-cleanup-plan.md section 3.2). Must be called
+        with no other transaction in progress; `delete_closed_jobs` already commits before
+        returning, so a caller invoking these in sequence is safe."""
+        self.connection.execute("VACUUM")

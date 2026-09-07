@@ -149,3 +149,76 @@ def test_reevaluate_sponsorship_backfills_from_stored_description(tmp_path):
 
         # Idempotent: running it again with nothing changed reports zero.
         assert storage.reevaluate_sponsorship() == 0
+
+
+def test_find_stale_closed_jobs_excludes_active_and_recently_closed(tmp_path):
+    now = datetime.now(UTC)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        # Active, never closed — never eligible regardless of last_seen_at.
+        storage.upsert_job(make_job(job_id="active", last_seen_at=now - timedelta(days=100)))
+        # Closed, but only just now — not old enough yet.
+        storage.upsert_job(make_job(job_id="recent"))
+        storage.connection.execute(
+            "UPDATE jobs SET status='closed' WHERE job_id='recent'"
+        )
+        # Closed and genuinely stale — the one real target.
+        storage.upsert_job(make_job(job_id="stale", last_seen_at=now - timedelta(days=30)))
+        storage.connection.execute(
+            "UPDATE jobs SET status='closed' WHERE job_id='stale'"
+        )
+        storage.connection.commit()
+
+        eligible = storage.find_stale_closed_jobs(now - timedelta(days=10))
+        assert [row["job_id"] for row in eligible] == ["stale"]
+
+
+def test_delete_closed_jobs_cascades_to_assessments_and_feedback(tmp_path):
+    """The explicit design choice from docs/retention-cleanup-plan.md section 3.6/4: a
+    deleted job's own assessment and feedback history is deleted with it, not orphaned."""
+    now = datetime.now(UTC)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(job_id="stale", last_seen_at=now - timedelta(days=30)))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='stale'")
+        storage.connection.commit()
+        storage.upsert_assessment(make_assessment(job_id="stale"))
+        storage.upsert_job_feedback(make_feedback(source_key="acme", job_id="stale", title="Engineer"))
+
+        # A second, unrelated closed-but-recent job must survive untouched.
+        storage.upsert_job(make_job(job_id="recent"))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='recent'")
+        storage.connection.commit()
+        storage.upsert_assessment(make_assessment(job_id="recent"))
+
+        deleted = storage.delete_closed_jobs(now - timedelta(days=10))
+
+        assert [row["job_id"] for row in deleted["jobs"]] == ["stale"]
+        assert [row["job_id"] for row in deleted["assessments"]] == ["stale"]
+        assert [row["job_id"] for row in deleted["job_feedback"]] == ["stale"]
+
+        assert storage.get_job("acme", "stale") is None
+        assert ("acme", "stale") not in storage.all_assessments()
+        assert storage.get_job("acme", "recent") is not None
+        assert ("acme", "recent") in storage.all_assessments()
+
+
+def test_delete_closed_jobs_is_a_no_op_when_nothing_qualifies(tmp_path):
+    now = datetime.now(UTC)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job())
+        deleted = storage.delete_closed_jobs(now - timedelta(days=10))
+        assert deleted == {"jobs": [], "assessments": [], "job_feedback": []}
+        assert storage.stats()["active"] == 1
+
+
+def test_vacuum_runs_without_error_after_delete(tmp_path):
+    """Regression guard for the exact footgun this feature exists to avoid: VACUUM must be
+    callable right after delete_closed_jobs's own commit, with no lingering transaction."""
+    now = datetime.now(UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(job_id="stale", last_seen_at=now - timedelta(days=30)))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='stale'")
+        storage.connection.commit()
+        storage.delete_closed_jobs(now - timedelta(days=10))
+        storage.vacuum()  # must not raise
+        assert storage.stats()["closed"] == 0

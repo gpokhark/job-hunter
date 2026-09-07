@@ -931,6 +931,41 @@ mirrors `export-assessments` for read-only inspection (`data/job_feedback.json`,
 reads this table directly, only the `soft_exclude_terms`/`strong_relevance_terms` a human approved
 into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-exclusion-plan.md`.
 
+### 8.6 Retention/cleanup (`job-hunter cleanup`, `src/job_hunter/cleanup.py`)
+
+None of the above tables (nor `data/searches/`/`data/profile-diff/`/`data/radar/`) ever delete
+anything on their own — confirmed live (2026-09-07): 230 MB after 9 days of use, 98.5% of it the
+`jobs` table's `description` column, with 4,820 of 31,965 rows already `closed` and permanently
+kept. `job-hunter cleanup` (full design: `docs/retention-cleanup-plan.md`) is the deliberate,
+explicit, dry-run-by-default answer:
+
+- **Closed jobs**: `Storage.find_stale_closed_jobs(before)`/`delete_closed_jobs(before)` — a job
+  is eligible once `status='closed'` and its `last_seen_at` (never touched by `mark_missing()`
+  when it closes a job, so it's already exactly "last confirmed present," no migration needed) is
+  older than `settings.retention.closed_job_after_days` (default 10). Deletion **cascades** to
+  that job's own `assessments`/`job_feedback` rows — an explicit choice, not an oversight: neither
+  table has a real foreign key to `jobs`, but a deleted job's history has nowhere else to attach.
+  `Storage.vacuum()` (a thin `VACUUM` wrapper) runs afterward unless `--no-vacuum` — `DELETE` alone
+  only frees pages for internal reuse, it does not shrink the file on disk.
+- **Reports**: `cleanup.py`'s `classify_report`/`scan_reports`/`select_reports_to_delete` match
+  only the *exact* filename shapes `diff_profile.py` (`{TIMESTAMP}.html`, both the current
+  US-Eastern format and the older bare-UTC one it replaced — both genuinely generated, neither
+  hand-named), `refilter_archive.py` (`archive-{slug}_{date}-{TIMESTAMP}.html`), and
+  `render_radar.py` (`{slug}_{date}.html`) themselves produce — confirmed live against
+  `data/profile-diff/soft_exclude_terms_removed_2026-09-05.html` and
+  `data/profile-diff/default_2026-08-31_original-116.html`, two real hand-named files that must
+  never be swept up by an age-based glob and are correctly excluded by construction. Eligible
+  files are grouped by `(kind, slug)` — a plain `diff_profile.py` report has no slug of its own
+  and forms one ungrouped series instead — sorted newest-first by mtime, and only a file *outside*
+  the `settings.retention.keep_latest_reports_per_slug` most-recent-per-group (default 2) **and**
+  older than `settings.retention.report_after_days` (default 15) is deleted; either condition
+  alone is not enough.
+- **Safety**: dry-run by default (`--apply` required to actually delete anything); with `--apply`,
+  a pre-delete export (exactly what's about to be removed — full job/assessment/job_feedback rows,
+  deleted report paths) is written to `data/cleanup-exports/{UTC-timestamp}.json` first, since a
+  deleted row/file can't be re-queried afterward to build that record retroactively (skip via
+  `--no-export`). `--jobs-only`/`--reports-only` scope to one half only.
+
 ---
 
 ## 9. CLI reference (`job-hunter`, via `cli.py`)
@@ -948,6 +983,7 @@ into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
+| `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
 
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
 `source-test` returns `1` if the healthcheck itself reports failed/unsupported.

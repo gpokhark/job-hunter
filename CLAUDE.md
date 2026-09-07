@@ -388,6 +388,15 @@ before most commands will find a profile (falls back to the example file otherwi
   current one — a job whose posting changed since it was assessed is treated as unassessed again,
   never silently served a stale verdict. This is what lets the `job-hunter` skill's per-job
   sub-agent review (see below) skip a job it already scored in a previous run at zero token cost.
+  None of these tables ever delete rows on their own — confirmed live (2026-09-07): 230 MB after 9
+  days of use, 98.5% of it `jobs.description`, with already-`closed` rows kept forever. `job-hunter
+  cleanup` (`cleanup.py`, opt-in, dry-run by default — docs/retention-cleanup-plan.md) is the
+  deliberate answer, and reuses `last_seen_at` as a free "days since closed" clock rather than
+  adding a new column, since `mark_missing()` never touches it when flipping a job to `closed` —
+  it already means exactly "last confirmed present." One real gotcha worth remembering for any
+  future storage cleanup: SQLite's `DELETE` only frees pages for internal reuse, it does **not**
+  shrink the file on disk — an explicit `VACUUM` afterward is required to actually reclaim space,
+  easy to forget when the whole point was reducing disk usage.
 
 - **`health.py`** — `detect_count_anomaly` flags (but does not fail) a source whose job count drops
   more than 70% from its last known count, guarding against adapters that "succeed" against a

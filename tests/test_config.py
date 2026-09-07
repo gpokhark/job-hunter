@@ -1,10 +1,35 @@
 from pathlib import Path
 
-from job_hunter.config import load_companies, load_settings
+import pytest
+from pydantic import ValidationError
+
+from job_hunter.config import RetentionConfig, load_companies, load_settings
 
 
 def test_project_configs_validate():
     root = Path(__file__).parents[1]
-    assert load_settings(root / "config/settings.yaml").version == 1
+    settings = load_settings(root / "config/settings.yaml")
+    assert settings.version == 1
     companies = load_companies(root / "config/companies.yaml")
     assert len(companies) == 63 and len({item.key for item in companies}) == 63
+    # config/settings.yaml's own committed retention: values, not just the model defaults.
+    assert settings.retention.closed_job_after_days == 10
+    assert settings.retention.report_after_days == 15
+    assert settings.retention.keep_latest_reports_per_slug == 2
+
+
+def test_retention_config_defaults_when_key_absent():
+    """An older settings.yaml with no retention: key at all must still validate — same
+    backward-compatible pattern as every other Settings sub-section."""
+    assert RetentionConfig().closed_job_after_days == 10
+    assert RetentionConfig().report_after_days == 15
+    assert RetentionConfig().keep_latest_reports_per_slug == 2
+
+
+def test_retention_config_rejects_invalid_values():
+    with pytest.raises(ValidationError):
+        RetentionConfig(closed_job_after_days=0)
+    with pytest.raises(ValidationError):
+        RetentionConfig(report_after_days=0)
+    with pytest.raises(ValidationError):
+        RetentionConfig(keep_latest_reports_per_slug=-1)

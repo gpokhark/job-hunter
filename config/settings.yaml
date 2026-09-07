@@ -15,4 +15,10 @@ recommendation:
   minimum_score: 75
 logging:
   level: INFO
+# job-hunter cleanup's tunable knobs (docs/retention-cleanup-plan.md). Dry-run by default;
+# nothing here deletes anything on its own.
+retention:
+  closed_job_after_days: 10
+  report_after_days: 15
+  keep_latest_reports_per_slug: 2
 

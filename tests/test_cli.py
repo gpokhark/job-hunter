@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from job_hunter.cli import _stealth_browser_check, archive_path
+import pytest
+
+from job_hunter.cli import _stealth_browser_check, archive_path, parser
 from job_hunter.config import CompanyConfig
 
 
@@ -89,3 +91,18 @@ def test_stealth_browser_check_ok_when_needed_and_installed(monkeypatch):
     )
     assert (name, ok) == ("stealth browser", True)
     assert "astemo" in detail and "google" in detail
+
+
+def test_cleanup_defaults_to_dry_run():
+    """--apply is required to actually delete anything — the default must be safe."""
+    args = parser().parse_args(["cleanup"])
+    assert args.apply is False
+    assert args.no_vacuum is False
+    assert args.jobs_only is False
+    assert args.reports_only is False
+    assert args.no_export is False
+
+
+def test_cleanup_jobs_only_and_reports_only_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        parser().parse_args(["cleanup", "--jobs-only", "--reports-only"])
