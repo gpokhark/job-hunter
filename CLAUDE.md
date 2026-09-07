@@ -35,7 +35,13 @@ found the same way (a real job link, not a guess), is Ashby, reachable directly 
 first guess wasn't free either: `jobs.ashbyhq.com/anthropic` looks like the obvious matching URL
 for Anthropic but is a real Ashby "Page not found" — Anthropic isn't on Ashby at all, it's
 Greenhouse (`anthropic.com/careers/jobs` links directly to `job-boards.greenhouse.io/anthropic/
-jobs/<id>`), confirmed only once a real job link was actually followed. For
+jobs/<id>`), confirmed only once a real job link was actually followed. The check isn't only for a
+*blocked* front end, either: Roche's `careers.roche.com` is a Phenom People site that works fine
+unblocked over plain httpx, but each of its own eager-loaded job records carries an `applyUrl`
+pointing at a public, unauthenticated Workday CXS API (`roche.wd3.myworkdayjobs.com`) with the
+full global catalog, where the visible Phenom page only ever shows one category at a time — the
+working front end was itself the tell that pointed at the better backend, not a reason to stop
+looking. For
 a source where the block genuinely is the only way in, using this adapter is an explicit,
 disclosed choice to defeat that site's own anti-automation controls — real ToS exposure, not
 solved by "it's just reading public data" — so don't reach for it by default; every other adapter
@@ -55,6 +61,20 @@ gained an opt-in `public_url_template` (Ford/DENSO) for the same reason, pointed
 `.../hcmUI/CandidateExperience/en/sites/{site}/job/{id}` page — confirmed via curl to render the
 correct job, not guessed. Any new JSON-API-backed adapter should ask this question explicitly: is
 `url` something a human can actually open, or only something `fetch_detail` can `.json()`?
+
+A 200 response with plausible-looking job cards is not proof a query parameter actually filtered
+anything — confirmed the hard way onboarding Molex (koch.avature.net, a shared career portal for
+every Koch Industries subsidiary): its default search page renders the same fixed handful of
+results over plain httpx no matter what's tried (`?query=`, `?keyword=`, or a facet id passed as a
+bare GET param), only ever revealing the real, differently-shaped param it actually reads
+(`732_format=...` alongside the facet id) by driving the page once with Playwright and reading the
+URL its own form submission redirects to. Once found, it's a plain httpx param again — but "it
+returned 200 and the results look real" was never itself sufficient evidence; only two *different*
+facet values producing two *different* result sets proved the filter was real. And the opposite
+lesson matters too: not every Radancy/TalentBrew-branded site is a skin hiding a different real
+backend the way GM's and Stellantis's were — Toro Company's TalentBrew site is genuinely plain,
+unprotected, server-rendered HTML with no hidden system underneath, confirmed only by actually
+finding real job cards in the raw response rather than assuming the brand name implied a skin.
 
 The division of responsibility is intentional and load-bearing: **Python owns networking,
 normalization, persistence, health, and location filtering; the agent skill owns evidence-based
@@ -100,7 +120,8 @@ before most commands will find a profile (falls back to the example file otherwi
   `greenhouse.py`, `oracle_hcm.py`,
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
   `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`,
-  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`,
+  `smartrecruiters.py`, `paycom.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`
@@ -268,7 +289,9 @@ before most commands will find a profile (falls back to the example file otherwi
   `us_eligible`, recency-passing job in SQLite, using `evaluate_prefilter` directly — never an
   approximation of it. Reports four counts (retained/still-excluded/gained/lost), not one
   "unchanged" bucket that would hide which side it's mostly made of, plus a terminal summary and
-  an HTML report (`data/profile-diff/{timestamp}.html` by default) with a per-job before/after
+  an HTML report (`data/profile-diff/{YYYY-MM-DD-T-HH-MM-SS}.html` by default, filename timestamp
+  in US Eastern local time — `_report_timestamp` — for readability; `evaluated_at` inside the
+  report itself stays UTC) with a per-job before/after
   reason and, for changed jobs, any existing assessment score or `job_feedback` label (a lost job
   someone already tagged `relevant`/`okay` is flagged loudly, not folded into the general list).
   Reads via a genuine read-only SQLite connection, not `Storage` (whose `__init__` always runs
@@ -304,6 +327,29 @@ before most commands will find a profile (falls back to the example file otherwi
   profile with nothing to compare — there's no diff to have confirmed yet, so that one step alone
   doesn't require `--accept-baseline`. See `skills/job-feedback/SKILL.md` for how this is meant to
   be driven end to end, including the confirmation discipline around it.
+
+- **`scripts/refilter_archive.py`** — a different tool from `diff_profile.py`, answering a
+  different question: not "what changed between two profiles" but "what would this *already-
+  collected* archived search's candidate list look like if re-run through the *current* profile
+  right now" — no network, no adapter/scraper invoked. Rebuilds `candidates` from scratch out of
+  SQLite's current `status='active' AND us_eligible=1` job pool (scoped to the same source keys
+  the archive's own `source_health` originally attempted, so onboarding a new company later can
+  never cause an old keyword archive to silently gain that company's jobs), rather than narrowing
+  whatever's already sitting in the archive's `candidates` — that narrowing-in-place design was
+  tried first and found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job
+  from `candidates`, its data was gone from the file, so a *later* loosening edit meant to rescue
+  it (a new `strong_relevance_terms` override, a removed `soft_exclude_terms` entry) had nothing
+  left to restore. Rewrites the resolved archive file in place by default (`--output` to write
+  elsewhere instead), and prints a gained/lost/retained count. Unless `--no-report`, also writes
+  an HTML report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (same
+  US-Eastern `_report_timestamp` as `diff_profile.py`, shared via import) — reusing
+  `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical
+  click-to-feedback JS/export mechanism (`job_feedback` rows from either report are
+  indistinguishable to `apply_radar_feedback.py`), but through its own, simpler HTML template
+  with no "Profile terms" word-diff section — there's no second profile to diff against here, only
+  one on-disk profile evaluated against two different job snapshots (an old archive vs. today's
+  live SQLite pool), so `_field_term_diffs` doesn't apply. `--keyword` here means the same full
+  positive-term replacement it means everywhere else in this project.
 
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row

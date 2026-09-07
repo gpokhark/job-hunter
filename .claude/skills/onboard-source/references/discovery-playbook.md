@@ -85,6 +85,68 @@ whether it's a bare object or wrapped in `"@graph"`. `html_paginated.py`'s `fetc
 checks for this unconditionally as a fallback — a new `html_paginated`-family source gets this for
 free with no extra config.
 
+**SmartRecruiters** — recognizable from `jobs.smartrecruiters.com` appearing anywhere (the branded
+front end's own listing/apply links, or a company's separately-branded career site that still
+routes applications there). Public Job Board API:
+`https://api.smartrecruiters.com/v1/companies/<company-identifier>/postings` — no auth, ordinary
+`offset`/`limit` query-param pagination, but capped at 100/page server-side regardless of a larger
+requested `limit` (confirmed: `limit=1000` still returns 100), so real pagination requires looping
+`offset` by however many items actually came back until it reaches the response's `totalFound`.
+Each listing item's own `ref` field is the absolute per-job detail API URL
+(`.../postings/<id>`) — but it returns raw JSON, not a page a human should be handed; the real
+candidate-facing page is `jobs.smartrecruiters.com/<company-identifier>/<id>` (no slug required,
+confirmed 200). The detail response nests the full posting under
+`jobAd.sections.<name>.text` — `jobDescription`/`qualifications`/`additionalInformation` are the
+job-specific ones; `companyDescription` is generic boilerplate repeated on every posting. See
+`smartrecruiters.py`.
+
+**Eightfold "pcsx"/"apply" API** — recognizable via `x-ef-*` response headers, `eightfold.ai` in a
+page's CSP, or `<code id="pcsx-data">`/`<code id="smartApplyData">` blocks in its HTML (config
+data, not the job data itself). Two API generations seen so far, both public and unauthenticated:
+the newer `GET /api/pcsx/search` + `GET /api/pcsx/position_details?position_id=<id>` (params:
+`domain`, `location`, `filter_include_remote`, `filter_include_relocation`; paginate via an
+ordinary `start` offset, page size is whatever the tenant returns per call — confirmed fixed at 10
+for one tenant, no override param found despite trying `num`/`limit`/`count`/`size`/`per_page`),
+and an older flat `GET /api/apply/v2/jobs` (snake_case fields, `start`-offset pagination, absolute
+detail URL). Guessing the wrong generation 403s with a same-shaped "Not authorized"/"PCSX is not
+enabled" message rather than a real auth error — a strong signal to try the other generation, not
+a dead end. See `eightfold.py`.
+
+**Avature** — recognizable via an `avature.net` host. Its default career-site search page can
+render a fixed, plausible-looking set of results over plain httpx regardless of what query string
+is tried — a real trap, since "got 200 with real-looking job cards" is not proof any filter
+applied. The actual working param shape is usually only discoverable by driving the page once with
+Playwright: fill in a real search facet (e.g. select a value in a `<select name="<field-id>">`)
+and submit, then read the URL the resulting redirect lands on — it can require more than the
+obvious `<field-id>=<value>` pair (one tenant additionally needed a sibling `<field-id>_format=...`
+param before the filter actually took effect; confirmed real, not coincidental, only by trying a
+second facet value and seeing the result set actually change). Once known, the same URL works over
+plain httpx with real pagination (a `jobOffset` row-offset param, one tenant confirmed capped at a
+fixed small page size — check for this, don't assume the requested page-size param does anything).
+Card and detail pages can reuse the exact same CSS class for unrelated fields — check for a
+distinguishing ancestor class (not a label) before writing a `description_selector` that might
+also scoop up sibling metadata fields.
+
+**Paycom "career-page" ATS widget** — recognizable via a `paycomonline.net/v4/ats/web.php/portal/
+<id>/...` URL. A heavy client-rendered SPA with no job data in its own plain HTML, but every page
+load embeds a short-lived (hours, per its own JWT `exp`/`iat` claims) anonymous bearer token in a
+`var configsFromHost = {"sessionJWT": "..."}` block — the same "public frontend key minted by an
+unauthenticated page load" shape as Cornerstone OnDemand's `csod.context.token` below. Replayed as
+an `Authorization: Bearer` header on `POST .../api/ats/job-posting-previews/search` (ordinary
+`skip`/`take` pagination); the per-job detail lives at `GET .../api/ats/job-postings/{id}` with the
+same token requirement, needed since the listing preview's own description is truncated. Watch for
+an embedded schema.org `googleJobJson` field on the detail response — it's a JSON **string**
+(needs its own `json.loads`), not an already-parsed object. See `paycom.py`.
+
+**Radancy TalentBrew** — recognizable via `tbcdn.talentbrew.com`/`radancy.net` in a page's CSP or
+asset hosts. Don't assume this branding always means a skin over a different real backend the way
+it did for GM and Stellantis — check the plain HTML first: some TalentBrew deployments (confirmed:
+Toro Company) are genuinely plain, unprotected, server-rendered search-results pages with real job
+cards and pagination (`html_paginated` fits directly), no hidden system to find. A malformed
+`&param=value` (missing the leading `?`) in the site's own pagination links is a known, harmless
+quirk — `html_paginated.py`'s `page_number_parameter`/`page_parameter` builders always construct a
+correct query string independently, regardless of what the site's own links look like.
+
 **Liferay DDM (Dynamic Data Mapping) portals** — recognizable via `/o/liferay-*-theme/` asset paths
 or a `com_liferay_dynamic_data_mapping_form_web_portlet` instance in the markup. No JSON-LD;
 instead an inline `<script>` sets a JS object literal like

@@ -17,7 +17,9 @@ from .html_paginated import HtmlPaginatedAdapter
 from .icims_attract import IcimsAttractAdapter
 from .lever import LeverAdapter
 from .oracle_hcm import OracleHcmAdapter
+from .paycom import PaycomAdapter
 from .phenom import PhenomAdapter
+from .smartrecruiters import SmartRecruitersAdapter
 from .stealth_html import StealthHtmlAdapter
 from .successfactors_rmk import SuccessFactorsRmkAdapter
 from .successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
@@ -35,6 +37,8 @@ ADAPTERS: dict[str, AdapterType] = {
     "greenhouse": GreenhouseAdapter,
     "oracle_hcm": OracleHcmAdapter,
     "phenom": PhenomAdapter,
+    "smartrecruiters": SmartRecruitersAdapter,
+    "paycom": PaycomAdapter,
     "html_paginated": HtmlPaginatedAdapter,
     "html_multi_index": HtmlMultiIndexAdapter,
     "discovered_api": DiscoveredApiAdapter,

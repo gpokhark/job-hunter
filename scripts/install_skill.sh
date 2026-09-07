@@ -14,11 +14,11 @@ and job-feedback for turning radar feedback/profile edits into a confirmed profi
 With no target flags, prompts interactively for which runtime(s) to install into.
 Pass one or more target flags to install non-interactively (e.g. for scripting).
 
-  --hermes         ~/.hermes/skills/<name>
+  --hermes         ~/.hermes/skills/<name> plus the candidate-profile diff hook
   --claude-global   ~/.claude/skills/<name>
   --claude-local    <this repo>/.claude/skills/<name>
   --opencode        ~/.config/opencode/skills/<name>
-  --all             all five of the above
+  --all             all four of the above
   --copy            copy each skill directory instead of symlinking it
 EOF
 }
@@ -106,10 +106,17 @@ install_one() {
 
 for name in $SKILL_NAMES; do
   abs_source=$(CDPATH= cd -- "$script_dir/../skills/$name" && pwd)
-  [ "$want_hermes" -eq 1 ] && install_one "$HOME/.hermes/skills/$name" "$abs_source" "$abs_source"
+  [ "$want_hermes" -eq 1 ] && install_one "${HERMES_HOME:-$HOME/.hermes}/skills/$name" "$abs_source" "$abs_source"
   [ "$want_claude_global" -eq 1 ] && install_one "$HOME/.claude/skills/$name" "$abs_source" "$abs_source"
   [ "$want_claude_local" -eq 1 ] && install_one "$repo_root/.claude/skills/$name" "../../skills/$name" "$abs_source"
   [ "$want_opencode" -eq 1 ] && install_one "$HOME/.config/opencode/skills/$name" "$abs_source" "$abs_source"
 done
+
+if [ "$want_hermes" -eq 1 ]; then
+  hermes_home=${HERMES_HOME:-"$HOME/.hermes"}
+  hook_source="$repo_root/scripts/hermes_profile_hook.py"
+  install_one "$hermes_home/agent-hooks/job-hunter-profile.py" "$hook_source" "$hook_source"
+  uv run --project "$repo_root" python "$script_dir/install_hermes_hook.py" "$hermes_home" "$repo_root"
+fi
 
 exit 0

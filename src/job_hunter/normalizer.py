@@ -39,15 +39,22 @@ def parse_relative_posted(text: str | None, *, now: datetime | None = None) -> d
     return None
 
 
-_DISPLAY_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d")
+_DISPLAY_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d", "%d %b %Y")
+# British-English SuccessFactors RMK tenants (confirmed live: Jaguar Land Rover's
+# jaguarlandrovercareers.com) spell September's abbreviation "Sept" (4 letters) instead
+# of the standard 3-letter "Sep" every other month uses — %b never matches it, so it's
+# normalized before any format is tried rather than added as its own format string.
+_SEPT_ABBREVIATION = re.compile(r"\bSept\b")
 
 
 def parse_display_date(text: str | None) -> datetime | None:
-    """Parse a human-formatted date shown in a UI (e.g. SuccessFactors' "Aug 10, 2026")
-    into a UTC datetime. Tries a handful of common formats used by these career sites."""
+    """Parse a human-formatted date shown in a UI (e.g. SuccessFactors' "Aug 10, 2026" or
+    "7 Sept 2026") into a UTC datetime. Tries a handful of common formats used by these
+    career sites."""
     cleaned = normalize_text(text)
     if not cleaned:
         return None
+    cleaned = _SEPT_ABBREVIATION.sub("Sep", cleaned)
     for fmt in _DISPLAY_DATE_FORMATS:
         try:
             return datetime.strptime(cleaned, fmt).replace(tzinfo=UTC)
@@ -102,6 +109,9 @@ def stringify(value: Any) -> str | None:
     return str(value).strip() or None
 
 
+_NON_ZERO_PADDED_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+
+
 def parse_flexible_date(value: Any) -> datetime | None:
     """Parse a JSON API's posted-at value into a UTC datetime — Unix epoch seconds/milliseconds
     (e.g. Lever's createdAt) or an ISO-8601 string, whichever the platform uses. Shared by every
@@ -115,6 +125,13 @@ def parse_flexible_date(value: Any) -> datetime | None:
             return datetime.fromtimestamp(int(text) / (1000 if len(text) == 13 else 1), tz=UTC)
         except (ValueError, OSError, OverflowError):
             return None
+    # Toro Company's TalentBrew site emits its schema.org JobPosting datePosted as
+    # "2026-8-19" (confirmed live) — a non-zero-padded month/day fromisoformat rejects
+    # outright, unlike every other ISO-ish value this function otherwise handles.
+    match = _NON_ZERO_PADDED_DATE.match(text)
+    if match:
+        year, month, day = match.groups()
+        text = f"{year}-{int(month):02d}-{int(day):02d}"
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:

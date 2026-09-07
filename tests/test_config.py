@@ -7,4 +7,4 @@ def test_project_configs_validate():
     root = Path(__file__).parents[1]
     assert load_settings(root / "config/settings.yaml").version == 1
     companies = load_companies(root / "config/companies.yaml")
-    assert len(companies) == 47 and len({item.key for item in companies}) == 47
+    assert len(companies) == 63 and len({item.key for item in companies}) == 63

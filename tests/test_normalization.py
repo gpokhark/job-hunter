@@ -42,9 +42,24 @@ def test_parse_display_date():
     assert parse_display_date(None) is None
 
 
+def test_parse_display_date_british_sept_abbreviation():
+    """Jaguar Land Rover's SuccessFactors RMK tenant spells September's abbreviation
+    "Sept" (4 letters) instead of the standard 3-letter "Sep" every other month uses —
+    confirmed live, e.g. "7 Sept 2026" — while every other month still parses normally."""
+    assert parse_display_date("7 Sept 2026") == datetime(2026, 9, 7, tzinfo=UTC)
+    assert parse_display_date("30 Aug 2026") == datetime(2026, 8, 30, tzinfo=UTC)
+
+
 def test_parse_flexible_date_epoch_millis_and_seconds():
     assert parse_flexible_date("1762389866472").year == 2025
     assert parse_flexible_date("1762389866").year == 2025
     assert parse_flexible_date("2026-08-20T12:00:00Z").year == 2026
     assert parse_flexible_date(None) is None
     assert parse_flexible_date("not a date") is None
+
+
+def test_parse_flexible_date_non_zero_padded():
+    """The Toro Company's TalentBrew site emits its JSON-LD datePosted as "2026-8-19"
+    (non-zero-padded month/day) — confirmed live, and fromisoformat rejects it outright."""
+    assert parse_flexible_date("2026-8-19") == datetime(2026, 8, 19, tzinfo=UTC)
+    assert parse_flexible_date("2026-08-09") == datetime(2026, 8, 9, tzinfo=UTC)

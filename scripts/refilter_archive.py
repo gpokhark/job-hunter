@@ -5,8 +5,9 @@ loosening a filtering term: see its effect on a report you already have, without
 risking rate limits from) a fresh live search.
 
 Rebuilds the archive's `candidates` list from scratch out of SQLite's current active/US-eligible
-job pool — scoped to the same sources this archive's own `source_health` originally attempted —
-rather than narrowing whatever's already sitting in `candidates`. That narrowing-in-place design
+job pool — scoped to the sources this archive's own `source_health` recorded as having actually
+*succeeded* (`ok`/`warning`), not merely attempted — rather than narrowing whatever's already
+sitting in `candidates`. That narrowing-in-place design
 was tried first and found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job
 from `candidates`, that job's data was gone from the archive file, so a *later* loosening edit
 meant to rescue it (a new `strong_relevance_terms` override, a removed `soft_exclude_terms` entry)
@@ -20,12 +21,22 @@ it is always possible without a live search — this is the same "stored, `us_el
 recency-passing job" universe `scripts/diff_profile.py` already previews against, using the same
 `passes_prefilter`/`passes_recency`.
 
-Restricting to the archive's own `source_health` source set (rather than every source currently in
-`companies.yaml`) matters for a dated, non-default archive: onboarding a new company later should
-never cause an old keyword archive to silently gain that company's jobs on a re-filter — it was
-never part of what that archive searched. A `--search`/`--keyword`-resolved archive with no
-`source_health` (an unexpected/older file shape) falls back to no source restriction rather than
-raising, since failing shouldn't be the behavior for a merely-missing optional field.
+Restricting to the archive's own successful `source_health` source set (rather than every source
+currently in `companies.yaml`) matters for a dated, non-default archive: onboarding a new company
+later should never cause an old keyword archive to silently gain that company's jobs on a
+re-filter — it was never part of what that archive searched. The same reasoning extends to a
+source that *was* attempted but failed: a `stealth_html` source failing with "the 'stealth'
+dependency group is not installed" contributes zero jobs to this archive either way, but SQLite
+can still hold that source's jobs `active` from an earlier, unrelated successful run — counting a
+failed attempt as "in scope" pulled those jobs back in on every refilter as spurious "Gained"
+entries with no connection to any actual profile change, since this archive never had them to
+lose in the first place (confirmed live: `astemo`/`google` failing this way surfaced 10 unrelated
+"Gained" jobs alongside an otherwise-clean `soft_exclude_terms` edit). A `--search`/
+`--keyword`-resolved archive with no `source_health` at all (an unexpected/older file shape) falls
+back to no source restriction rather than raising, since failing shouldn't be the behavior for a
+merely-missing optional field — but a `source_health` where every entry failed correctly restricts
+to nothing, not the same "unrestricted" fallback, since that's a known scope of zero, not an
+unknown one.
 
 One real behavior change from the old narrowing design: because candidates are rebuilt from
 SQLite's *current* state, a job's title/description/location here reflects the latest observed
@@ -52,7 +63,7 @@ from typing import Any
 
 # Reused rather than reimplemented — same [New]/sponsorship/hybrid-remote tag rules and date
 # formatting as the other two reports, so a job is never tagged differently across all three.
-from diff_profile import _e, _fmt_posted_date, _job_tags  # noqa: E402
+from diff_profile import _e, _fmt_posted_date, _job_tags, _report_timestamp  # noqa: E402
 
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
@@ -79,6 +90,46 @@ def _row_to_job(row: sqlite3.Row) -> Job:
     data = {column: row[column] for column in _JOB_COLUMNS}
     data["url"] = row["canonical_url"]
     return Job(**data)
+
+
+_FAILED_STATUSES = {"failed", "unsupported"}
+
+
+def _successful_source_scope(data: dict[str, Any]) -> set[str] | None:
+    """Source keys this archive's own `source_health` did *not* record as having failed
+    (excludes `failed`/`unsupported` — the complement of the success set `cli.py`'s
+    `_source_test` uses), not merely attempted. Deliberately opt-out (exclude known-bad) rather
+    than opt-in (require known-good): a `source_health` row with no `status` field at all (an
+    unexpected/degraded shape, distinct from `source_health` being absent entirely — see below)
+    is kept in scope rather than dropped, since there's no positive evidence it failed — matching
+    this project's general preference for false negatives over false positives in any filtering
+    mechanism.
+
+    Excluding a `failed`/`unsupported` entry here matters for the same reason restricting to
+    `source_health` at all does (see `refilter()`'s docstring: an old archive shouldn't silently
+    gain a company's jobs just because that company was onboarded later) — a source can also be
+    "not really part of what this archive searched" by having been attempted and failed, not just
+    by being absent entirely. Confirmed live: a `stealth_html` source (e.g. `astemo`/`google`)
+    that failed with "the 'stealth' dependency group is not installed" during this archive's own
+    collection run contributes zero jobs to `candidates` either way, but SQLite can still hold
+    that source's jobs `active` from an earlier, successful run — including a failed source's key
+    here pulled those jobs back in on every refilter, surfacing as spurious "Gained" entries with
+    no connection to any actual profile change, since the archive never had them to lose in the
+    first place. `unsupported` is excluded for the same reason it's harmless to exclude: that
+    adapter never fetches any jobs, so it never has SQLite rows to backfill from anyway."""
+    statuses = {
+        row["source_key"]: row.get("status")
+        for row in data.get("source_health", [])
+        if row.get("source_key")
+    }
+    if not statuses:
+        # No source_health at all (an unexpected/older archive shape) — genuinely unknown scope,
+        # so fall back to no restriction rather than guessing. Distinct from the case below: a
+        # real source_health where every entry is a known failure correctly restricts to nothing,
+        # not the same "unrestricted" fallback, since that's a known scope of zero, not an
+        # unknown one.
+        return None
+    return {key for key, status in statuses.items() if status not in _FAILED_STATUSES}
 
 
 def _active_jobs(database_path: Path, source_scope: set[str] | None) -> list[Job]:
@@ -110,16 +161,16 @@ def refilter(
     database_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Returns a new archive dict — `candidates` rebuilt from SQLite's current active/eligible
-    job pool (scoped to the sources this archive's own `source_health` originally attempted),
-    filtered by the current on-disk profile, summary counts updated to match. Does not mutate the
-    input dict."""
+    job pool (scoped to the sources this archive's own `source_health` recorded as having
+    succeeded, not merely attempted — see `_successful_source_scope`), filtered by the current
+    on-disk profile, summary counts updated to match. Does not mutate the input dict."""
     now = now or datetime.now(UTC)
     profile = load_profile()
     settings = load_settings()
     max_age_days = settings.search.max_posting_age_days
     resolved_db_path = Path(database_path) if database_path is not None else settings.database_path
 
-    source_scope = {row["source_key"] for row in data.get("source_health", [])} or None
+    source_scope = _successful_source_scope(data)
     jobs = _active_jobs(resolved_db_path, source_scope)
 
     kept: list[Job] = []
@@ -461,10 +512,10 @@ def main() -> int:
         lost_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
 
         settings = load_settings()
-        source_scope = {row["source_key"] for row in data.get("source_health", [])} or None
+        source_scope = _successful_source_scope(data)
         active_pool = len(_active_jobs(settings.database_path, source_scope))
 
-        report_path = Path("data/profile-diff") / f"archive-{search_path.stem}-{now.strftime('%Y%m%dT%H%M%S')}.html"
+        report_path = Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
         render_archive_diff_html(
             gained=gained_jobs, lost=lost_jobs, retained=retained,
             before_count=before_count, after_count=after_count, active_pool=active_pool,

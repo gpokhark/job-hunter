@@ -138,6 +138,23 @@ skip the prompt, pass one or more target flags instead, e.g. `sh scripts/install
 --claude-local`, `sh scripts/install_skill.sh --all`. Add `--copy` to create independent copies
 instead of symlinks. Run `sh scripts/install_skill.sh --help` for the full flag list.
 
+For Hermes, `sh scripts/install_skill.sh --hermes` also installs the candidate-profile
+diff hook under `~/.hermes/agent-hooks/` and registers it in `~/.hermes/config.yaml`
+(`HERMES_HOME` overrides this location for both hooks and skills). Installation needs
+`uv` and the project's dependencies. The installer preserves existing config values
+and hooks, saves the original config as `config.yaml.job-hunter.bak` before rewriting
+YAML (comments/formatting may change), and skips an identical registration on reruns.
+`--copy` copies the hook too; the command still points to this checkout for the profile,
+database, and diff script, so keep the checkout available.
+
+Following the [Hermes shell hook format](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks#shell-hooks),
+the hook uses `post_tool_call` with `write_file|patch` and reads `tool_input.path`.
+Edits to this checkout's `config/candidate_profile.yaml` run the same best-effort
+`diff_profile.py` check as `.claude/settings.json`, generating reports in `data/profile-diff/`.
+Relative paths are resolved against the event's `cwd`; other profiles are ignored.
+Terminal-based edits are not covered. Restart Hermes after installing; its normal
+first-use hook approval still applies. Inspect registration with `hermes hooks list`.
+
 ## Development
 
 ```bash

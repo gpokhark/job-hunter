@@ -51,6 +51,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -80,6 +81,18 @@ _PROFILE_PATH = Path("config/candidate_profile.yaml")
 # every other run-generated artifact — never committed, same as candidate_profile.yaml itself.
 _SNAPSHOT_PATH = Path("data/candidate_profile.snapshot.yaml")
 _SNAPSHOT_PREV_PATH = Path("data/candidate_profile.snapshot.prev.yaml")
+
+# Report filenames are named in US Eastern local time (not UTC, which `evaluated_at` itself
+# stays in) purely for human readability when scanning data/profile-diff/ — "America/New_York"
+# rather than a fixed UTC-5 offset so it correctly reflects EST/EDT across daylight saving.
+_REPORT_TZ = ZoneInfo("America/New_York")
+
+
+def _report_timestamp(moment: datetime) -> str:
+    """`YYYY-MM-DD-T-HH-MM-SS` in US Eastern local time, 24-hour clock — e.g.
+    `2026-09-06-T-21-36-05`. Distinct from `evaluated_at`'s own ISO-8601 UTC timestamp (still
+    shown inside the report itself); this only affects the filename."""
+    return moment.astimezone(_REPORT_TZ).strftime("%Y-%m-%d-T-%H-%M-%S")
 
 
 def _advance_baseline(profile_path: Path) -> None:
@@ -906,7 +919,7 @@ def main() -> int:
     )
     print_summary(result, keywords=keywords)
 
-    output_path = args.output or Path("data/profile-diff") / f"{result.evaluated_at.strftime('%Y%m%dT%H%M%S')}.html"
+    output_path = args.output or Path("data/profile-diff") / f"{_report_timestamp(result.evaluated_at)}.html"
     render_html(result, output_path, title="Candidate Profile Diff")
     print(f"\nWrote {output_path}")
 
