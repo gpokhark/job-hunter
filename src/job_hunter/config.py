@@ -31,6 +31,29 @@ class LoggingConfig(BaseModel):
     level: str = "INFO"
 
 
+class RetentionConfig(BaseModel):
+    """`job-hunter cleanup`'s tunable knobs (docs/retention-cleanup-plan.md) — a system/storage
+    housekeeping concern, deliberately kept in settings.yaml alongside search.max_posting_age_days
+    rather than candidate_profile.yaml, which models resume-matching terms only."""
+
+    closed_job_after_days: int = Field(
+        10, ge=1, description="delete a job this many days after it's been status='closed'"
+    )
+    report_after_days: int = Field(
+        15,
+        ge=1,
+        description="delete a generated profile-diff/radar report this many days after it was written",
+    )
+    keep_latest_reports_per_slug: int = Field(
+        2,
+        ge=0,
+        description=(
+            "never delete the N most recently generated reports of a given slug/group "
+            "regardless of age — 0 disables this floor entirely"
+        ),
+    )
+
+
 class Settings(BaseModel):
     version: int = 1
     database_path: Path = Path("data/jobs.sqlite3")
@@ -38,6 +61,7 @@ class Settings(BaseModel):
     search: SearchConfig = SearchConfig()
     recommendation: RecommendationConfig = RecommendationConfig()
     logging: LoggingConfig = LoggingConfig()
+    retention: RetentionConfig = RetentionConfig()
 
 
 class CompanyConfig(BaseModel):

@@ -131,7 +131,7 @@ pagination) or `page_number_parameter` (1-indexed page-number pagination), `post
 `html_paginated` key plus `wait_selector`.
 
 Use `scripts/endpoint_probe.py` (or curl) during development to inspect a candidate endpoint
-before writing config for it — never hand-invent an endpoint shape (§5.21).
+before writing config for it — never hand-invent an endpoint shape (§5.20).
 
 ---
 
@@ -190,7 +190,7 @@ is judged still valid.
 | `icims_attract` | `IcimsAttractAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for iCIMS's "Attract" widget's own same-origin `/api/jobs`, adding ordinary `page`/`limit` pagination — see §5.16 |
 | `dayforce` | `DayforceAdapter` | Ceridian Dayforce Candidate Portal — a public two-call CSRF handshake (`/api/auth/csrf` token+cookie replayed on the search POST), the same shape as `adp_recruiting` for an unrelated platform — see §5.17 |
 | `smartrecruiters` | `SmartRecruitersAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for SmartRecruiters' public Job Board API, adding ordinary offset/limit pagination (server caps at 100/page) — see §5.18 |
-| `paycom` | `PaycomAdapter` | Paycom's "career-page" ATS widget — a short-lived anonymous bearer token embedded in the plain page HTML, replayed on a public search/detail API — see §5.20 |
+| `paycom` | `PaycomAdapter` | Paycom's "career-page" ATS widget — a short-lived anonymous bearer token embedded in the plain page HTML, replayed on a public search/detail API — see §5.19 |
 | `unsupported` | `UnsupportedAdapter` | explicit "no viable path" marker; `unsupported_reason` required |
 
 `json_api.ConfigurableJsonAdapter` (not directly registered, but the base several of the above
@@ -208,7 +208,7 @@ Live, current numbers: `uv run job-hunter source-status`. **Every row is determi
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
 code, identically on every run. The only LLM involvement anywhere in the system is later and
 separate: `job-reviewer` scoring the JSON output against a resume — it reads this data, it doesn't
-produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.21), but
+produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.20), but
 that's a cost paid once per company, not per search.
 
 | Key | Company | Adapter | Posted date | Tools used |
@@ -270,11 +270,11 @@ that's a cost paid once per company, not per search.
 | may_mobility | May Mobility | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io is already Greenhouse's own public host, no front end involved; same shape as anthropic/scout_motors (47 jobs) |
 | formlabs | Formlabs | greenhouse | Yes (`first_published`) | httpx only — careers.formlabs.com is a Next.js front end that server-renders Greenhouse's own job data into `__NEXT_DATA__`, but it's a custom-domain Greenhouse board underneath (token `formlabs`); the standard public Job Board API works directly, no hydration parsing needed (206 jobs) |
 | jlr | Jaguar Land Rover | successfactors_rmk | Yes (`span.jobDate`, day-first "D Mon YYYY") | httpx + selectolax — the given `career5.successfactors.eu` URL was zf's exact dead end again (a login-gated widget shell); real site is jaguarlandrovercareers.com, the classic SuccessFactors RMK table, but this tenant's own template has no `colDate` column at all (date only in a mobile-hidden block) and spells September "Sept" (4 letters) — the latter fixed centrally in `normalizer.py` (§5.5) |
-| molex | Molex | html_paginated | No (no date field found anywhere) | httpx only — koch.avature.net is a shared multi-brand Koch Industries career portal; Avature's real search only executes via a client-side wizard (found by driving it once with Playwright), replayed over plain httpx as `?732=6322&...` (732=Company facet, 6322=Molex); ~1,200+ global jobs, capped at 6/page server-side regardless of requested page size (§5.20) |
+| molex | Molex | html_paginated | No (no date field found anywhere) | httpx only — koch.avature.net is a shared multi-brand Koch Industries career portal; Avature's real search only executes via a client-side wizard (found by driving it once with Playwright), replayed over plain httpx as `?732=6322&...` (732=Company facet, 6322=Molex); ~1,200+ global jobs, capped at 6/page server-side regardless of requested page size (§5.19) |
 | doordash | DoorDash | greenhouse | Yes (`first_published`) | httpx only — careersatdoordash.com is Cloudflare-challenge-protected, but its real Apply link (found by rendering the sample job once) points at Greenhouse board token `doordashusa` (not the guessable `doordash`, which 404s); 456 jobs |
 | microsoft | Microsoft | eightfold | Yes (`postedTs`) | httpx only — apply.careers.microsoft.com is unprotected and runs the same Eightfold "pcsx" platform as deere (SuccessFactors as the underlying ATS per its own frontend config, reached through the same public API regardless); 1,162 US jobs, fixed 10/page |
 | uber | Uber | oracle_hcm | Yes (`PostedDate`) | httpx only — jobs.uber.com is a third-party recruitment-marketing CDN front end; its real Apply link (found by rendering the sample job once) points at a public unauthenticated Oracle Fusion Recruiting Cloud tenant (`iaziqy.fa.ocs.oraclecloud.com`, site UberCareers), same platform as ford/denso/subaru (546 jobs, 200/page cap, not date-sorted) |
-| isuzu | Isuzu Commercial Truck of America | paycom | Yes (JSON-LD `googleJobJson.datePosted`) | httpx only — a new platform family, Paycom (§5.20); a short-lived anonymous JWT embedded in the plain career-page HTML is replayed as a Bearer token on a public search API, same "public frontend key" shape as bosch/csod (19 jobs) |
+| isuzu | Isuzu Commercial Truck of America | paycom | Yes (JSON-LD `googleJobJson.datePosted`) | httpx only — a new platform family, Paycom (§5.19); a short-lived anonymous JWT embedded in the plain career-page HTML is replayed as a Bearer token on a public search API, same "public frontend key" shape as bosch/csod (19 jobs) |
 | toro | The Toro Company | html_paginated | Yes (JobPosting JSON-LD `datePosted`, non-zero-padded) | httpx + selectolax — a genuinely plain, unprotected Radancy TalentBrew site (unlike GM/Stellantis's TalentBrew fronts, which hid a different real backend) covering multiple in-house brands in one listing; ~128 jobs across 9 pages; JSON-LD's malformed "2026-8-19" date format fixed centrally in `normalizer.py` (§5.5) |
 
 Adapter mix: workday ×16, successfactors_rmk ×6, successfactors_rmk_v2 ×2, lever ×3, ashby ×3,
@@ -317,7 +317,7 @@ Three independent mechanisms feed a posting date, in order of coverage:
    `successfactors_rmk` sites' shared `posted_at_selector: td.colDate span.jobDate` (via
    `normalizer.parse_display_date`) — except jlr, whose own template has no `colDate` column at
    all, just a bare `span.jobDate` in a mobile-hidden block — and Paycom's embedded schema.org
-   `googleJobJson` (a JSON *string*, needing its own `json.loads`) datePosted (§5.20).
+   `googleJobJson` (a JSON *string*, needing its own `json.loads`) datePosted (§5.19).
    `parse_display_date` and `parse_flexible_date` have each grown one non-obvious format fix from
    onboarding: jlr's tenant spells September's abbreviation "Sept" (4 letters, normalized to "Sep"
    before any format is tried) and Toro's TalentBrew JSON-LD emits a non-zero-padded
@@ -704,7 +704,7 @@ required) instead. The full description lives in the detail response's `jobAd.se
 — `jobDescription`/`qualifications`/`additionalInformation` are concatenated;
 `companyDescription` (generic boilerplate, not job-specific) is deliberately left out.
 
-### 5.20 The `paycom` adapter, and Molex's Avature wizard-search
+### 5.19 The `paycom` adapter, and Molex's Avature wizard-search
 
 Two more onboardings this round each found a new mechanism worth spelling out.
 
@@ -749,7 +749,7 @@ reusing the one from `fetch_summaries` (this adapter carries no cross-call state
 at the catalog sizes seen so far (19 jobs) but worth revisiting if a much larger Paycom tenant is
 onboarded later.
 
-### 5.21 Adding a new source
+### 5.20 Adding a new source
 
 A one-time reverse-engineering step, not something that happens on every search: fetch the plain
 page (`scripts/endpoint_probe.py` or curl) to check for a real JSON API or clean static HTML
@@ -931,6 +931,41 @@ mirrors `export-assessments` for read-only inspection (`data/job_feedback.json`,
 reads this table directly, only the `soft_exclude_terms`/`strong_relevance_terms` a human approved
 into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-exclusion-plan.md`.
 
+### 8.6 Retention/cleanup (`job-hunter cleanup`, `src/job_hunter/cleanup.py`)
+
+None of the above tables (nor `data/searches/`/`data/profile-diff/`/`data/radar/`) ever delete
+anything on their own — confirmed live (2026-09-07): 230 MB after 9 days of use, 98.5% of it the
+`jobs` table's `description` column, with 4,820 of 31,965 rows already `closed` and permanently
+kept. `job-hunter cleanup` (full design: `docs/retention-cleanup-plan.md`) is the deliberate,
+explicit, dry-run-by-default answer:
+
+- **Closed jobs**: `Storage.find_stale_closed_jobs(before)`/`delete_closed_jobs(before)` — a job
+  is eligible once `status='closed'` and its `last_seen_at` (never touched by `mark_missing()`
+  when it closes a job, so it's already exactly "last confirmed present," no migration needed) is
+  older than `settings.retention.closed_job_after_days` (default 10). Deletion **cascades** to
+  that job's own `assessments`/`job_feedback` rows — an explicit choice, not an oversight: neither
+  table has a real foreign key to `jobs`, but a deleted job's history has nowhere else to attach.
+  `Storage.vacuum()` (a thin `VACUUM` wrapper) runs afterward unless `--no-vacuum` — `DELETE` alone
+  only frees pages for internal reuse, it does not shrink the file on disk.
+- **Reports**: `cleanup.py`'s `classify_report`/`scan_reports`/`select_reports_to_delete` match
+  only the *exact* filename shapes `diff_profile.py` (`{TIMESTAMP}.html`, both the current
+  US-Eastern format and the older bare-UTC one it replaced — both genuinely generated, neither
+  hand-named), `refilter_archive.py` (`archive-{slug}_{date}-{TIMESTAMP}.html`), and
+  `render_radar.py` (`{slug}_{date}.html`) themselves produce — confirmed live against
+  `data/profile-diff/soft_exclude_terms_removed_2026-09-05.html` and
+  `data/profile-diff/default_2026-08-31_original-116.html`, two real hand-named files that must
+  never be swept up by an age-based glob and are correctly excluded by construction. Eligible
+  files are grouped by `(kind, slug)` — a plain `diff_profile.py` report has no slug of its own
+  and forms one ungrouped series instead — sorted newest-first by mtime, and only a file *outside*
+  the `settings.retention.keep_latest_reports_per_slug` most-recent-per-group (default 2) **and**
+  older than `settings.retention.report_after_days` (default 15) is deleted; either condition
+  alone is not enough.
+- **Safety**: dry-run by default (`--apply` required to actually delete anything); with `--apply`,
+  a pre-delete export (exactly what's about to be removed — full job/assessment/job_feedback rows,
+  deleted report paths) is written to `data/cleanup-exports/{UTC-timestamp}.json` first, since a
+  deleted row/file can't be re-queried afterward to build that record retroactively (skip via
+  `--no-export`). `--jobs-only`/`--reports-only` scope to one half only.
+
 ---
 
 ## 9. CLI reference (`job-hunter`, via `cli.py`)
@@ -948,6 +983,7 @@ into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
+| `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
 
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
 `source-test` returns `1` if the healthcheck itself reports failed/unsupported.
@@ -981,7 +1017,7 @@ by mtime). One implementation shared by `cli.py`, `review_with_lm_studio.py`, an
 
 ## 11. Agent/skill layer
 
-Four independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
+Five independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
 `docs/skill-split-plan.md` for the design rationale and the sequence/flow diagrams):
 
 - **`job-scout`** — normalizes keyword args, runs `job-hunter search --archive`, reports source
@@ -1007,6 +1043,17 @@ Four independently-invocable skills under `skills/`, each with its own canonical
   exactly which run it started). It runs these as direct CLI/script commands, not by invoking the
   other three skills as sub-calls — cross-runtime support for one skill invoking another isn't
   guaranteed across every runtime `install_skill.sh` targets.
+- **`job-feedback`** — a separate, occasionally-invoked loop, never part of a `job-hunter` run: runs
+  `apply_radar_feedback.py` (ingest any newly-exported radar/profile-diff feedback JSON),
+  `suggest_exclusions.py` (turn every recorded `job_feedback` label, old and new, into per-field
+  term suggestions against the *current* profile — all six filtering fields, not just
+  `soft_exclude_terms`), and `diff_profile.py` in check mode (diff the current on-disk profile
+  against the last-accepted baseline snapshot, regardless of whether the change came from an
+  approved suggestion or a hand-edit made entirely outside this conversation). Two explicit
+  stop-and-confirm points, never inferred from silence: which suggested terms (if any) to write
+  into `candidate_profile.yaml`, and whether to accept the shown diff as the new baseline
+  (`--accept-baseline`; `--rollback-baseline` undoes one level). See
+  `docs/feedback-exclusion-plan.md` and `docs/profile-diff-plan.md`.
 
 **Resolution rule, load-bearing across all three stage skills:** an explicit `--keyword` always
 wins and points at a specific historical run regardless of what's run since; omitting both
@@ -1117,6 +1164,23 @@ uv run job-hunter resolve-search --search data/searches/adas_2026-08-20.json   #
 uv run job-hunter resolve-search                                              # newest archive overall
 ```
 
+**Close the loop on radar feedback and/or a profile edit** — after tagging jobs in a radar report
+(or a profile-diff report — both export the identical feedback JSON shape) and clicking Export, or
+after any `candidate_profile.yaml` change made by hand, with no feedback file involved at all:
+```
+/job-feedback
+```
+```bash
+uv run python scripts/apply_radar_feedback.py            # ingest any newly-exported feedback JSON
+uv run python scripts/suggest_exclusions.py               # per-field term suggestions from all recorded feedback
+# ... stop and ask which suggestions (if any) to apply, then make minimal edits to candidate_profile.yaml ...
+uv run python scripts/diff_profile.py                      # check mode: diff current profile vs. last-accepted baseline
+# ... stop and ask before accepting ...
+uv run python scripts/diff_profile.py --accept-baseline    # only on explicit confirmation
+```
+A routine check-in with nothing new to ingest and no profile change reports "nothing changed" and
+stops — this is a safe, idempotent skill to invoke any time, not only right after tagging jobs.
+
 ---
 
 ## 12. Performance notes
@@ -1155,7 +1219,10 @@ uv run job-hunter resolve-search                                              # 
   Server running locally (or reachable on the LAN) before `job-reviewer` can score anything.
 - The company catalog's history: started from 22 originally requested companies, gained Woven by
   Toyota (onboarded later), and dropped Audi and Mercedes-Benz entirely (neither ever had a working
-  endpoint) — 21 total, since grown to 24 with Caterpillar, NVIDIA, and Deere (§5.2).
+  endpoint) — 21 total, then grown steadily via the `onboard-source` skill (§5.20) with each new
+  company's live count, mechanism, and any caveats recorded in its own row/subsection under §5.2 —
+  see that section (or `uv run job-hunter source-status`) for the current, authoritative count
+  rather than a number restated here that would only go stale again.
 
 ---
 

@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .adapters import adapter_class
+from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
@@ -101,11 +102,62 @@ def parser() -> argparse.ArgumentParser:
     resolve_group.add_argument(
         "--keyword", help="resolve to the newest archive for this keyword's slug"
     )
+    cleanup = sub.add_parser(
+        "cleanup",
+        help=(
+            "delete jobs closed past retention.closed_job_after_days, and generated "
+            "profile-diff/radar reports older than retention.report_after_days (keeping the "
+            "latest retention.keep_latest_reports_per_slug per slug regardless of age) — "
+            "see config/settings.yaml and docs/retention-cleanup-plan.md. Dry-run by default; "
+            "--apply is required to actually delete anything, and writes a pre-delete export "
+            "to data/cleanup-exports/ first."
+        ),
+    )
+    cleanup.add_argument(
+        "--apply", action="store_true", help="actually delete; without this, only reports what would be deleted"
+    )
+    cleanup.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        help="skip VACUUM after deleting jobs (only relevant with --apply) — DELETE alone does not shrink the file",
+    )
+    scope = cleanup.add_mutually_exclusive_group()
+    scope.add_argument("--jobs-only", action="store_true", help="only clean the database, not report files")
+    scope.add_argument("--reports-only", action="store_true", help="only clean report files, not the database")
+    cleanup.add_argument(
+        "--no-export",
+        action="store_true",
+        help="skip writing the pre-delete export record (only relevant with --apply)",
+    )
     return root
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+def _print_cleanup_result(result: CleanupResult) -> None:
+    verb = "Deleted" if result.applied else "Eligible for deletion (dry run — nothing deleted)"
+    jobs_count = result.closed_jobs_deleted if result.applied else result.closed_jobs_eligible
+    print(f"{verb}: {jobs_count} closed job(s)")
+    if result.applied and jobs_count:
+        print(
+            f"  cascaded: {result.assessments_deleted} assessment(s), "
+            f"{result.job_feedback_deleted} job_feedback label(s)"
+        )
+        if result.db_size_before is not None:
+            print(
+                f"  database: {result.db_size_before:,} -> {result.db_size_after:,} bytes"
+            )
+    reports = result.reports_deleted if result.applied else result.reports_eligible
+    print(f"{verb}: {len(reports)} report file(s)")
+    for path in reports:
+        print(f"  {path}")
+    if result.applied:
+        if result.export_path:
+            print(f"Wrote pre-delete export: {result.export_path}")
+    elif jobs_count or reports:
+        print("Re-run with --apply to actually delete these (writes an export first).")
 
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
@@ -237,6 +289,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "resolve-search":
             resolved = resolve_search_path(search=args.search, keyword=args.keyword)
             print(resolved)
+            return 0
+        if args.command == "cleanup":
+            result = run_cleanup(
+                settings,
+                apply=args.apply,
+                jobs_only=args.jobs_only,
+                reports_only=args.reports_only,
+                vacuum=not args.no_vacuum,
+                write_export=not args.no_export,
+            )
+            _print_cleanup_result(result)
             return 0
         if args.command == "record-assessment":
             payload = json.loads(args.payload)
