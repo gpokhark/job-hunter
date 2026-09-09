@@ -290,8 +290,12 @@ before most commands will find a profile (falls back to the example file otherwi
   approximation of it. Reports four counts (retained/still-excluded/gained/lost), not one
   "unchanged" bucket that would hide which side it's mostly made of, plus a terminal summary and
   an HTML report (`data/profile-diff/{YYYY-MM-DD-T-HH-MM-SS}.html` by default, filename timestamp
-  in US Eastern local time — `_report_timestamp` — for readability; `evaluated_at` inside the
-  report itself stays UTC) with a per-job before/after
+  in the device's local timezone — `_report_timestamp`, via bare `.astimezone()` rather than a
+  hardcoded zone, so it's correct on whatever machine runs it — for readability; `evaluated_at`
+  stays UTC internally but is also converted to local time — via the same `_local()` helper —
+  everywhere it's displayed, including inside the report itself and the terminal summary, since
+  a raw UTC timestamp was confusing enough in practice to misdate a run by a full day for a
+  late-evening U.S. run) with a per-job before/after
   reason and, for changed jobs, any existing assessment score or `job_feedback` label (a lost job
   someone already tagged `relevant`/`okay` is flagged loudly, not folded into the general list).
   Reads via a genuine read-only SQLite connection, not `Storage` (whose `__init__` always runs
@@ -342,7 +346,7 @@ before most commands will find a profile (falls back to the example file otherwi
   left to restore. Rewrites the resolved archive file in place by default (`--output` to write
   elsewhere instead), and prints a gained/lost/retained count. Unless `--no-report`, also writes
   an HTML report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (same
-  US-Eastern `_report_timestamp` as `diff_profile.py`, shared via import) — reusing
+  local-timezone `_report_timestamp`/`_local` as `diff_profile.py`, shared via import) — reusing
   `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical
   click-to-feedback JS/export mechanism (`job_feedback` rows from either report are
   indistinguishable to `apply_radar_feedback.py`), but through its own, simpler HTML template

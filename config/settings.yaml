@@ -11,6 +11,11 @@ search:
   country: US
   include_work_arrangements: [onsite, hybrid, remote, unknown]
   max_posting_age_days: 45
+  # Display-only, for jobs with no discoverable posted_at (see config.py's SearchConfig) —
+  # never a filter. first_seen_at within undated_new_days -> tagged [New]; past
+  # undated_stale_days -> tagged "Long-standing".
+  undated_new_days: 15
+  undated_stale_days: 45
 recommendation:
   minimum_score: 75
 logging:

@@ -4,7 +4,12 @@
 report — grouped and tagged exactly as the job-hunter skill's step 9 describes: Strong
 matches (score >= 75) and For review (score 50-74) as two separate groups, [90+]/[80+]
 tags within Strong, and a [New] tag on anything posted within the last --new-days
-(default 10) days. A third group lists every candidate scored below 50 — every job the
+(default 10) days. A job with no discoverable posted_at at all falls back to first_seen_at
+(when job-hunter's own collector first observed it) for the same [New] tag, display-only and
+using a separate window (settings.yaml's search.undated_new_days, default 15) — and gets a
+"Long-standing" tag instead once past search.undated_stale_days (default 45). Never a filter:
+every candidate the local model scored still appears in its normal section regardless of
+either tag. A third group lists every candidate scored below 50 — every job the
 local model actually evaluated appears somewhere on the page. A fourth group, "Not LLM
 Reviewed", lists every candidate the review step hasn't gotten to at all (an LM Studio
 error skipped it, `--limit` capped the run, or it's a job newly surfaced by a refilter that
@@ -25,10 +30,11 @@ from __future__ import annotations
 import argparse
 import html
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from job_hunter.config import load_settings
 from job_hunter.search_archive import resolve_search_path
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
@@ -46,6 +52,41 @@ def _fmt_date(iso: str | None) -> str | None:
     if not iso:
         return None
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%b %-d, %Y")
+
+
+def _fmt_first_seen(iso: str | None) -> str | None:
+    """Display-only fallback for a job with no posted_at: "First seen {date}", using
+    first_seen_at (when job-hunter's own collector first observed the job) — clearly labeled
+    so it's never mistaken for the job's actual posting date. Unlike `_fmt_date` (posted_at is
+    often a date-only value already normalized to UTC midnight, so converting it to local time
+    would shift the displayed day backward), first_seen_at is a genuine instant and is
+    converted to local time here for the same reason every other real timestamp in this
+    project is at display time."""
+    if not iso:
+        return None
+    moment = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    return f"First seen {moment.strftime('%b %-d, %Y')}"
+
+
+def _undated_tags(
+    posted_at: str | None, first_seen_at: str | None, *, now: datetime, new_days: int,
+    undated_new_days: int, undated_stale_days: int,
+) -> tuple[bool, bool]:
+    """(is_new, is_long_standing) for the [New]/"Long-standing" tags. A job with a real
+    posted_at only ever gets [New] (existing behavior, unchanged). A job with none falls back
+    to first_seen_at as a display-only age proxy — never a filter, see config.py's
+    SearchConfig.undated_new_days/undated_stale_days for why this can be wrong (a freshly
+    onboarded source's jobs all look "new" regardless of true age; an evergreen undated
+    listing eventually looks "long-standing" even if still genuinely open) and is only ever a
+    hint for a reviewer, never something that removes a job from the report."""
+    if posted_at:
+        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        return (now - posted).days <= new_days, False
+    if first_seen_at:
+        first_seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+        age_days = (now - first_seen).days
+        return age_days <= undated_new_days, age_days > undated_stale_days
+    return False, False
 
 
 def _tier(score: int) -> str:
@@ -88,9 +129,11 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
     tags = _tier_tag(row["score"]) if show_tier_tag else ""
     if row["new"]:
         tags += '<span class="tag tag-new">New</span>'
+    if row.get("long_standing"):
+        tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(row.get("visa_sponsorship"))
     tags += _arrangement_tag(row.get("work_arrangement"))
-    date_display = _fmt_date(row["posted_at"]) or "Date unknown"
+    date_display = _fmt_date(row["posted_at"]) or _fmt_first_seen(row.get("first_seen_at")) or "Date unknown"
     matches_html = "".join(f"<li>{_e(m)}</li>" for m in row["matches"])
     gaps_html = "".join(f"<li>{_e(g)}</li>" for g in row["gaps"])
     sponsorship_note = (
@@ -144,19 +187,24 @@ def _rows_html(rows: list[dict[str, Any]], *, show_tier_tag: bool, empty_message
     return "".join(_row_html(row, show_tier_tag=show_tier_tag) for row in rows)
 
 
-def _never_reviewed_row_html(candidate: dict[str, Any], *, now: datetime, new_days: int) -> str:
+def _never_reviewed_row_html(
+    candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
+) -> str:
     """A candidate with no assessment at all — no score, so no <details>/matches/gaps/tier
     tag, just the same at-a-glance signal (link/date/[New]/sponsorship/arrangement tags) every
     other report already shows, plus feedback buttons so it can still be tagged before review."""
     posted_at = candidate.get("posted_at")
-    is_new = False
-    if posted_at:
-        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-        is_new = (now - posted).days <= new_days
+    first_seen_at = candidate.get("first_seen_at")
+    is_new, is_long_standing = _undated_tags(
+        posted_at, first_seen_at, now=now, new_days=new_days,
+        undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+    )
     tags = '<span class="tag tag-new">New</span>' if is_new else ""
+    if is_long_standing:
+        tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
     tags += _arrangement_tag(candidate.get("work_arrangement"))
-    date_display = _fmt_date(posted_at) or "Date unknown"
+    date_display = _fmt_date(posted_at) or _fmt_first_seen(first_seen_at) or "Date unknown"
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
           data-company="{_attr(candidate.get("company"))}" data-title="{_attr(candidate.get("title"))}"
@@ -181,10 +229,17 @@ def _never_reviewed_row_html(candidate: dict[str, Any], *, now: datetime, new_da
     </div>'''
 
 
-def _never_reviewed_rows_html(candidates: list[dict[str, Any]], *, now: datetime, new_days: int) -> str:
+def _never_reviewed_rows_html(
+    candidates: list[dict[str, Any]], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
+) -> str:
     if not candidates:
         return '<p class="empty-state">Every candidate has been reviewed.</p>'
-    return "".join(_never_reviewed_row_html(c, now=now, new_days=new_days) for c in candidates)
+    return "".join(
+        _never_reviewed_row_html(
+            c, now=now, new_days=new_days, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days
+        )
+        for c in candidates
+    )
 
 
 # Ordering/label/CSS-class for each non-OK SourceHealth status this run's collector.py can
@@ -222,6 +277,8 @@ def build(
     title: str,
     keyword_label: str | None,
     new_days: int,
+    undated_new_days: int = 15,
+    undated_stale_days: int = 45,
     now: datetime | None = None,
 ) -> dict[str, int]:
     search = json.loads(search_path.read_text(encoding="utf-8"))
@@ -229,7 +286,11 @@ def build(
     assessments = json.loads(assessments_path.read_text(encoding="utf-8"))
     assess_map = {(a["source_key"], a["job_id"]): a for a in assessments}
 
-    now = now or datetime.now(UTC)
+    # `now`, when passed explicitly (tests), is used with whatever tzinfo it already carries;
+    # only the no-argument production default resolves the real system-local instant — this
+    # is what the "eyebrow" date string below is formatted from, so a late-night run displays
+    # the date as it was actually experienced, not tomorrow's UTC date.
+    now = now or datetime.now().astimezone()
     rows: list[dict[str, Any]] = []
     never_reviewed_candidates: list[dict[str, Any]] = []
     for key, candidate in candidates.items():
@@ -238,10 +299,11 @@ def build(
             never_reviewed_candidates.append(candidate)  # already has source_key/job_id
             continue
         posted_at = candidate.get("posted_at")
-        is_new = False
-        if posted_at:
-            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-            is_new = (now - posted).days <= new_days
+        first_seen_at = candidate.get("first_seen_at")
+        is_new, is_long_standing = _undated_tags(
+            posted_at, first_seen_at, now=now, new_days=new_days,
+            undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+        )
         rows.append(
             {
                 # Judgment fields (score/recommended/matches/gaps) come from the
@@ -262,8 +324,10 @@ def build(
                 "title": candidate.get("title", assessment["title"]),
                 "url": candidate.get("url", assessment["url"]),
                 "posted_at": posted_at,
+                "first_seen_at": first_seen_at,
                 "location": candidate.get("location_raw"),
                 "new": is_new,
+                "long_standing": is_long_standing,
                 "matches": assessment["matches"],
                 "gaps": assessment["gaps"],
                 "visa_sponsorship": candidate.get("visa_sponsorship"),
@@ -332,7 +396,10 @@ def build(
         )
         .replace(
             "__NEVER_REVIEWED_ROWS__",
-            _never_reviewed_rows_html(never_reviewed_candidates, now=now, new_days=new_days),
+            _never_reviewed_rows_html(
+                never_reviewed_candidates, now=now, new_days=new_days,
+                undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+            ),
         )
         .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
     )
@@ -385,11 +452,25 @@ def main() -> int:
         help="the --keyword string used for this search, if any (drives the subhead/eyebrow/default title; omit for a default profile-driven search)",
     )
     parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
+    parser.add_argument(
+        "--undated-new-days", type=int, default=None,
+        help="for jobs with no posted_at, first-seen-age window for the [New] tag (default: settings.yaml's search.undated_new_days)",
+    )
+    parser.add_argument(
+        "--undated-stale-days", type=int, default=None,
+        help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
+    )
     args = parser.parse_args()
     args.search = resolve_search_path(search=args.search, keyword=args.keyword)
 
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
     title = args.title or _default_title(args.keyword)
+
+    settings = load_settings()
+    undated_new_days = args.undated_new_days if args.undated_new_days is not None else settings.search.undated_new_days
+    undated_stale_days = (
+        args.undated_stale_days if args.undated_stale_days is not None else settings.search.undated_stale_days
+    )
 
     stats = build(
         search_path=args.search,
@@ -398,6 +479,8 @@ def main() -> int:
         title=title,
         keyword_label=args.keyword,
         new_days=args.new_days,
+        undated_new_days=undated_new_days,
+        undated_stale_days=undated_stale_days,
     )
     print(
         f"Wrote {output_path} | strong={stats['strong']} review={stats['review']} "

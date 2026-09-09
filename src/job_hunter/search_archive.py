@@ -9,7 +9,7 @@ what's actually on disk, nothing to keep in sync or let drift.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 SEARCH_DIR = Path("data/searches")
@@ -23,12 +23,16 @@ def slugify(text: str) -> str:
 
 def archive_path(keyword: str | None, *, now: datetime | None = None) -> Path:
     """The deterministic data/searches/{slug}_{date}.json path for --archive, computed from
-    the same --keyword string passed to `search` (or "default" without one) and today's UTC
-    date — same inputs always produce the same path, so a caller can predict it without
-    parsing stdout, and a same-day rerun with the same keyword deliberately overwrites rather
-    than accumulating duplicates."""
+    the same --keyword string passed to `search` (or "default" without one) and today's date
+    in the device's local timezone (not UTC — a run late at night in a US timezone was landing
+    on tomorrow's UTC date, splitting one evening's run across two archive files) — same inputs
+    always produce the same path, so a caller can predict it without parsing stdout, and a
+    same-day rerun with the same keyword deliberately overwrites rather than accumulating
+    duplicates. `now`, when passed explicitly (e.g. by tests), is formatted using whatever
+    tzinfo it already carries rather than being forced through a local conversion — only the
+    no-argument production default resolves the real system-local instant."""
     slug = slugify(keyword) if keyword else "default"
-    date_str = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    date_str = (now or datetime.now().astimezone()).strftime("%Y-%m-%d")
     return SEARCH_DIR / f"{slug}_{date_str}.json"
 
 

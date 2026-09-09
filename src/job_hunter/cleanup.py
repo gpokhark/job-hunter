@@ -32,7 +32,7 @@ PROFILE_DIFF_DIR = Path("data/profile-diff")
 RADAR_DIR = Path("data/radar")
 CLEANUP_EXPORT_DIR = Path("data/cleanup-exports")
 
-# Two generated timestamp shapes coexist on disk: the current EST-readable one
+# Two generated timestamp shapes coexist on disk: the current local-timezone-readable one
 # (diff_profile.py's `_report_timestamp`) and the earlier bare-UTC one it replaced. Both are
 # genuinely script-generated, neither is hand-named, so both are recognized here — see
 # docs/retention-cleanup-plan.md section 3.5/Q6.

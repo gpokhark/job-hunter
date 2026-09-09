@@ -1,5 +1,5 @@
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -184,19 +184,59 @@ def test_render_rows_includes_job_link_date_and_tags(tmp_path):
     assert "no assessment on record" in html_out
 
 
-def test_render_rows_no_posted_date_shows_unknown_and_no_new_tag(tmp_path):
+def test_fmt_posted_date_absolute_fallback_is_date_unknown():
+    """Neither posted_at nor first_seen_at (in practice: unreachable via the real Job model,
+    which always defaults first_seen_at, but _fmt_posted_date itself must not assume that)
+    still shows "Date unknown", never a bare error."""
+    from diff_profile import _fmt_posted_date
+
+    assert _fmt_posted_date(None, None) == "Date unknown"
+
+
+def test_render_rows_no_posted_date_falls_back_to_first_seen_and_long_standing_tag(tmp_path):
+    """No posted_at at all: falls back to a clearly-labeled "First seen {date}" (never the
+    job's real posting date, since there isn't one) and, once first seen a long time ago
+    (past search.undated_stale_days, default 45 — here first seen 66 days before `now`), a
+    "Long-standing" tag instead of [New] — display-only, never removes the job from the report."""
     db_path = tmp_path / "jobs.sqlite3"
     now = datetime(2026, 9, 5, tzinfo=UTC)
+    first_seen_at = now - timedelta(days=66)
     with Storage(db_path) as storage:
-        storage.upsert_job(make_job(job_id="1", title="Perception Engineer", posted_at=None))
+        storage.upsert_job(
+            make_job(job_id="1", title="Perception Engineer", posted_at=None, first_seen_at=first_seen_at)
+        )
     before = CandidateProfile(target_domains=["ADAS"])
     after = CandidateProfile(target_domains=["ADAS", "perception"])
     result = compute_diff(
         before=before, after=after, database_path=db_path, max_age_days=30, keywords=None, now=now
     )
     html_out = _render_rows(result.gained, result, empty_message="unused")
-    assert "Date unknown" in html_out
+    assert "First seen" in html_out
+    assert "Date unknown" not in html_out
     assert "tag-new" not in html_out
+    assert 'tag-long-standing">Long-standing' in html_out
+
+
+def test_render_rows_no_posted_date_but_recently_first_seen_gets_new_tag(tmp_path):
+    """The other end of the same fallback: first seen only 3 days before `now`, well within
+    search.undated_new_days (default 15) — tagged [New] exactly like a job with a real, recent
+    posted_at would be."""
+    db_path = tmp_path / "jobs.sqlite3"
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    first_seen_at = now - timedelta(days=3)
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            make_job(job_id="1", title="Perception Engineer", posted_at=None, first_seen_at=first_seen_at)
+        )
+    before = CandidateProfile(target_domains=["ADAS"])
+    after = CandidateProfile(target_domains=["ADAS", "perception"])
+    result = compute_diff(
+        before=before, after=after, database_path=db_path, max_age_days=30, keywords=None, now=now
+    )
+    html_out = _render_rows(result.gained, result, empty_message="unused")
+    assert "First seen" in html_out
+    assert 'tag-new">New' in html_out
+    assert "tag-long-standing" not in html_out
 
 
 def test_render_rows_feedback_buttons_carry_correct_data_attributes(tmp_path):

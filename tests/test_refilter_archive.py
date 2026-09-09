@@ -171,7 +171,7 @@ def test_render_job_rows_includes_link_tags_date_and_feedback_buttons():
         work_arrangement=WorkArrangement.HYBRID,
         visa_sponsorship=SponsorshipStatus.NOT_AVAILABLE,
     )
-    html_out = _render_job_rows([job], now=now, empty_message="unused")
+    html_out = _render_job_rows([job], now=now, empty_message="unused", undated_new_days=15, undated_stale_days=45)
     assert 'href="https://example.com/av-test"' in html_out
     assert 'target="_blank"' in html_out
     assert 'tag-new">New' in html_out
@@ -184,7 +184,10 @@ def test_render_job_rows_includes_link_tags_date_and_feedback_buttons():
 
 
 def test_render_job_rows_empty_shows_message():
-    html_out = _render_job_rows([], now=datetime(2026, 9, 6, tzinfo=UTC), empty_message="Nothing gained.")
+    html_out = _render_job_rows(
+        [], now=datetime(2026, 9, 6, tzinfo=UTC), empty_message="Nothing gained.",
+        undated_new_days=15, undated_stale_days=45,
+    )
     assert "Nothing gained." in html_out
 
 

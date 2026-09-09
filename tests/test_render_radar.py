@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -19,6 +19,7 @@ def _candidate(
     source_key,
     job_id,
     posted_at=None,
+    first_seen_at=None,
     location_raw="Detroit, MI",
     visa_sponsorship="unmentioned",
     sponsorship_evidence=None,
@@ -31,6 +32,7 @@ def _candidate(
         "source_key": source_key,
         "job_id": job_id,
         "posted_at": posted_at,
+        "first_seen_at": first_seen_at,
         "location_raw": location_raw,
         "visa_sponsorship": visa_sponsorship,
         "sponsorship_evidence": sponsorship_evidence,
@@ -532,3 +534,98 @@ def test_default_title_derivation():
     assert _default_title(None) == "Candidate Radar"
     assert _default_title("product manager") == "Product Manager Radar"
     assert _default_title("ADAS, Robotics") == "ADAS & Robotics Radar"
+
+
+def test_eyebrow_date_uses_the_calendar_date_of_whatever_tzinfo_now_carries(tmp_path):
+    """The report's eyebrow date must reflect the day the run actually happened on, not
+    tomorrow's UTC date for a late-evening US run. `build()` formats its `date_str` using
+    whatever tzinfo `now` is given rather than forcing a UTC conversion; production passes a
+    real system-local `now` (see cli.py's call site), and this proves the formatting itself is
+    correct given an explicitly non-UTC one."""
+    from zoneinfo import ZoneInfo
+
+    late_eastern = datetime(2026, 9, 8, 22, 30, tzinfo=ZoneInfo("America/New_York"))
+    assert late_eastern.astimezone(UTC).date() == datetime(2026, 9, 9).date()
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(json.dumps(_search_json([_candidate("x", "1")])))
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("x", "1", 80)]))
+    output_path = tmp_path / "out.html"
+
+    build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=late_eastern,
+    )
+
+    html = output_path.read_text()
+    assert "2026-09-08" in html
+    assert "2026-09-09" not in html
+
+
+def test_undated_job_falls_back_to_first_seen_and_long_standing_tag(tmp_path):
+    """A candidate with no posted_at at all falls back to a clearly-labeled "First seen
+    {date}" (never confused with a real posting date) and, once first seen a long time ago
+    (past undated_stale_days), a "Long-standing" tag instead of [New] — display-only, the job
+    still appears in its normal score-based section regardless."""
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    first_seen_at = (now - timedelta(days=66)).isoformat()
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(_search_json([_candidate("x", "1", posted_at=None, first_seen_at=first_seen_at)]))
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("x", "1", 80)]))
+    output_path = tmp_path / "out.html"
+
+    build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        undated_new_days=15,
+        undated_stale_days=45,
+        now=now,
+    )
+
+    html = output_path.read_text()
+    assert "First seen" in html
+    assert "Date unknown" not in html
+    assert 'tag-new">New' not in html
+    assert 'tag-long-standing">Long-standing' in html
+
+
+def test_undated_job_recently_first_seen_gets_new_tag_not_long_standing(tmp_path):
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    first_seen_at = (now - timedelta(days=3)).isoformat()
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(_search_json([_candidate("x", "1", posted_at=None, first_seen_at=first_seen_at)]))
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("x", "1", 80)]))
+    output_path = tmp_path / "out.html"
+
+    build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        undated_new_days=15,
+        undated_stale_days=45,
+        now=now,
+    )
+
+    html = output_path.read_text()
+    assert "First seen" in html
+    assert 'tag-new">New' in html
+    assert 'tag-long-standing">Long-standing' not in html

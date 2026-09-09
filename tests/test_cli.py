@@ -40,6 +40,19 @@ def test_archive_path_changes_across_days():
     assert archive_path("ADAS", now=day1) != archive_path("ADAS", now=day2)
 
 
+def test_archive_path_uses_the_calendar_date_of_whatever_tzinfo_now_carries():
+    """A run late in the evening in a US timezone is already past midnight UTC — the archive
+    date must reflect the day it was actually run on, not tomorrow's UTC date. `archive_path`
+    achieves this by formatting `now` using whatever tzinfo it's given rather than forcing a
+    UTC conversion; production passes a real system-local `now` (see search_archive.py), and
+    this test proves the formatting is correct given an explicitly non-UTC one."""
+    from zoneinfo import ZoneInfo
+
+    late_eastern = datetime(2026, 9, 8, 22, 30, tzinfo=ZoneInfo("America/New_York"))
+    assert late_eastern.astimezone(UTC).date() == datetime(2026, 9, 9).date()
+    assert archive_path("ADAS", now=late_eastern) == Path("data/searches/adas_2026-09-08.json")
+
+
 def _company(key: str, adapter: str, *, enabled: bool = True) -> CompanyConfig:
     return CompanyConfig(
         key=key,

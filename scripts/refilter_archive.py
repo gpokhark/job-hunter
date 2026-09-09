@@ -63,7 +63,7 @@ from typing import Any
 
 # Reused rather than reimplemented — same [New]/sponsorship/hybrid-remote tag rules and date
 # formatting as the other two reports, so a job is never tagged differently across all three.
-from diff_profile import _e, _fmt_posted_date, _job_tags, _report_timestamp  # noqa: E402
+from diff_profile import _e, _fmt_posted_date, _job_tags, _local, _report_timestamp  # noqa: E402
 
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
@@ -255,6 +255,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
   .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
+  .tag-long-standing { background: var(--line); color: var(--muted); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
   .tag-hybrid { background: var(--arrangement-hybrid-soft); color: var(--arrangement-hybrid); }
   .tag-new { display: inline-block; background: var(--accent); color: var(--surface); font-weight: 700; }
@@ -416,13 +417,15 @@ def _assessment_note(job: Job) -> str:
     return f"has a valid prior assessment (score {job.prior_assessment.score})"
 
 
-def _render_job_rows(jobs: list[Job], *, now: datetime, empty_message: str) -> str:
+def _render_job_rows(
+    jobs: list[Job], *, now: datetime, empty_message: str, undated_new_days: int, undated_stale_days: int
+) -> str:
     if not jobs:
         return f'<p class="empty">{_e(empty_message)}</p>'
     parts = []
     for job in jobs:
-        tags = _job_tags(job, now=now)
-        date_display = _fmt_posted_date(job.posted_at)
+        tags = _job_tags(job, now=now, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days)
+        date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
         feedback_buttons = f'''<span class="feedback-buttons"
               data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
               data-company="{_e(job.company)}" data-title="{_e(job.title)}"
@@ -451,12 +454,13 @@ def _render_job_rows(jobs: list[Job], *, now: datetime, empty_message: str) -> s
 
 def render_archive_diff_html(
     *, gained: list[Job], lost: list[Job], retained: int, before_count: int, after_count: int,
-    active_pool: int, max_age_days: int, output_path: Path, title: str, now: datetime,
+    active_pool: int, max_age_days: int, undated_new_days: int, undated_stale_days: int,
+    output_path: Path, title: str, now: datetime,
 ) -> None:
     out = (
         _HTML_TEMPLATE.replace("__TITLE__", _e(title))
         .replace("__DIFF_STEM__", _e(output_path.stem))
-        .replace("__EVALUATED_AT__", _e(now.isoformat()))
+        .replace("__EVALUATED_AT__", _e(_local(now).isoformat()))
         .replace("__ACTIVE_POOL__", str(active_pool))
         .replace("__MAX_AGE_DAYS__", str(max_age_days))
         .replace("__BEFORE_COUNT__", str(before_count))
@@ -464,8 +468,20 @@ def render_archive_diff_html(
         .replace("__RETAINED__", str(retained))
         .replace("__GAINED_COUNT__", str(len(gained)))
         .replace("__LOST_COUNT__", str(len(lost)))
-        .replace("__GAINED_ROWS__", _render_job_rows(gained, now=now, empty_message="Nothing gained."))
-        .replace("__LOST_ROWS__", _render_job_rows(lost, now=now, empty_message="Nothing lost."))
+        .replace(
+            "__GAINED_ROWS__",
+            _render_job_rows(
+                gained, now=now, empty_message="Nothing gained.",
+                undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+            ),
+        )
+        .replace(
+            "__LOST_ROWS__",
+            _render_job_rows(
+                lost, now=now, empty_message="Nothing lost.",
+                undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+            ),
+        )
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(out, encoding="utf-8")
@@ -519,7 +535,10 @@ def main() -> int:
         render_archive_diff_html(
             gained=gained_jobs, lost=lost_jobs, retained=retained,
             before_count=before_count, after_count=after_count, active_pool=active_pool,
-            max_age_days=settings.search.max_posting_age_days, output_path=report_path,
+            max_age_days=settings.search.max_posting_age_days,
+            undated_new_days=settings.search.undated_new_days,
+            undated_stale_days=settings.search.undated_stale_days,
+            output_path=report_path,
             title=f"Archive Refilter: {search_path.stem}", now=now,
         )
         print(f"Wrote {report_path}")

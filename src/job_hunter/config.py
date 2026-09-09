@@ -21,6 +21,17 @@ class SearchConfig(BaseModel):
     country: Literal["US"] = "US"
     include_work_arrangements: list[str] = ["onsite", "hybrid", "remote", "unknown"]
     max_posting_age_days: int = Field(30, ge=1)
+    # A job with no discoverable posted_at is never excluded by max_posting_age_days above —
+    # prefilter.py deliberately keeps it, since its true age can't be determined and silently
+    # dropping it would look identical to a source outage. These two settings instead drive
+    # report-display-only signals for that specific case, using first_seen_at (when
+    # job-hunter's own collector first observed the job) as an imperfect but useful proxy:
+    # tag it [New] while still within undated_new_days of first being seen, and tag it
+    # "Long-standing" once past undated_stale_days — never a filter, just a way to tell a
+    # freshly-surfaced undated posting apart from one that's been sitting in the pool for a
+    # long time. See render_radar.py/diff_profile.py's `_job_tags`/date-fallback logic.
+    undated_new_days: int = Field(15, ge=1)
+    undated_stale_days: int = Field(45, ge=1)
 
 
 class RecommendationConfig(BaseModel):

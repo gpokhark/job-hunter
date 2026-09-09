@@ -51,7 +51,6 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -82,17 +81,24 @@ _PROFILE_PATH = Path("config/candidate_profile.yaml")
 _SNAPSHOT_PATH = Path("data/candidate_profile.snapshot.yaml")
 _SNAPSHOT_PREV_PATH = Path("data/candidate_profile.snapshot.prev.yaml")
 
-# Report filenames are named in US Eastern local time (not UTC, which `evaluated_at` itself
-# stays in) purely for human readability when scanning data/profile-diff/ — "America/New_York"
-# rather than a fixed UTC-5 offset so it correctly reflects EST/EDT across daylight saving.
-_REPORT_TZ = ZoneInfo("America/New_York")
+# Report filenames — and every other human-facing timestamp this tool prints or renders — are
+# shown in the device's local timezone (not UTC, which `evaluated_at`/`last_seen_at` themselves
+# stay in internally for storage/comparison) purely for human readability. This used to be
+# hardcoded to America/New_York for the filename only, which was wrong for anyone running this
+# on a machine set to a different timezone; `.astimezone()` with no argument resolves whatever
+# the real system-local timezone is, correctly reflecting DST too, and needs no `tzdata` package.
+def _local(moment: datetime) -> datetime:
+    """Convert an internally-UTC instant to the device's local timezone for display. Never use
+    this on a `posted_at` — many of those are date-only values normalized to UTC midnight, and
+    converting them to local time would shift the displayed calendar day backward."""
+    return moment.astimezone()
 
 
 def _report_timestamp(moment: datetime) -> str:
-    """`YYYY-MM-DD-T-HH-MM-SS` in US Eastern local time, 24-hour clock — e.g.
-    `2026-09-06-T-21-36-05`. Distinct from `evaluated_at`'s own ISO-8601 UTC timestamp (still
-    shown inside the report itself); this only affects the filename."""
-    return moment.astimezone(_REPORT_TZ).strftime("%Y-%m-%d-T-%H-%M-%S")
+    """`YYYY-MM-DD-T-HH-MM-SS` in the device's local timezone, 24-hour clock — e.g.
+    `2026-09-06-T-21-36-05`. Distinct from `evaluated_at`'s own ISO-8601 UTC timestamp
+    internally; this (and every other human-facing display of it) converts to local time."""
+    return _local(moment).strftime("%Y-%m-%d-T-%H-%M-%S")
 
 
 def _advance_baseline(profile_path: Path) -> None:
@@ -272,6 +278,8 @@ class ChangedJob:
 class DiffResult:
     evaluated_at: datetime
     max_age_days: int
+    undated_new_days: int
+    undated_stale_days: int
     source_scope: list[str]
     total_considered: int
     retained: int
@@ -310,6 +318,8 @@ def compute_diff(
     database_path: Path,
     max_age_days: int,
     keywords: list[str] | None,
+    undated_new_days: int = 15,
+    undated_stale_days: int = 45,
     now: datetime | None = None,
 ) -> DiffResult:
     now = now or datetime.now(UTC)
@@ -343,6 +353,8 @@ def compute_diff(
     return DiffResult(
         evaluated_at=now,
         max_age_days=max_age_days,
+        undated_new_days=undated_new_days,
+        undated_stale_days=undated_stale_days,
         source_scope=sorted({job.source_key for job in jobs}),
         total_considered=len(jobs),
         retained=retained,
@@ -373,7 +385,7 @@ def _field_term_diff_str(diff: FieldTermDiff) -> str:
 
 def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
     print(
-        f"Evaluated at {result.evaluated_at.isoformat()} | recency cutoff: {result.max_age_days} days"
+        f"Evaluated at {_local(result.evaluated_at).isoformat()} | recency cutoff: {result.max_age_days} days"
         f" | {result.total_considered} stored postings considered"
     )
     print(f"Source scope: {', '.join(result.source_scope) or '(none)'}")
@@ -406,14 +418,14 @@ def print_summary(result: DiffResult, *, keywords: list[str] | None) -> None:
             print(f"  {item.job.company}: {item.job.title}{flag}")
             print(f"    before: {_decision_str(item.before)}")
             print(f"    after:  {_decision_str(item.after)}")
-            print(f"    {result.assessment_note(item.job)} | last seen {item.job.last_seen_at}")
+            print(f"    {result.assessment_note(item.job)} | last seen {_local(item.job.last_seen_at)}")
     if result.gained:
         print("\n=== GAINED (would newly become candidates) ===")
         for item in result.gained:
             print(f"  {item.job.company}: {item.job.title}")
             print(f"    before: {_decision_str(item.before)}")
             print(f"    after:  {_decision_str(item.after)}")
-            print(f"    {result.assessment_note(item.job)} | last seen {item.job.last_seen_at}")
+            print(f"    {result.assessment_note(item.job)} | last seen {_local(item.job.last_seen_at)}")
 
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
@@ -510,6 +522,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
   .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
+  .tag-long-standing { background: var(--line); color: var(--muted); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
   .tag-hybrid { background: var(--arrangement-hybrid-soft); color: var(--arrangement-hybrid); }
   .tag-new { display: inline-block; background: var(--accent); color: var(--surface); font-weight: 700; }
@@ -696,20 +709,45 @@ def _e(text: str) -> str:
     return html.escape(text or "")
 
 
-def _fmt_posted_date(posted_at: datetime | None) -> str:
-    return posted_at.strftime("%b %-d, %Y") if posted_at else "Date unknown"
+def _fmt_posted_date(posted_at: datetime | None, first_seen_at: datetime | None = None) -> str:
+    """A real posted_at always wins. Absent one, falls back to "First seen {date}" using
+    first_seen_at (when job-hunter's own collector first observed the job) rather than the
+    bare "Date unknown" this used to always show — clearly labeled so it's never mistaken for
+    the job's actual posting date. first_seen_at is a genuine instant, so it's converted to
+    local time for display like every other one (see `_local`)."""
+    if posted_at:
+        return posted_at.strftime("%b %-d, %Y")
+    if first_seen_at:
+        return f"First seen {_local(first_seen_at).strftime('%b %-d, %Y')}"
+    return "Date unknown"
 
 
-def _job_tags(job: Job, *, now: datetime) -> str:
+def _job_tags(job: Job, *, now: datetime, undated_new_days: int, undated_stale_days: int) -> str:
     """[New]/sponsorship/work-arrangement tags — deliberately the same three tags and the
     same rules job-radar's report uses (see _arrangement_tag/_sponsorship_tag), so a job never
     looks tagged differently in the two reports. This report never scores anything, so there's
-    no score tier tag ([90+]/[80+]) to show here."""
+    no score tier tag ([90+]/[80+]) to show here.
+
+    A job with no posted_at falls back to first_seen_at as a display-only proxy for age —
+    never a filter, see config.py's SearchConfig.undated_new_days/undated_stale_days: [New]
+    while freshly first-seen, "Long-standing" once first seen a long time ago. This can be
+    wrong (a job onboarded from a brand-new source looks "new" regardless of how long it's
+    actually been posted, and an evergreen undated listing will eventually get tagged
+    long-standing even though it's still genuinely open) — it's a hint for a human reviewer,
+    not a claim about the job's real age, which is why it never removes anything from the
+    report the way max_posting_age_days can for a job with a real posted_at."""
     tags = ""
     if job.posted_at:
         posted = job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC)
         if (now - posted).days <= _NEW_DAYS:
             tags += '<span class="tag tag-new">New</span>'
+    elif job.first_seen_at:
+        first_seen = job.first_seen_at if job.first_seen_at.tzinfo else job.first_seen_at.replace(tzinfo=UTC)
+        age_days = (now - first_seen).days
+        if age_days <= undated_new_days:
+            tags += '<span class="tag tag-new">New</span>'
+        elif age_days > undated_stale_days:
+            tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(job.visa_sponsorship)
     tags += _arrangement_tag(job.work_arrangement)
     return tags
@@ -723,8 +761,11 @@ def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: 
         job = item.job
         label = result.feedback_label(job)
         flag = f'<span class="flag">TAGGED {_e(label.upper())}</span>' if label in ("relevant", "okay") else ""
-        tags = _job_tags(job, now=result.evaluated_at)
-        date_display = _fmt_posted_date(job.posted_at)
+        tags = _job_tags(
+            job, now=result.evaluated_at,
+            undated_new_days=result.undated_new_days, undated_stale_days=result.undated_stale_days,
+        )
+        date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
         score = result.assessment_score(job)
         feedback_buttons = f'''<span class="feedback-buttons"
               data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
@@ -747,7 +788,7 @@ def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: 
             <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
           </div>
           <div class="row-meta">before: {_e(_decision_str(item.before))} &middot; after: {_e(_decision_str(item.after))}</div>
-          <div class="row-meta">{_e(result.assessment_note(job))} &middot; last seen {_e(str(job.last_seen_at))}</div>
+          <div class="row-meta">{_e(result.assessment_note(job))} &middot; last seen {_e(str(_local(job.last_seen_at)))}</div>
           <div class="row-feedback">{feedback_buttons}</div>
         </div>""")
     return "".join(parts)
@@ -788,7 +829,7 @@ def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
     out = (
         _HTML_TEMPLATE.replace("__TITLE__", _e(title))
         .replace("__DIFF_STEM__", _e(output_path.stem))
-        .replace("__EVALUATED_AT__", _e(result.evaluated_at.isoformat()))
+        .replace("__EVALUATED_AT__", _e(_local(result.evaluated_at).isoformat()))
         .replace("__MAX_AGE_DAYS__", str(result.max_age_days))
         .replace("__TOTAL_CONSIDERED__", str(result.total_considered))
         .replace("__WARNING__", warning)
@@ -915,6 +956,8 @@ def main() -> int:
         after=after,
         database_path=settings.database_path,
         max_age_days=settings.search.max_posting_age_days,
+        undated_new_days=settings.search.undated_new_days,
+        undated_stale_days=settings.search.undated_stale_days,
         keywords=keywords,
     )
     print_summary(result, keywords=keywords)
