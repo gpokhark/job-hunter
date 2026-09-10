@@ -124,6 +124,21 @@ def _arrangement_tag(arrangement: str | None) -> str:
     # "unmentioned" — onsite is the unremarkable default and unknown says nothing.
 
 
+def _filter_data_attrs(*, sponsorship: str | None, arrangement: str | None, is_new: bool, is_long_standing: bool) -> str:
+    """data-* attributes the client-side filter toolbar reads directly off each row — kept as
+    their own explicit attributes rather than having the toolbar's JS re-derive them from
+    which `.tag-*` spans happen to be present, so a future tag-rendering change can't
+    silently break filtering. Deliberately doesn't include company/title: the toolbar's JS
+    reads those straight from the already-rendered `.job-company`/`.job-title` text instead of
+    duplicating them into attributes, which would otherwise sit earlier in the markup than the
+    visible text and confuse any lookup-by-title-text (a real bug caught by this project's own
+    tests, which locate a row by searching for its title)."""
+    return (
+        f'data-sponsorship="{_attr(sponsorship or "")}" data-arrangement="{_attr(arrangement or "")}" '
+        f'data-new="{1 if is_new else 0}" data-long-standing="{1 if is_long_standing else 0}"'
+    )
+
+
 def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
     tier = _tier(row["score"]) if show_tier_tag else "plain"
     tags = _tier_tag(row["score"]) if show_tier_tag else ""
@@ -133,6 +148,10 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(row.get("visa_sponsorship"))
     tags += _arrangement_tag(row.get("work_arrangement"))
+    filter_attrs = _filter_data_attrs(
+        sponsorship=row.get("visa_sponsorship"), arrangement=row.get("work_arrangement"),
+        is_new=row["new"], is_long_standing=row.get("long_standing", False),
+    )
     date_display = _fmt_date(row["posted_at"]) or _fmt_first_seen(row.get("first_seen_at")) or "Date unknown"
     matches_html = "".join(f"<li>{_e(m)}</li>" for m in row["matches"])
     gaps_html = "".join(f"<li>{_e(g)}</li>" for g in row["gaps"])
@@ -150,7 +169,7 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
           <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
         </span>'''
     return f'''
-    <details class="row tier-{tier}">
+    <details class="row tier-{tier}" {filter_attrs}>
       <summary>
         <span class="score">{row["score"]}</span>
         <span class="tags">{tags}</span>
@@ -204,6 +223,10 @@ def _never_reviewed_row_html(
         tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
     tags += _arrangement_tag(candidate.get("work_arrangement"))
+    filter_attrs = _filter_data_attrs(
+        sponsorship=candidate.get("visa_sponsorship"), arrangement=candidate.get("work_arrangement"),
+        is_new=is_new, is_long_standing=is_long_standing,
+    )
     date_display = _fmt_date(posted_at) or _fmt_first_seen(first_seen_at) or "Date unknown"
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
@@ -214,7 +237,7 @@ def _never_reviewed_row_html(
           <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
         </span>'''
     return f'''
-    <div class="plain-row">
+    <div class="plain-row" {filter_attrs}>
       <div class="plain-row-top">
         <span class="tags">{tags}</span>
         <span class="job">

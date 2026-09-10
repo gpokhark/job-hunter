@@ -154,6 +154,103 @@
     color: var(--muted);
   }
 
+  /* --- Quick-glance filter toolbar (client-side only; nothing here changes what was
+     scored or what's in the underlying data — see .group's own counts for ground truth) --- */
+
+  .radar-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 0;
+    margin-bottom: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .toolbar-search {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 13.5px;
+    padding: 7px 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink);
+    min-width: 200px;
+    flex: 0 1 240px;
+  }
+
+  .toolbar-search:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .toolbar-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .filter-chip {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-soft);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .filter-chip:hover { border-color: var(--accent); }
+
+  .filter-chip.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .toolbar-clear {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 4px 2px;
+  }
+
+  .toolbar-count {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .filter-empty-state {
+    border: 1px dashed var(--line);
+    border-radius: 3px;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 8px;
+  }
+
+  @media (max-width: 560px) {
+    .radar-toolbar { gap: 8px; }
+    .toolbar-count { margin-left: 0; flex-basis: 100%; }
+  }
+
   .group {
     margin-bottom: 48px;
   }
@@ -537,6 +634,20 @@
     </div>
   </header>
 
+  <div class="radar-toolbar" id="radar-toolbar">
+    <input type="search" id="filter-search" class="toolbar-search" placeholder="Filter by company or title&hellip;" autocomplete="off">
+    <div class="toolbar-chips">
+      <button type="button" class="filter-chip" data-filter-group="tag" data-filter-value="new">New</button>
+      <button type="button" class="filter-chip" data-filter-group="tag" data-filter-value="long-standing">Long-standing</button>
+      <button type="button" class="filter-chip" data-filter-group="arrangement" data-filter-value="remote">Remote</button>
+      <button type="button" class="filter-chip" data-filter-group="arrangement" data-filter-value="hybrid">Hybrid</button>
+      <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="available">Sponsorship OK</button>
+      <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="not_available">No Sponsorship</button>
+    </div>
+    <button type="button" id="filter-clear" class="toolbar-clear" hidden>Clear filters</button>
+    <span class="toolbar-count" id="filter-count"></span>
+  </div>
+
   <section class="group">
     <div class="group-head">
       <h2>Collection issues</h2>
@@ -556,6 +667,7 @@
     </div>
     <p class="group-note">Sorted by score, highest first. Tap a row for the model's evidence.</p>
     <div class="rows">__STRONG_ROWS__</div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
   </section>
 
   <section class="group">
@@ -565,6 +677,7 @@
     </div>
     <p class="group-note">Lower-confidence matches &mdash; worth a look, not a recommendation.</p>
     <div class="rows">__REVIEW_ROWS__</div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
   </section>
 
   <section class="group">
@@ -574,6 +687,7 @@
     </div>
     <p class="group-note">Every candidate the local model scored, regardless of fit &mdash; unlikely matches, kept for completeness.</p>
     <div class="rows">__BELOW_50_ROWS__</div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
   </section>
 
   <section class="group">
@@ -585,6 +699,7 @@
       model yet &mdash; no verdict to show, so no score/strengths/gaps here. Run job-reviewer to
       move these into one of the groups above.</p>
     <div class="rows">__NEVER_REVIEWED_ROWS__</div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
   </section>
 
   <footer>
@@ -704,5 +819,100 @@
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   });
+})();
+</script>
+
+<script>
+(function () {
+  // Quick-glance client-side filtering — company/title search plus tag/arrangement/
+  // sponsorship chips. Pure view-layer: never touches feedback state, never changes what a
+  // job scored, and filter selections are intentionally NOT persisted (a fresh page load
+  // always starts unfiltered) since this is a per-visit viewing convenience, not a fact worth
+  // remembering the way a feedback tag is.
+  var toolbar = document.getElementById('radar-toolbar');
+  if (!toolbar) return;
+
+  var searchInput = document.getElementById('filter-search');
+  var chips = Array.prototype.slice.call(toolbar.querySelectorAll('.filter-chip'));
+  var clearBtn = document.getElementById('filter-clear');
+  var countEl = document.getElementById('filter-count');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.row, .plain-row'));
+
+  function activeValues(group) {
+    return chips
+      .filter(function (c) { return c.dataset.filterGroup === group && c.classList.contains('active'); })
+      .map(function (c) { return c.dataset.filterValue; });
+  }
+
+  function rowMatches(row) {
+    var query = searchInput.value.trim().toLowerCase();
+    if (query) {
+      // Read straight from the already-rendered text rather than a duplicated data
+      // attribute — one source of truth, and avoids a data-title attribute sitting earlier
+      // in the markup than the visible title text.
+      var titleEl = row.querySelector('.job-title');
+      var companyEl = row.querySelector('.job-company');
+      var haystack = ((companyEl ? companyEl.textContent : '') + ' ' + (titleEl ? titleEl.textContent : '')).toLowerCase();
+      if (haystack.indexOf(query) === -1) return false;
+    }
+    var tagValues = activeValues('tag');
+    if (tagValues.length) {
+      var matchesTag = tagValues.some(function (v) {
+        if (v === 'new') return row.dataset.new === '1';
+        if (v === 'long-standing') return row.dataset.longStanding === '1';
+        return false;
+      });
+      if (!matchesTag) return false;
+    }
+    var arrangementValues = activeValues('arrangement');
+    if (arrangementValues.length && arrangementValues.indexOf(row.dataset.arrangement) === -1) return false;
+
+    var sponsorshipValues = activeValues('sponsorship');
+    if (sponsorshipValues.length && sponsorshipValues.indexOf(row.dataset.sponsorship) === -1) return false;
+
+    return true;
+  }
+
+  function updateEmptyStates() {
+    document.querySelectorAll('.rows').forEach(function (rowsDiv) {
+      var groupRows = rowsDiv.querySelectorAll('.row, .plain-row');
+      if (!groupRows.length) return;  // a genuinely empty tier already shows its own static message
+      var anyVisible = Array.prototype.some.call(groupRows, function (r) { return !r.hidden; });
+      var msg = rowsDiv.nextElementSibling;
+      if (msg && msg.classList.contains('filter-empty-state')) {
+        msg.hidden = anyVisible;
+      }
+    });
+  }
+
+  function applyFilters() {
+    var visible = 0;
+    rows.forEach(function (row) {
+      var matches = rowMatches(row);
+      row.hidden = !matches;
+      if (matches) visible++;
+    });
+    countEl.textContent = rows.length ? ('Showing ' + visible + ' of ' + rows.length) : '';
+    var anyActive = searchInput.value.trim() !== '' || chips.some(function (c) { return c.classList.contains('active'); });
+    clearBtn.hidden = !anyActive;
+    updateEmptyStates();
+  }
+
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chip.classList.toggle('active');
+      applyFilters();
+    });
+  });
+
+  searchInput.addEventListener('input', applyFilters);
+
+  clearBtn.addEventListener('click', function () {
+    searchInput.value = '';
+    chips.forEach(function (c) { c.classList.remove('active'); });
+    applyFilters();
+  });
+
+  applyFilters();
 })();
 </script>
