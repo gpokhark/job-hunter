@@ -307,6 +307,23 @@ companies:
     adapter: html_paginated
     platform: html
     config:
+      # careers.withwaymo.com is a plain server-rendered Rails/ClinchTalent site (a
+      # full 200 returns all ~336 jobs across 12 pages) — but it sits behind a
+      # CloudFront WAF with a request-rate-based challenge: a burst of requests (this
+      # collector's pagination plus its own concurrent per-job detail fetches) flips it
+      # to a sticky HTTP 202 challenge (x-amzn-waf-action: challenge, empty body) that
+      # only self-clears once the IP goes quiet. Confirmed live: an unthrottled run got
+      # page 1 (30 jobs) then hit the challenge on every subsequent request, which
+      # `html_paginated` read as "0 cards, no next link" and silently stopped on rather
+      # than erroring — `detect_count_anomaly` flagged the resulting undercount as a
+      # WARNING, which is what actually kept it from mis-closing real jobs. Fixed
+      # generically in adapters/base.py (any WAF-fronted source can opt in the same
+      # way) rather than with a Waymo-specific adapter: min_request_interval_seconds
+      # paces/serializes every request this adapter instance makes regardless of the
+      # collector's own concurrency, and max_retries raises this source's retry budget
+      # since the challenge's backoff window is much longer than a transient 429/5xx.
+      min_request_interval_seconds: 2.0
+      max_retries: 6
       list_url: https://careers.withwaymo.com/jobs/search
       card_selector: div.job-search-results-card
       link_selector: .card-title a

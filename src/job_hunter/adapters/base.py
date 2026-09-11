@@ -36,25 +36,73 @@ class JobAdapter(ABC):
         # apple.py, adp_recruiting.py) to stop paginating once postings are provably
         # older than this — None means "don't assume a sort order, fetch everything."
         self.max_posting_age_days = max_posting_age_days
+        # Opt-in per-source throttle (company.config["min_request_interval_seconds"])
+        # for a site fronted by a request-rate-based bot challenge rather than a
+        # per-status-code block (confirmed live against Waymo's careers.withwaymo.com,
+        # behind a CloudFront WAF: a burst of requests — pagination plus this
+        # collector's own concurrent fetch_detail calls, which share one adapter
+        # instance per source — flips it into a sticky challenge window). The lock
+        # serializes and paces *every* request this adapter instance makes, regardless
+        # of how many run concurrently at the collector level, since the WAF counts
+        # requests per IP, not per coroutine. Default 0 (no pacing) leaves every other
+        # adapter's behavior unchanged.
+        self._request_lock = asyncio.Lock()
+        self._last_request_at: float | None = None
 
     @property
     def source_key(self) -> str:
         return self.company.key
 
+    async def _pace(self) -> None:
+        interval = float(self.company.config.get("min_request_interval_seconds", 0) or 0)
+        if interval <= 0:
+            return
+        async with self._request_lock:
+            loop = asyncio.get_event_loop()
+            now = loop.time()
+            if self._last_request_at is not None:
+                wait = interval - (now - self._last_request_at)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            self._last_request_at = loop.time()
+
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         retryable = {429, 500, 502, 503, 504}
-        for attempt in range(self.collection.max_retries + 1):
+        # Per-source override of how many retries a sticky rate-limit challenge gets —
+        # its backoff window is much longer than a transient 429/5xx, so the same
+        # global collection.max_retries budget can be too small to ever clear it.
+        # Defaults to collection.max_retries so every other adapter is unaffected.
+        max_retries = int(self.company.config.get("max_retries", self.collection.max_retries))
+        for attempt in range(max_retries + 1):
+            await self._pace()
             try:
                 response = await self.client.request(method, url, **kwargs)
-                if response.status_code not in retryable:
+                # AWS WAF's rate-based bot challenge answers with a plain HTTP 202 and
+                # an empty body — not an error status, so indistinguishable from a
+                # genuinely empty listing/detail page by status code alone (confirmed
+                # live: Waymo's html_paginated adapter read this as "0 cards, no
+                # next-link" and silently stopped paginating rather than erroring).
+                # The x-amzn-waf-action header is the only reliable signal.
+                is_waf_challenge = response.headers.get("x-amzn-waf-action") == "challenge"
+                if response.status_code not in retryable and not is_waf_challenge:
                     response.raise_for_status()
                     return response
-                if attempt == self.collection.max_retries:
+                if attempt == max_retries:
+                    if is_waf_challenge:
+                        raise AdapterError(
+                            f"WAF challenge not cleared after {attempt + 1} attempts: {url}"
+                        )
                     response.raise_for_status()
-                retry_after = response.headers.get("Retry-After")
-                delay = _retry_delay(retry_after, attempt)
+                if is_waf_challenge:
+                    # The challenge window is sticky and self-clears only once the IP
+                    # goes quiet for a while — a short jittered backoff (right for a
+                    # transient 429/5xx) just re-triggers it on the next attempt.
+                    delay = min(60.0, 5.0 * (2**attempt)) + random.uniform(0, 1.0)
+                else:
+                    retry_after = response.headers.get("Retry-After")
+                    delay = _retry_delay(retry_after, attempt)
             except (httpx.TimeoutException, httpx.NetworkError):
-                if attempt == self.collection.max_retries:
+                if attempt == max_retries:
                     raise
                 delay = min(8.0, 0.5 * (2**attempt)) + random.uniform(0, 0.25)
             await asyncio.sleep(delay)
