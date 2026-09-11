@@ -9,6 +9,7 @@ import respx
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
+from job_hunter.adapters.base import SchemaError
 from job_hunter.adapters.bosch import BoschAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
 from job_hunter.adapters.greenhouse import GreenhouseAdapter
@@ -764,6 +765,75 @@ async def test_workday_native_public_base_url_used_for_display_not_detail_fetch(
         assert jobs[0].url == "https://tenant.wd1.myworkdayjobs.com/en-US/site/job/Some-City/ADAS-Engineer_JR-1"
         detail = await adapter.fetch_detail(jobs[0])
     assert detail.description == "Build ADAS features."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_native_skips_malformed_rows_instead_of_failing_source():
+    """Confirmed live 2026-09-08 (Valeo: 1 of 1016, NVIDIA: 32 of the 2000-cap): Workday
+    tenants return individual listing entries with every content field null except
+    bulletFields (a bare "JR2018101"-style identifier) for postings in a withdrawn-ish
+    state. One such entry must be skipped with a warning, not fail the entire 1,000+-job
+    source as the old code did — but a page of *only* malformed entries (a genuine
+    response-shape change) must still raise SchemaError loudly."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 3,
+                "jobPostings": [
+                    {
+                        "title": "ADAS Engineer",
+                        "externalPath": "/job/Some-City/ADAS-Engineer_JR-1",
+                        "jobId": "JR-1",
+                        "postedOn": "Posted Today",
+                    },
+                    # The malformed shape seen live: only a bare identifier in bulletFields.
+                    {"bulletFields": ["JR2018101"]},
+                    {
+                        "title": "Test Engineer",
+                        "externalPath": "/job/Some-City/Test-Engineer_JR-2",
+                        "jobId": "JR-2",
+                        "postedOn": "Posted Today",
+                    },
+                ],
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+    assert [j.job_id for j in jobs] == ["JR-1", "JR-2"]
+
+    # A whole page of malformed entries is a structural change, not a few withdrawn
+    # postings — must fail loudly, not silently return zero jobs.
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "jobPostings": [
+                    {"bulletFields": ["JR0000001"]},
+                    {"bulletFields": ["JR0000002"]},
+                ],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(SchemaError, match="only malformed"):
+            await adapter.fetch_summaries()
 
 
 @pytest.mark.asyncio

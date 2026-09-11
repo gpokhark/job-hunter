@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from ..location import detect_arrangement
 from ..models import JobDetail, JobSummary
 from ..normalizer import fallback_job_id, parse_flexible_date, parse_relative_posted, stringify
 from .base import SchemaError
 from .json_api import ConfigurableJsonAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class WorkdayAdapter(ConfigurableJsonAdapter):
@@ -31,11 +35,27 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
             items = data.get("jobPostings")
             if not isinstance(items, list):
                 raise SchemaError("Workday response lacks jobPostings list")
+            skipped = 0
             for item in items:
                 title = stringify(item.get("title"))
                 path = stringify(item.get("externalPath"))
                 if not title or not path:
-                    raise SchemaError("Workday posting lacks title/externalPath")
+                    # Confirmed live (Valeo 2026-09-08: 1 of 1016, NVIDIA: 32 of the 2000
+                    # cap): tenants return individual listing entries with every content
+                    # field null except bulletFields (a bare "JR2018101"/"REQ2026077100"
+                    # identifier) — the tenant's own count of them is still included in
+                    # "total", but there is nothing for a collector to act on and, for a
+                    # few rows, nothing a person could even apply to. Skipping them keeps
+                    # one malformed entry from failing the entire 1,000+-job listing; the
+                    # whole-page check below still fails loudly if the platform genuinely
+                    # changed its response shape.
+                    skipped += 1
+                    logger.warning(
+                        "%s: skipping malformed Workday listing entry (no title/externalPath): %r",
+                        self.source_key,
+                        (item.get("bulletFields") or [None])[0],
+                    )
+                    continue
                 # public_base_url must be Workday's native candidate-facing host
                 # (".../en-US/{site}/"), never the CXS API host used by list_url — the CXS
                 # host returns raw JSON when opened in a browser, not a page a human can
@@ -63,6 +83,16 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
                         posted_at=parse_relative_posted(stringify(item.get("postedOn"))),
                         raw=item,
                     )
+                )
+            if items and skipped == len(items):
+                # An entire page of entries with nothing but a bare identifier is the
+                # platform having structurally changed its response shape, not a few
+                # individually-withdrawn postings — fail the source loudly (and it will
+                # show up in source_health), never silently loop forever or return an
+                # empty page as if the tenant had no jobs at all.
+                raise SchemaError(
+                    f"Workday listing page at offset {offset} contains only malformed "
+                    f"(title/externalPath-less) postings"
                 )
             offset += len(items)
             if total is None:
