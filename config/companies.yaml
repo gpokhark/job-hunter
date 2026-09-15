@@ -1472,3 +1472,27 @@ companies:
       id_attribute: data-job-id
       page_number_parameter: p
       page_size: 15
+  - key: torc_robotics
+    company: Torc Robotics
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # job-boards.greenhouse.io/torcrobotics/jobs/<id> is itself a standard Greenhouse
+      # job-boards host, so no front-end/backend split to chase here — same shape as the
+      # anthropic entry above. Greenhouse's public Job Board API mirrors it exactly,
+      # zero-auth, at boards-api.greenhouse.io/v1/boards/torcrobotics (52 jobs).
+      # ?content=true inlines each job's full (double-HTML-encoded, unescaped centrally
+      # by greenhouse.py) description in the one list response, so no per-job detail
+      # fetch is needed. Sample job 8784018002 ("Senior System Test Engineer -
+      # Simulation", Remote - US; Blacksburg, VA; Ann Arbor, MI) confirmed present with
+      # matching title/location/first_published date via a direct API fetch.
+      list_url: https://boards-api.greenhouse.io/v1/boards/torcrobotics/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published

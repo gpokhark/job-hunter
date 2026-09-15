@@ -202,7 +202,7 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (63, `config/companies.yaml`)
+### 5.2 Currently configured companies (64, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
@@ -276,9 +276,10 @@ that's a cost paid once per company, not per search.
 | uber | Uber | oracle_hcm | Yes (`PostedDate`) | httpx only — jobs.uber.com is a third-party recruitment-marketing CDN front end; its real Apply link (found by rendering the sample job once) points at a public unauthenticated Oracle Fusion Recruiting Cloud tenant (`iaziqy.fa.ocs.oraclecloud.com`, site UberCareers), same platform as ford/denso/subaru (546 jobs, 200/page cap, not date-sorted) |
 | isuzu | Isuzu Commercial Truck of America | paycom | Yes (JSON-LD `googleJobJson.datePosted`) | httpx only — a new platform family, Paycom (§5.19); a short-lived anonymous JWT embedded in the plain career-page HTML is replayed as a Bearer token on a public search API, same "public frontend key" shape as bosch/csod (19 jobs) |
 | toro | The Toro Company | html_paginated | Yes (JobPosting JSON-LD `datePosted`, non-zero-padded) | httpx + selectolax — a genuinely plain, unprotected Radancy TalentBrew site (unlike GM/Stellantis's TalentBrew fronts, which hid a different real backend) covering multiple in-house brands in one listing; ~128 jobs across 9 pages; JSON-LD's malformed "2026-8-19" date format fixed centrally in `normalizer.py` (§5.5) |
+| torc_robotics | Torc Robotics | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io/torcrobotics is already Greenhouse's own public host, no front end to see through; same shape as anthropic/scout_motors/may_mobility (52 jobs) |
 
 Adapter mix: workday ×16, successfactors_rmk ×6, successfactors_rmk_v2 ×2, lever ×3, ashby ×3,
-stealth_html ×2, oracle_hcm ×4, greenhouse ×6, eightfold ×3, html_paginated ×4, unsupported ×3,
+stealth_html ×2, oracle_hcm ×4, greenhouse ×7, eightfold ×3, html_paginated ×4, unsupported ×3,
 1 each of smartrecruiters/paycom/phenom/html_multi_index/apple/adp_recruiting/bosch/zf/csod/
 icims_attract/dayforce.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
