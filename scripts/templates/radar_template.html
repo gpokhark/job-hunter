@@ -355,8 +355,6 @@
     white-space: nowrap;
   }
 
-  .tag-exceptional { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
-  .tag-strong { background: var(--tier-strong-soft); color: var(--tier-strong); }
   .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
@@ -402,6 +400,14 @@
 
   .job-company {
     font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .job-meta {
+    font-size: 12px;
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -454,20 +460,7 @@
     padding-top: 4px;
   }
 
-  .loc {
-    font-size: 12.5px;
-    color: var(--muted);
-    margin: 0;
-  }
-
   .sponsor-note {
-    font-size: 12.5px;
-    color: var(--muted);
-    margin: 2px 0 0;
-    font-style: italic;
-  }
-
-  .salary-note {
     font-size: 12.5px;
     color: var(--muted);
     margin: 2px 0 0;

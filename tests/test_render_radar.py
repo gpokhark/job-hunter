@@ -107,8 +107,13 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
     html = output_path.read_text()
     assert "Exceptional Role" in html
     assert "Weak Role" in html  # below-50 candidates are listed in their own section
-    assert 'tag-exceptional">90+' in html
-    assert 'tag-strong">80+' in html
+    # No separate 90+/80+ text tag — the score number's color (via the row's tier-*
+    # class) is the only tier signal now; a review-tier (50-74) row never gets a tier
+    # color at all, regardless of its exact score.
+    assert 'tier-exceptional"' in html
+    assert 'tier-strong"' in html
+    assert "90+" not in html
+    assert "80+" not in html
 
 
 def test_never_reviewed_candidate_excluded_from_scored_groups_but_listed_separately(tmp_path):
@@ -302,11 +307,12 @@ def test_sponsorship_tags_and_never_excludes_a_job(tmp_path):
     assert 'tag-sponsor' not in html[max(0, predates_idx - 400) : predates_idx]
 
 
-def test_salary_note_shown_only_when_available_and_never_excludes_a_job(tmp_path):
-    """Same tag-not-filter requirement as sponsorship: salary evidence never changes
-    inclusion, and the note is only rendered on a row that actually has evidence — no
-    "not stated" placeholder for the rest, mirroring sponsorship's "unmentioned carries
-    no tag" reasoning."""
+def test_job_meta_shows_location_and_salary_in_the_always_visible_summary(tmp_path):
+    """Location and salary must be visible without expanding the row — they render as
+    one job-meta line inside the always-visible <summary>, not hidden inside the
+    click-to-expand detail. Salary is still never a filter: it never changes inclusion,
+    and a row with no salary_evidence just shows location alone (no placeholder),
+    mirroring sponsorship's "unmentioned carries no tag" reasoning."""
     now = datetime(2026, 8, 31, tzinfo=UTC)
     search_path = tmp_path / "search.json"
     search_path.write_text(
@@ -347,8 +353,13 @@ def test_salary_note_shown_only_when_available_and_never_excludes_a_job(tmp_path
     html = output_path.read_text()
     stated_idx = html.index("Salary Stated Role")
     no_salary_idx = html.index("No Salary Role")
-    assert 'salary-note">Salary: $76,100.00 to $114,300.00' in html[stated_idx : stated_idx + 2000]
-    assert "salary-note" not in html[no_salary_idx : no_salary_idx + 2000]
+    # Both the location and the salary line sit in the <summary> — before the
+    # click-to-expand <div class="row-detail"> even starts, not inside it.
+    stated_summary_end = html.index("</summary>", stated_idx)
+    no_salary_summary_end = html.index("</summary>", no_salary_idx)
+    assert 'job-meta">Detroit, MI · $76,100.00 to $114,300.00' in html[stated_idx:stated_summary_end]
+    assert 'job-meta">Detroit, MI<' in html[no_salary_idx:no_salary_summary_end]
+    assert "$76,100.00" not in html[no_salary_idx:no_salary_summary_end]
 
 
 def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):

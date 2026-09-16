@@ -2,8 +2,9 @@
 """Render a `job-hunter search` output (the default profile-driven run, or a
 --keyword-scoped one) plus `data/assessments.json`'s verdicts into a single-page HTML
 report — grouped and tagged exactly as the job-hunter skill's step 9 describes: Strong
-matches (score >= 75) and For review (score 50-74) as two separate groups, [90+]/[80+]
-tags within Strong, and a [New] tag on anything posted within the last --new-days
+matches (score >= 75) and For review (score 50-74) as two separate groups (the score
+number itself is colored within Strong — 90+ and 80+ get no separate tag, color already
+carries that distinction), and a [New] tag on anything posted within the last --new-days
 (default 10) days. A job with no discoverable posted_at at all falls back to first_seen_at
 (when job-hunter's own collector first observed it) for the same [New] tag, display-only and
 using a separate window (settings.yaml's search.undated_new_days, default 15) — and gets a
@@ -97,14 +98,6 @@ def _tier(score: int) -> str:
     return "plain"
 
 
-def _tier_tag(score: int) -> str:
-    if score >= 90:
-        return '<span class="tag tag-exceptional">90+</span>'
-    if score >= 80:
-        return '<span class="tag tag-strong">80+</span>'
-    return ""
-
-
 def _sponsorship_tag(status: str | None) -> str:
     if status == "not_available":
         return '<span class="tag tag-sponsor-no">No Sponsorship</span>'
@@ -139,9 +132,19 @@ def _filter_data_attrs(*, sponsorship: str | None, arrangement: str | None, is_n
     )
 
 
-def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
-    tier = _tier(row["score"]) if show_tier_tag else "plain"
-    tags = _tier_tag(row["score"]) if show_tier_tag else ""
+def _job_meta_line(location: str | None, salary_evidence: str | None) -> str:
+    """Location and salary, shown directly in the always-visible summary row rather
+    than only inside the click-to-expand detail — a report reader shouldn't have to
+    open every single row just to see where a job is or what it pays. Joined into one
+    line (not two separate tags) since both are free-text and can run long; `·`-joined
+    and left to the same single-line ellipsis truncation as job-title/job-company
+    rather than wrapping, so every row keeps a consistent height."""
+    return " · ".join(part for part in (location, salary_evidence) if part)
+
+
+def _row_html(row: dict[str, Any], *, show_tier_color: bool) -> str:
+    tier = _tier(row["score"]) if show_tier_color else "plain"
+    tags = ""
     if row["new"]:
         tags += '<span class="tag tag-new">New</span>'
     if row.get("long_standing"):
@@ -160,11 +163,8 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         if row.get("sponsorship_evidence")
         else ""
     )
-    salary_note = (
-        f'<p class="salary-note">Salary: {_e(row["salary_evidence"])}</p>'
-        if row.get("salary_evidence")
-        else ""
-    )
+    meta_line = _job_meta_line(row.get("location"), row.get("salary_evidence"))
+    job_meta = f'<span class="job-meta">{_e(meta_line)}</span>' if meta_line else ""
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
           data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
@@ -181,6 +181,7 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         <span class="job">
           <span class="job-title">{_e(row["title"])}</span>
           <span class="job-company">{_e(row["company"])}</span>
+          {job_meta}
         </span>
         <span class="job-date">{date_display}</span>
         {feedback_buttons}
@@ -196,9 +197,7 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         </div>
         <div class="detail-meta">
           <div>
-            <p class="loc">{_e(row.get("location"))}</p>
             {sponsorship_note}
-            {salary_note}
           </div>
           <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </div>
@@ -206,10 +205,10 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
     </details>'''
 
 
-def _rows_html(rows: list[dict[str, Any]], *, show_tier_tag: bool, empty_message: str) -> str:
+def _rows_html(rows: list[dict[str, Any]], *, show_tier_color: bool, empty_message: str) -> str:
     if not rows:
         return f'<p class="empty-state">{_e(empty_message)}</p>'
-    return "".join(_row_html(row, show_tier_tag=show_tier_tag) for row in rows)
+    return "".join(_row_html(row, show_tier_color=show_tier_color) for row in rows)
 
 
 def _never_reviewed_row_html(
@@ -412,16 +411,16 @@ def build(
         .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
         .replace(
             "__STRONG_ROWS__",
-            _rows_html(strong, show_tier_tag=True, empty_message="No candidates scored 75 or above for this search."),
+            _rows_html(strong, show_tier_color=True, empty_message="No candidates scored 75 or above for this search."),
         )
         .replace(
             "__REVIEW_ROWS__",
-            _rows_html(review, show_tier_tag=False, empty_message="No candidates scored 50-74 for this search."),
+            _rows_html(review, show_tier_color=False, empty_message="No candidates scored 50-74 for this search."),
         )
         .replace(
             "__BELOW_50_ROWS__",
             _rows_html(
-                below_50_rows, show_tier_tag=False, empty_message="No candidates scored below 50 for this search."
+                below_50_rows, show_tier_color=False, empty_message="No candidates scored below 50 for this search."
             ),
         )
         .replace(
