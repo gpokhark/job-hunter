@@ -81,7 +81,7 @@ _JOB_COLUMNS = (
     "us_eligible", "location_confidence", "location_evidence",
     "visa_sponsorship", "sponsorship_evidence", "department",
     "employment_type", "posted_at", "description", "salary_min",
-    "salary_max", "salary_currency", "content_hash", "first_seen_at",
+    "salary_max", "salary_currency", "salary_evidence", "content_hash", "first_seen_at",
     "last_seen_at",
 )
 

@@ -89,6 +89,14 @@ def parser() -> argparse.ArgumentParser:
             "successfully re-fetched since visa_sponsorship was added"
         ),
     )
+    sub.add_parser(
+        "reevaluate-salary",
+        help=(
+            "re-run salary detection against every stored job's existing description "
+            "(no network) — use after salary.py's pattern changes, or to backfill jobs "
+            "collected before salary_evidence existed"
+        ),
+    )
     resolve = sub.add_parser(
         "resolve-search",
         help=(
@@ -285,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
             with Storage(settings.database_path) as storage:
                 changed = storage.reevaluate_sponsorship()
             print(f"Re-evaluated visa sponsorship for every stored job; {changed} changed.")
+            return 0
+        if args.command == "reevaluate-salary":
+            with Storage(settings.database_path) as storage:
+                changed = storage.reevaluate_salary()
+            print(f"Re-evaluated salary for every stored job; {changed} changed.")
             return 0
         if args.command == "resolve-search":
             resolved = resolve_search_path(search=args.search, keyword=args.keyword)

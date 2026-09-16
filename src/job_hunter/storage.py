@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth
+from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
 
 
@@ -39,7 +40,8 @@ class Storage:
                 us_eligible INTEGER NOT NULL, location_confidence TEXT, location_evidence TEXT,
                 visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned', sponsorship_evidence TEXT,
                 department TEXT, employment_type TEXT, posted_at TEXT, description TEXT,
-                salary_min REAL, salary_max REAL, salary_currency TEXT, content_hash TEXT,
+                salary_min REAL, salary_max REAL, salary_currency TEXT, salary_evidence TEXT,
+                content_hash TEXT,
                 first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active', missing_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(source_key, job_id)
@@ -86,6 +88,8 @@ class Storage:
             )
         if "sponsorship_evidence" not in existing:
             self.connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
+        if "salary_evidence" not in existing:
+            self.connection.execute("ALTER TABLE jobs ADD COLUMN salary_evidence TEXT")
 
     def begin_run(self, run_id: str, started_at: datetime) -> None:
         self.connection.execute(
@@ -156,6 +160,7 @@ class Storage:
             "salary_min": job.salary_min,
             "salary_max": job.salary_max,
             "salary_currency": job.salary_currency,
+            "salary_evidence": job.salary_evidence,
             "content_hash": job.content_hash,
             "first_seen_at": job.first_seen_at.isoformat(),
             "last_seen_at": job.last_seen_at.isoformat(),
@@ -197,6 +202,36 @@ class Storage:
                     "UPDATE jobs SET visa_sponsorship=?, sponsorship_evidence=? "
                     "WHERE source_key=? AND job_id=?",
                     (decision.status.value, decision.evidence, row["source_key"], row["job_id"]),
+                )
+                changed += 1
+        self.connection.commit()
+        return changed
+
+    def reevaluate_salary(self) -> int:
+        """Re-run salary.evaluate_salary against every stored job's *existing*
+        description — same rationale and shape as reevaluate_sponsorship above: a job's
+        salary_evidence column is only ever set by upsert_job (on a fresh successful
+        collection), so this is what backfills every already-stored job collected
+        before salary_evidence existed, or picks up a salary.py pattern improvement,
+        with no network involved."""
+        rows = self.connection.execute(
+            "SELECT source_key, job_id, description, salary_evidence FROM jobs"
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            decision = evaluate_salary(row["description"])
+            if decision.evidence != row["salary_evidence"]:
+                self.connection.execute(
+                    "UPDATE jobs SET salary_min=?, salary_max=?, salary_currency=?, salary_evidence=? "
+                    "WHERE source_key=? AND job_id=?",
+                    (
+                        decision.min_value,
+                        decision.max_value,
+                        "USD" if decision.evidence else None,
+                        decision.evidence,
+                        row["source_key"],
+                        row["job_id"],
+                    ),
                 )
                 changed += 1
         self.connection.commit()

@@ -127,6 +127,7 @@ class Job(JobSummary):
     salary_min: float | None = None
     salary_max: float | None = None
     salary_currency: str | None = None
+    salary_evidence: str | None = None
     first_seen_at: datetime = Field(default_factory=utcnow)
     last_seen_at: datetime = Field(default_factory=utcnow)
     content_hash: str | None = None

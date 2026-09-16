@@ -23,6 +23,7 @@ def _candidate(
     location_raw="Detroit, MI",
     visa_sponsorship="unmentioned",
     sponsorship_evidence=None,
+    salary_evidence=None,
     work_arrangement="unknown",
     company="Acme",
     title="Engineer",
@@ -36,6 +37,7 @@ def _candidate(
         "location_raw": location_raw,
         "visa_sponsorship": visa_sponsorship,
         "sponsorship_evidence": sponsorship_evidence,
+        "salary_evidence": salary_evidence,
         "work_arrangement": work_arrangement,
         "company": company,
         "title": title,
@@ -298,6 +300,55 @@ def test_sponsorship_tags_and_never_excludes_a_job(tmp_path):
     assert 'tag-sponsor-yes">Sponsorship OK' in html[max(0, yes_idx - 400) : yes_idx]
     assert 'tag-sponsor' not in html[max(0, unmentioned_idx - 400) : unmentioned_idx]
     assert 'tag-sponsor' not in html[max(0, predates_idx - 400) : predates_idx]
+
+
+def test_salary_note_shown_only_when_available_and_never_excludes_a_job(tmp_path):
+    """Same tag-not-filter requirement as sponsorship: salary evidence never changes
+    inclusion, and the note is only rendered on a row that actually has evidence — no
+    "not stated" placeholder for the rest, mirroring sponsorship's "unmentioned carries
+    no tag" reasoning."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate(
+                        "x", "1", salary_evidence="$76,100.00 to $114,300.00",
+                        title="Salary Stated Role",
+                    ),
+                    _candidate("x", "2", salary_evidence=None, title="No Salary Role"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 80, title="Salary Stated Role"),
+                _assessment("x", "2", 80, title="No Salary Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=now,
+    )
+    assert stats["strong"] == 2
+
+    html = output_path.read_text()
+    stated_idx = html.index("Salary Stated Role")
+    no_salary_idx = html.index("No Salary Role")
+    assert 'salary-note">Salary: $76,100.00 to $114,300.00' in html[stated_idx : stated_idx + 2000]
+    assert "salary-note" not in html[no_salary_idx : no_salary_idx + 2000]
 
 
 def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):

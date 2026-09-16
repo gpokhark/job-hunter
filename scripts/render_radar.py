@@ -160,6 +160,11 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         if row.get("sponsorship_evidence")
         else ""
     )
+    salary_note = (
+        f'<p class="salary-note">Salary: {_e(row["salary_evidence"])}</p>'
+        if row.get("salary_evidence")
+        else ""
+    )
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
           data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
@@ -193,6 +198,7 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
           <div>
             <p class="loc">{_e(row.get("location"))}</p>
             {sponsorship_note}
+            {salary_note}
           </div>
           <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </div>
@@ -355,6 +361,7 @@ def build(
                 "gaps": assessment["gaps"],
                 "visa_sponsorship": candidate.get("visa_sponsorship"),
                 "sponsorship_evidence": candidate.get("sponsorship_evidence"),
+                "salary_evidence": candidate.get("salary_evidence"),
                 "work_arrangement": candidate.get("work_arrangement"),
             }
         )

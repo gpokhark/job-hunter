@@ -151,6 +151,34 @@ def test_reevaluate_sponsorship_backfills_from_stored_description(tmp_path):
         assert storage.reevaluate_sponsorship() == 0
 
 
+def test_reevaluate_salary_backfills_from_stored_description(tmp_path):
+    """Same backfill gap as sponsorship above, for salary_evidence: a row's
+    salary_min/max/currency/evidence are only ever set by upsert_job, so a job whose
+    description already contains a real salary range but predates salary.py (or a
+    pattern fix) needs reevaluate_salary to pick it up from the stored description
+    alone, no re-fetch required."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(description="A role with no salary mention at all."))
+        storage.connection.execute(
+            "UPDATE jobs SET description=? WHERE source_key='acme' AND job_id='42'",
+            ("The salary range for this role is $76,100.00 to $114,300.00.",),
+        )
+        storage.connection.commit()
+        assert storage.get_job("acme", "42")["salary_evidence"] is None
+
+        changed = storage.reevaluate_salary()
+
+        assert changed == 1
+        row = storage.get_job("acme", "42")
+        assert row["salary_evidence"] == "$76,100.00 to $114,300.00"
+        assert row["salary_min"] == 76100.0
+        assert row["salary_max"] == 114300.0
+        assert row["salary_currency"] == "USD"
+
+        # Idempotent: running it again with nothing changed reports zero.
+        assert storage.reevaluate_salary() == 0
+
+
 def test_find_stale_closed_jobs_excludes_active_and_recently_closed(tmp_path):
     now = datetime.now(UTC)
     with Storage(tmp_path / "jobs.sqlite3") as storage:

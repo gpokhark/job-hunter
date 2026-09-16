@@ -221,6 +221,31 @@ before most commands will find a profile (falls back to the example file otherwi
   positive pattern. Defaults to `unmentioned` whenever nothing matches — never guess, exactly
   `location.py`'s philosophy for ambiguous cases.
 
+- **`salary.py`** — `evaluate_salary`, the same evidence-based, never-a-filter pattern as
+  `sponsorship.py`, for an explicit pay figure (`Job.salary_min`/`salary_max`/`salary_currency`,
+  plus a human-readable `salary_evidence` string shown on `render_radar.py`'s output only when
+  present — no placeholder for the rest, same reasoning as sponsorship's "unmentioned carries no
+  tag"). Unlike sponsorship's curated phrase list, one regex anchored on a real two-number range
+  (`$X` then a `-`/`–`/`—`/`to` then a second number, `$` optional on that second number only) is
+  enough — validated directly against live GM, Honda, Ford, and Torc Robotics postings, then
+  against the full stored job pool before shipping (~9,500 of ~30,000 jobs matched with no false
+  positive found beyond the one pattern below). A bare single dollar figure is deliberately never
+  matched on its own — confirmed live as a real false-positive risk the same way bare `"sponsor"`
+  was for sponsorship.py: Ford's own benefits boilerplate mentions "Life Insurance of $3,000" and
+  "Accidental Death and Dismemberment of $1,500", neither a salary; every real mention found
+  (including Ford's own compensation line, `"$72,480-121,440"` — note the second number carries no
+  `$` at all) was already two-sided, so requiring a second number costs no real recall. One more
+  live-confirmed trap: dozens of Caterpillar/Nissan Workday postings for hourly/union roles render
+  an unfilled compensation-template field as a literal `"$0.00 - $0.00"` — not a real range, and
+  explicitly excluded rather than surfaced as one. Also unescapes HTML entities before matching
+  (`html.unescape`, on top of the usual tag-stripping) — confirmed live on Torc Robotics' Greenhouse
+  postings, whose pay range renders as two `<span>` tags separated by a third holding a literal
+  `"&mdash;"`, not a real "—" character, invisible to the separator alternatives otherwise.
+  `storage.py`'s `reevaluate_salary()` (also `job-hunter reevaluate-salary`) mirrors
+  `reevaluate_sponsorship()`: backfills every already-stored job's salary fields from its existing
+  description, no network involved — needed the same way, since `upsert_job` only ever sets these
+  columns on a fresh successful collection.
+
 - **`prefilter.py`** — `passes_prefilter`'s positive-term gate (the profile's
   `target_title_terms`/`target_domains`, or a `keywords` override — see below) matches only
   against `job.title` + `job.department`, never the free-text `description`. This was a

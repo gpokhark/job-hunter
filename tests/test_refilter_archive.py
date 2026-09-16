@@ -69,6 +69,35 @@ def test_refilter_recomputes_recency_against_now(monkeypatch, tmp_path):
     assert result["summary"]["stale_excluded"] == 1
 
 
+def test_refilter_carries_salary_and_sponsorship_evidence_through(monkeypatch, tmp_path):
+    """Regression: _JOB_COLUMNS is a hand-maintained allowlist, not SELECT * — a column
+    added to the jobs table (salary_evidence) but never added here would silently rebuild
+    every candidate with that field defaulted to None even though the real value is
+    sitting right there in SQLite, exactly what happened before this test existed."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            make_job(
+                title="Engineer",
+                salary_min=100000.0,
+                salary_max=150000.0,
+                salary_currency="USD",
+                salary_evidence="$100,000 - $150,000",
+                visa_sponsorship=SponsorshipStatus.NOT_AVAILABLE,
+                sponsorship_evidence="does not sponsor visas",
+            )
+        )
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile(target_domains=["engineer"]))
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings())
+
+    data = _archive([{"source_key": "apple", "job_id": "1"}])
+    result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
+    candidate = result["candidates"][0]
+    assert candidate["salary_evidence"] == "$100,000 - $150,000"
+    assert candidate["sponsorship_evidence"] == "does not sponsor visas"
+
+
 def test_refilter_does_not_mutate_input(monkeypatch, tmp_path):
     db_path = tmp_path / "jobs.sqlite3"
     with Storage(db_path) as storage:

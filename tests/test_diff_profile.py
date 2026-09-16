@@ -300,6 +300,30 @@ def test_row_to_job_maps_canonical_url_to_url(tmp_path):
     assert job.url == "https://example.com/real-job"
 
 
+def test_row_to_job_carries_salary_and_sponsorship_evidence(tmp_path):
+    """Regression: _JOB_COLUMNS is a hand-maintained allowlist, not SELECT * — a column
+    added to the jobs table (salary_evidence) but never added here would silently
+    rebuild every Job with that field defaulted to None even though the real value is
+    sitting right there in SQLite."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            make_job(
+                salary_min=100000.0,
+                salary_max=150000.0,
+                salary_currency="USD",
+                salary_evidence="$100,000 - $150,000",
+                visa_sponsorship=SponsorshipStatus.NOT_AVAILABLE,
+                sponsorship_evidence="does not sponsor visas",
+            )
+        )
+
+    rows = _read_only_jobs(db_path)
+    job = _row_to_job(rows[0])
+    assert job.salary_evidence == "$100,000 - $150,000"
+    assert job.sponsorship_evidence == "does not sponsor visas"
+
+
 # --- compute_diff ---
 
 def test_compute_diff_classifies_gained_lost_retained_still_excluded(tmp_path):

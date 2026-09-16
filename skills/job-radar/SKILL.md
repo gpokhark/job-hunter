@@ -64,7 +64,8 @@ from `data/assessments.json` as it stands right now.
    unrelated to `is_new`/`is_changed`, which only mean "not previously seen by this tool," not
    "recently posted" — do not conflate them. Include strengths, gaps, first-party URL, and posting
    date for every listed job. Mention visa-sponsorship stance when explicitly stated
-   (`available`/`not_available`) — never invent one for a posting that doesn't mention it.
+   (`available`/`not_available`) and salary range when explicitly stated (`salary_evidence`) —
+   never invent either for a posting that doesn't mention it.
 6. Render the standalone HTML report:
    ```bash
    uv run python scripts/render_radar.py [--keyword "ADAS,Robotics,Product Technical Leader"]

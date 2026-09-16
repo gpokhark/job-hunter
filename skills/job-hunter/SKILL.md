@@ -61,7 +61,8 @@ into.)
    tag any job **[New]** if `posted_at` falls within the last 10 days — a job with no `posted_at`
    cannot be tagged `[New]`. This is unrelated to `is_new`/`is_changed` (collection novelty, not
    posting recency) — do not conflate them. Include strengths, gaps, first-party URL, posting
-   date, and sponsorship stance (only when explicitly stated) for every listed job.
+   date, sponsorship stance, and salary range (each only when explicitly stated) for every listed
+   job.
 8. **Render** (same command `job-radar` documents), with the same keyword from step 4:
    ```bash
    uv run python scripts/render_radar.py [--keyword "ADAS,Robotics,Product Technical Leader"]
