@@ -17,6 +17,8 @@
     --tier-exceptional-soft: #E4F5EC;
     --tier-strong: #B4790F;
     --tier-strong-soft: #FBF0DC;
+    --tier-promising: #A6821E;
+    --tier-fair: #6C8791;
     --danger: #C1443A;
     --danger-soft: #FBEAE8;
     --arrangement-remote: #2D6FB0;
@@ -25,6 +27,8 @@
     --arrangement-hybrid-soft: #EFE8F7;
     --muted: #6B7480;
     --shadow: 0 1px 2px rgba(20, 25, 31, 0.06);
+    --atmosphere-1: rgba(12, 127, 145, 0.10);
+    --atmosphere-2: rgba(180, 121, 15, 0.08);
   }
 
   @media (prefers-color-scheme: dark) {
@@ -40,6 +44,8 @@
       --tier-exceptional-soft: #163829;
       --tier-strong: #E3AA45;
       --tier-strong-soft: #3A2E14;
+      --tier-promising: #CBA050;
+      --tier-fair: #7C9CA6;
       --danger: #E2695E;
       --danger-soft: #3A1F1C;
       --arrangement-remote: #6FB1EE;
@@ -48,6 +54,8 @@
       --arrangement-hybrid-soft: #2A2038;
       --muted: #8A95A0;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --atmosphere-1: rgba(63, 193, 212, 0.14);
+      --atmosphere-2: rgba(227, 170, 69, 0.10);
     }
   }
 
@@ -63,6 +71,8 @@
     --tier-exceptional-soft: #163829;
     --tier-strong: #E3AA45;
     --tier-strong-soft: #3A2E14;
+    --tier-promising: #CBA050;
+    --tier-fair: #7C9CA6;
     --danger: #E2695E;
     --danger-soft: #3A1F1C;
     --arrangement-remote: #6FB1EE;
@@ -71,12 +81,23 @@
     --arrangement-hybrid-soft: #2A2038;
     --muted: #8A95A0;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --atmosphere-1: rgba(63, 193, 212, 0.14);
+    --atmosphere-2: rgba(227, 170, 69, 0.10);
   }
 
   * { box-sizing: border-box; }
 
   body {
-    background: var(--paper);
+    /* Atmosphere, not decoration for its own sake: two soft color washes anchored at
+       the top of the page (behind the masthead, where there's nothing but whitespace
+       to carry them) fading out well before the row list begins, so the dense,
+       repeated card list below stays on a flat, scannable --surface with zero added
+       read cost. */
+    background:
+      radial-gradient(1100px 620px at 10% -12%, var(--atmosphere-1), transparent 60%),
+      radial-gradient(900px 560px at 100% -4%, var(--atmosphere-2), transparent 55%),
+      var(--paper);
+    background-repeat: no-repeat;
     color: var(--ink);
     font-family: "IBM Plex Sans", system-ui, sans-serif;
     line-height: 1.5;
@@ -90,9 +111,25 @@
   }
 
   .masthead {
+    position: relative;
     border-bottom: 1px solid var(--line);
     padding-bottom: 32px;
     margin-bottom: 40px;
+    overflow: hidden;
+  }
+
+  /* A fine diagonal hairline field behind the hero only — a schematic/blueprint
+     texture that echoes the report's own monospace-data language (the .stats grid,
+     the toolbar chips) rather than an unrelated decorative motif. */
+  .masthead::before {
+    content: "";
+    position: absolute;
+    inset: -20px;
+    background-image: repeating-linear-gradient(135deg, var(--line) 0, var(--line) 1px, transparent 1px, transparent 22px);
+    mask-image: linear-gradient(to bottom, black, transparent 85%);
+    -webkit-mask-image: linear-gradient(to bottom, black, transparent 85%);
+    opacity: 0.5;
+    z-index: -1;
   }
 
   .eyebrow {
@@ -152,6 +189,28 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--muted);
+  }
+
+  /* One deliberate, orchestrated entrance for the page's single most-seen moment (the
+     masthead, visible every time this report is opened or regenerated) rather than
+     scattered micro-animations throughout — the row list below gets none, since
+     animating hundreds of re-rendered cards on every reopen would read as slow, not
+     delightful. */
+  @media (prefers-reduced-motion: no-preference) {
+    .eyebrow, .masthead h1, .subhead, .stats, .radar-toolbar {
+      opacity: 0;
+      animation: reveal-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    .eyebrow { animation-delay: 0.03s; }
+    .masthead h1 { animation-delay: 0.1s; }
+    .subhead { animation-delay: 0.2s; }
+    .stats { animation-delay: 0.3s; }
+    .radar-toolbar { animation-delay: 0.4s; }
+  }
+
+  @keyframes reveal-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   /* --- Quick-glance filter toolbar (client-side only; nothing here changes what was
@@ -314,7 +373,15 @@
     list-style: none;
     cursor: pointer;
     display: grid;
-    grid-template-columns: 44px auto 1fr auto auto;
+    /* Exactly 4 tracks: score | job | date | feedback. Status tags (sponsorship,
+       arrangement, new/long-standing) used to be their own auto-width column here —
+       but each <summary> is its own independent grid, so a variable number of tags
+       per row (0 on a plain onsite/unmentioned job, up to 4 on a remote+sponsored+new
+       one) meant every row's job/title column started at a different x position down
+       the whole list. Tags now render inside .job itself (see .job-title's sibling
+       .tags below), so this grid always has the same 4 fixed tracks regardless of a
+       given row's tags. */
+    grid-template-columns: 44px 1fr auto auto;
     align-items: center;
     gap: 14px;
     padding: 12px 16px;
@@ -336,13 +403,27 @@
     color: var(--ink-soft);
   }
 
+  /* A five-step gradient across the whole 50-100 range (see render_radar.py's _tier)
+     rather than a hard cutoff only at 80/90 — a 76 and a 58 both matter, just less
+     than an 88, and the color should say so at a glance without opening either row. */
   .tier-exceptional .score { color: var(--tier-exceptional); }
   .tier-strong .score { color: var(--tier-strong); }
+  .tier-promising .score { color: var(--tier-promising); }
+  .tier-moderate .score { color: var(--accent); }
+  .tier-fair .score { color: var(--tier-fair); }
+
+  .score-nr {
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
 
   .tags {
     display: flex;
-    gap: 6px;
-    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 5px;
+    max-width: 220px;
   }
 
   .tag {
@@ -390,12 +471,24 @@
     min-width: 0;
   }
 
+  .job-title-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
   .job-title {
     font-weight: 600;
     font-size: 15px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
+  }
+
+  .job-title-line .tag-new {
+    flex: none;
   }
 
   .job-company {
@@ -414,11 +507,30 @@
     white-space: nowrap;
   }
 
+  /* Salary gets the report's own accent color instead of the surrounding muted
+     text — a deliberately different color from location right next to it, so a
+     glance down the list finds every row that states a real number without reading
+     any of them. */
+  .job-salary {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
   .job-date {
     font-family: "IBM Plex Mono", monospace;
     font-size: 12px;
     color: var(--muted);
     white-space: nowrap;
+  }
+
+  /* Date stacked directly above its own row's feedback buttons instead of sitting
+     side by side with them — keeps the row from needing extra horizontal width just
+     to fit both, and both are "about this specific posting" info anyway. */
+  .row-end {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
   }
 
   .row-detail {
@@ -450,13 +562,12 @@
   .detail-col li { margin-bottom: 8px; }
   .detail-col li:last-child { margin-bottom: 0; }
 
+  /* Only ever holds the full sponsorship-evidence sentence now — the apply link and
+     feedback buttons moved to .row-end (always visible, no expanding required) for
+     every section, so this only renders at all when there's real evidence text to
+     show beyond the sponsorship tag already visible in .tags. */
   .detail-meta {
     grid-column: 1 / -1;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    flex-wrap: wrap;
-    gap: 8px;
     padding-top: 4px;
   }
 
@@ -497,17 +608,15 @@
     padding: 12px 16px;
   }
 
+  /* Same grid as summary (score | job | tags | row-end) — a candidate with no
+     assessment yet still reads as the same report, not a visually different
+     fallback; see .score-nr for the one real difference (an uncolored placeholder
+     instead of a real number). */
   .plain-row-top {
-    display: flex;
+    display: grid;
+    grid-template-columns: 44px 1fr auto auto;
     align-items: center;
     gap: 14px;
-    flex-wrap: wrap;
-  }
-
-  .plain-row .row-meta {
-    font-size: 12.5px;
-    color: var(--muted);
-    margin-top: 8px;
   }
 
   .plain-row.fb-tagged {
@@ -544,7 +653,8 @@
   }
 
   @media (max-width: 560px) {
-    summary { grid-template-columns: 36px auto 1fr auto; }
+    summary, .plain-row-top { grid-template-columns: 36px 1fr auto auto; }
+    .tags { max-width: 90px; }
     .job-date { display: none; }
     .row-detail { grid-template-columns: 1fr; padding-left: 16px; }
   }
@@ -755,6 +865,15 @@
   }
 
   feedback = loadPersisted();
+
+  // .apply-link now lives inside .row-end, which sits inside <summary> for every
+  // scored row (row-end is always visible, no expanding required) — without this, a
+  // click on the link would also toggle that row open/closed, since <summary> is
+  // itself a native details-toggle control. Only stopPropagation, never
+  // preventDefault: the link's own navigation must still happen.
+  document.querySelectorAll('details.row > summary .apply-link').forEach(function (link) {
+    link.addEventListener('click', function (evt) { evt.stopPropagation(); });
+  });
 
   document.querySelectorAll('.feedback-buttons').forEach(function (group) {
     var buttons = group.querySelectorAll('.fb-btn');

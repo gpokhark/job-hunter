@@ -479,7 +479,8 @@ before most commands will find a profile (falls back to the example file otherwi
   against whatever resume is on disk at that moment. `scripts/render_radar.py` is the read-time
   join between the two: given one archived search file plus the (global) assessments, it renders
   the grouped/tagged HTML report described in `job-radar/SKILL.md` — Strong (≥75), For-review
-  (50–74), and Below-50 sections, `[90+]`/`[80+]`/`[New]` tags — reusing
+  (50–74), and Below-50 sections, a five-step score-color gradient across the whole 50-100 range
+  (`render_radar.py`'s `_tier`) rather than a hard cutoff only at 80/90, plus a `[New]` tag — reusing
   `scripts/templates/radar_template.html`, to `data/radar/{slug}_{date}.html`. It is pure
   presentation: it never re-derives, adjusts, or overrides a score. Every candidate the model
   actually scored appears in one of the three sections, however low the score — only a candidate

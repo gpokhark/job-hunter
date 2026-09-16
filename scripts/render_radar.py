@@ -2,11 +2,13 @@
 """Render a `job-hunter search` output (the default profile-driven run, or a
 --keyword-scoped one) plus `data/assessments.json`'s verdicts into a single-page HTML
 report — grouped and tagged exactly as the job-hunter skill's step 9 describes: Strong
-matches (score >= 75) and For review (score 50-74) as two separate groups (the score
-number itself is colored within Strong — 90+ and 80+ get no separate tag, color already
-carries that distinction), and a [New] tag on anything posted within the last --new-days
-(default 10) days. A job with no discoverable posted_at at all falls back to first_seen_at
-(when job-hunter's own collector first observed it) for the same [New] tag, display-only and
+matches (score >= 75) and For review (score 50-74) as two separate groups. The score
+number itself carries a five-step color gradient across the whole 50-100 range (50s
+through 90s+) rather than a separate text tag — Strong and For review both get it, since
+the gradient is about the score's own value, not which group it landed in; below 50
+stays uncolored. A [New] tag on anything posted within the last --new-days
+(default 10) days. A job with no discoverable posted_at at all falls back to
+first_seen_at (when job-hunter's own collector first observed it) for the same [New] tag, display-only and
 using a separate window (settings.yaml's search.undated_new_days, default 15) — and gets a
 "Long-standing" tag instead once past search.undated_stale_days (default 45). Never a filter:
 every candidate the local model scored still appears in its normal section regardless of
@@ -14,8 +16,11 @@ either tag. A third group lists every candidate scored below 50 — every job th
 local model actually evaluated appears somewhere on the page. A fourth group, "Not LLM
 Reviewed", lists every candidate the review step hasn't gotten to at all (an LM Studio
 error skipped it, `--limit` capped the run, or it's a job newly surfaced by a refilter that
-hasn't been scored yet) — title/company/link/date/tags only, no score/matches/gaps since
-there's no verdict to show; feedback buttons still work on these rows.
+hasn't been scored yet) — same row layout as every other section (an "NR" placeholder
+sits where the score would go, uncolored, so the whole page reads as one consistent
+grid rather than a visually different fallback), title/company/location/salary/date/tags,
+just no score/matches/gaps since there's no verdict to show; feedback buttons still work
+on these rows.
 
 This is pure presentation: it never re-derives, adjusts, or overrides a score — every
 number here is exactly what's already in data/assessments.json.
@@ -91,10 +96,23 @@ def _undated_tags(
 
 
 def _tier(score: int) -> str:
+    """A five-step color gradient for every score from 50 up (50s/60s/70s/80s/90s+) —
+    below 50 stays "plain" (muted/uncolored), matching those rows' own already-lower
+    priority (state the count, don't list them individually, per the job-radar skill).
+    Below 50 was deliberately not given its own sub-gradient: those postings are
+    excluded from the chat-facing summary entirely, so a reader has no reason to be
+    comparing shades of "not it" the way they do across the 50-100 range that's
+    actually worth their attention."""
     if score >= 90:
         return "exceptional"
     if score >= 80:
         return "strong"
+    if score >= 70:
+        return "promising"
+    if score >= 60:
+        return "moderate"
+    if score >= 50:
+        return "fair"
     return "plain"
 
 
@@ -132,25 +150,39 @@ def _filter_data_attrs(*, sponsorship: str | None, arrangement: str | None, is_n
     )
 
 
-def _job_meta_line(location: str | None, salary_evidence: str | None) -> str:
+def _job_meta_html(location: str | None, salary_evidence: str | None) -> str:
     """Location and salary, shown directly in the always-visible summary row rather
     than only inside the click-to-expand detail — a report reader shouldn't have to
-    open every single row just to see where a job is or what it pays. Joined into one
-    line (not two separate tags) since both are free-text and can run long; `·`-joined
-    and left to the same single-line ellipsis truncation as job-title/job-company
-    rather than wrapping, so every row keeps a consistent height."""
-    return " · ".join(part for part in (location, salary_evidence) if part)
+    open every single row just to see where a job is or what it pays. `·`-joined onto
+    one line (not two separate tags) since both are free-text and can run long, left to
+    the same single-line ellipsis truncation as job-title/job-company rather than
+    wrapping, so every row keeps a consistent height. Salary gets its own accent color,
+    distinct from location's muted default — a reader scanning down the list should be
+    able to spot which rows even mention pay without having to read every word. Returns
+    ready-to-embed HTML (each piece escaped individually), not plain text — the caller
+    must not re-escape it."""
+    parts = []
+    if location:
+        parts.append(f'<span class="job-location">{_e(location)}</span>')
+    if salary_evidence:
+        parts.append(f'<span class="job-salary">{_e(salary_evidence)}</span>')
+    return " · ".join(parts)
 
 
-def _row_html(row: dict[str, Any], *, show_tier_color: bool) -> str:
-    tier = _tier(row["score"]) if show_tier_color else "plain"
-    tags = ""
-    if row["new"]:
-        tags += '<span class="tag tag-new">New</span>'
+def _row_html(row: dict[str, Any]) -> str:
+    tier = _tier(row["score"])
+    # "New" is the one signal worth interrupting the title for — it sits right before
+    # the title text itself (still inside .job, so the job column's own start position
+    # never moves), while the rest are secondary and sit in their own column to the
+    # right of the title instead, between it and the date/feedback stack. Neither
+    # placement reintroduces the original bug: a variable-width column only misaligns
+    # whatever comes *after* it, and nothing variable-width sits before .job any more.
+    new_badge = '<span class="tag tag-new">New</span>' if row["new"] else ""
+    other_tags = ""
     if row.get("long_standing"):
-        tags += '<span class="tag tag-long-standing">Long-standing</span>'
-    tags += _sponsorship_tag(row.get("visa_sponsorship"))
-    tags += _arrangement_tag(row.get("work_arrangement"))
+        other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _sponsorship_tag(row.get("visa_sponsorship"))
+    other_tags += _arrangement_tag(row.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
         sponsorship=row.get("visa_sponsorship"), arrangement=row.get("work_arrangement"),
         is_new=row["new"], is_long_standing=row.get("long_standing", False),
@@ -163,8 +195,14 @@ def _row_html(row: dict[str, Any], *, show_tier_color: bool) -> str:
         if row.get("sponsorship_evidence")
         else ""
     )
-    meta_line = _job_meta_line(row.get("location"), row.get("salary_evidence"))
-    job_meta = f'<span class="job-meta">{_e(meta_line)}</span>' if meta_line else ""
+    meta_html = _job_meta_html(row.get("location"), row.get("salary_evidence"))
+    job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
+    # Always emit .tags as its own grid child, even empty — summary's grid tracks are
+    # positional (auto-placement fills them in DOM order), so omitting this element
+    # entirely on a row with no secondary tags would shift .row-end into .tags' own
+    # track instead of its intended one, misaligning the date/feedback column exactly
+    # the way the title column used to be misaligned.
+    tags_col = f'<span class="tags">{other_tags}</span>'
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
           data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
@@ -177,14 +215,20 @@ def _row_html(row: dict[str, Any], *, show_tier_color: bool) -> str:
     <details class="row tier-{tier}" {filter_attrs}>
       <summary>
         <span class="score">{row["score"]}</span>
-        <span class="tags">{tags}</span>
         <span class="job">
-          <span class="job-title">{_e(row["title"])}</span>
+          <span class="job-title-line">
+            {new_badge}
+            <span class="job-title">{_e(row["title"])}</span>
+          </span>
           <span class="job-company">{_e(row["company"])}</span>
           {job_meta}
         </span>
-        <span class="job-date">{date_display}</span>
-        {feedback_buttons}
+        {tags_col}
+        <span class="row-end">
+          <span class="job-date">{date_display}</span>
+          {feedback_buttons}
+          <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
       </summary>
       <div class="row-detail">
         <div class="detail-col">
@@ -195,44 +239,46 @@ def _row_html(row: dict[str, Any], *, show_tier_color: bool) -> str:
           <h3>Gaps</h3>
           <ul>{gaps_html}</ul>
         </div>
-        <div class="detail-meta">
-          <div>
-            {sponsorship_note}
-          </div>
-          <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
-        </div>
+        {f'<div class="detail-meta">{sponsorship_note}</div>' if sponsorship_note else ""}
       </div>
     </details>'''
 
 
-def _rows_html(rows: list[dict[str, Any]], *, show_tier_color: bool, empty_message: str) -> str:
+def _rows_html(rows: list[dict[str, Any]], *, empty_message: str) -> str:
     if not rows:
         return f'<p class="empty-state">{_e(empty_message)}</p>'
-    return "".join(_row_html(row, show_tier_color=show_tier_color) for row in rows)
+    return "".join(_row_html(row) for row in rows)
 
 
 def _never_reviewed_row_html(
     candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
 ) -> str:
-    """A candidate with no assessment at all — no score, so no <details>/matches/gaps/tier
-    tag, just the same at-a-glance signal (link/date/[New]/sponsorship/arrangement tags) every
-    other report already shows, plus feedback buttons so it can still be tagged before review."""
+    """A candidate with no assessment at all — no matches/gaps to expand into, so this
+    stays a plain (non-expandable) row rather than a <details> with nothing to reveal —
+    but otherwise mirrors _row_html's layout exactly (an uncolored "NR" placeholder
+    where the score goes, the New badge before the title, other tags in their own
+    column, location/salary/date/feedback all shown the same way) so this section reads
+    as the same report, not a visually different fallback. The group's own heading and
+    note already say what "NR" means, so it isn't repeated on every row."""
     posted_at = candidate.get("posted_at")
     first_seen_at = candidate.get("first_seen_at")
     is_new, is_long_standing = _undated_tags(
         posted_at, first_seen_at, now=now, new_days=new_days,
         undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
     )
-    tags = '<span class="tag tag-new">New</span>' if is_new else ""
+    new_badge = '<span class="tag tag-new">New</span>' if is_new else ""
+    other_tags = ""
     if is_long_standing:
-        tags += '<span class="tag tag-long-standing">Long-standing</span>'
-    tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
-    tags += _arrangement_tag(candidate.get("work_arrangement"))
+        other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
+    other_tags += _arrangement_tag(candidate.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
         sponsorship=candidate.get("visa_sponsorship"), arrangement=candidate.get("work_arrangement"),
         is_new=is_new, is_long_standing=is_long_standing,
     )
     date_display = _fmt_date(posted_at) or _fmt_first_seen(first_seen_at) or "Date unknown"
+    meta_html = _job_meta_html(candidate.get("location_raw"), candidate.get("salary_evidence"))
+    job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
           data-company="{_attr(candidate.get("company"))}" data-title="{_attr(candidate.get("title"))}"
@@ -244,16 +290,22 @@ def _never_reviewed_row_html(
     return f'''
     <div class="plain-row" {filter_attrs}>
       <div class="plain-row-top">
-        <span class="tags">{tags}</span>
+        <span class="score score-nr" title="Not yet reviewed by the local model">NR</span>
         <span class="job">
-          <span class="job-title">{_e(candidate.get("title"))}</span>
+          <span class="job-title-line">
+            {new_badge}
+            <span class="job-title">{_e(candidate.get("title"))}</span>
+          </span>
           <span class="job-company">{_e(candidate.get("company"))}</span>
+          {job_meta}
         </span>
-        <span class="job-date">{date_display}</span>
-        <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        <span class="tags">{other_tags}</span>
+        <span class="row-end">
+          <span class="job-date">{date_display}</span>
+          {feedback_buttons}
+          <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
       </div>
-      <div class="row-meta">Not yet reviewed by the local model.</div>
-      {feedback_buttons}
     </div>'''
 
 
@@ -411,17 +463,15 @@ def build(
         .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
         .replace(
             "__STRONG_ROWS__",
-            _rows_html(strong, show_tier_color=True, empty_message="No candidates scored 75 or above for this search."),
+            _rows_html(strong, empty_message="No candidates scored 75 or above for this search."),
         )
         .replace(
             "__REVIEW_ROWS__",
-            _rows_html(review, show_tier_color=False, empty_message="No candidates scored 50-74 for this search."),
+            _rows_html(review, empty_message="No candidates scored 50-74 for this search."),
         )
         .replace(
             "__BELOW_50_ROWS__",
-            _rows_html(
-                below_50_rows, show_tier_color=False, empty_message="No candidates scored below 50 for this search."
-            ),
+            _rows_html(below_50_rows, empty_message="No candidates scored below 50 for this search."),
         )
         .replace(
             "__NEVER_REVIEWED_ROWS__",

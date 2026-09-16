@@ -107,13 +107,66 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
     html = output_path.read_text()
     assert "Exceptional Role" in html
     assert "Weak Role" in html  # below-50 candidates are listed in their own section
-    # No separate 90+/80+ text tag — the score number's color (via the row's tier-*
-    # class) is the only tier signal now; a review-tier (50-74) row never gets a tier
-    # color at all, regardless of its exact score.
+    # No separate 90+/80+ text tag — the score number's own color (via the row's
+    # tier-* class) is the only tier signal now.
     assert 'tier-exceptional"' in html
     assert 'tier-strong"' in html
     assert "90+" not in html
     assert "80+" not in html
+
+
+def test_score_gradient_covers_the_full_50_to_100_range(tmp_path):
+    """The score color is a five-step gradient across the whole 50-100 range, not just
+    a hard cutoff at 80/90 — a 55 (barely "for review") and a 68 must read differently
+    from each other and from an 88, not all fall back to the same uncolored default.
+    Below 50 stays uncolored: those jobs are excluded from the chat-facing summary
+    entirely, so there's no reason for a reader to be comparing shades of "not it"."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="Fair Role"),
+                    _candidate("x", "2", title="Moderate Role"),
+                    _candidate("x", "3", title="Promising Role"),
+                    _candidate("x", "4", title="Strong Role"),
+                    _candidate("x", "5", title="Exceptional Role"),
+                    _candidate("x", "6", title="Below Fifty Role"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 55, title="Fair Role"),
+                _assessment("x", "2", 65, title="Moderate Role"),
+                _assessment("x", "3", 72, title="Promising Role"),
+                _assessment("x", "4", 85, title="Strong Role"),
+                _assessment("x", "5", 95, title="Exceptional Role"),
+                _assessment("x", "6", 45, title="Below Fifty Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+    for title, tier in [
+        ("Fair Role", "fair"),
+        ("Moderate Role", "moderate"),
+        ("Promising Role", "promising"),
+        ("Strong Role", "strong"),
+        ("Exceptional Role", "exceptional"),
+    ]:
+        idx = html.index(title)
+        assert f'tier-{tier}"' in html[max(0, idx - 400) : idx]
+    below_idx = html.index("Below Fifty Role")
+    assert 'tier-plain"' in html[max(0, below_idx - 400) : below_idx]
 
 
 def test_never_reviewed_candidate_excluded_from_scored_groups_but_listed_separately(tmp_path):
@@ -184,8 +237,97 @@ def test_new_tag_uses_posting_recency_window(tmp_path):
     html = output_path.read_text()
     fresh_idx = html.index("Fresh Role")
     older_idx = html.index("Older Role")
-    assert 'tag-new">New' in html[max(0, fresh_idx - 400) : fresh_idx]
-    assert 'tag-new">New' not in html[max(0, older_idx - 400) : older_idx]
+    # "New" is the one tag that renders immediately before the title text itself
+    # (inside .job-title-line, so .job's own start position is unaffected) — every
+    # other tag renders in its own column after the whole job block.
+    assert 'tag-new">New' in html[max(0, fresh_idx - 200) : fresh_idx]
+    assert 'tag-new">New' not in html[max(0, older_idx - 200) : older_idx]
+
+
+def test_row_grid_column_count_is_constant_regardless_of_tags(tmp_path):
+    """Regression: summary's grid tracks are positional (auto-placement fills them in
+    DOM order, not by track name) — a row with zero secondary tags must still emit an
+    (empty) .tags element, or .row-end would silently shift into .tags' own track and
+    the date/feedback column would misalign across rows exactly like the title column
+    used to before tags moved out of a variable-width column ahead of it."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="No Tags Role", work_arrangement="onsite"),
+                    _candidate("x", "2", title="Tagged Role", work_arrangement="remote"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 80, title="No Tags Role"),
+                _assessment("x", "2", 80, title="Tagged Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+    no_tags_idx = html.index("No Tags Role")
+    tagged_idx = html.index("Tagged Role")
+    # Both rows must still have a .tags element (even an empty one) as a direct child
+    # of the summary grid, immediately followed by .row-end — regardless of whether
+    # that particular row actually has a secondary tag to show.
+    assert '<span class="tags"></span>\n        <span class="row-end">' in html[no_tags_idx : no_tags_idx + 600]
+    assert '<span class="tags"><span class="tag tag-remote">' in html[tagged_idx : tagged_idx + 600]
+
+
+def test_apply_link_always_visible_and_below_feedback_buttons_in_both_sections(tmp_path):
+    """The "View posting" link must never require expanding a row to reach — it sits
+    in .row-end (inside <summary>, always visible) below the feedback buttons, in the
+    exact same order, for a scored row and a never-reviewed one alike."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="Scored Role", url="https://example.com/scored"),
+                    _candidate("x", "2", title="Unreviewed Role", url="https://example.com/unreviewed"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("x", "1", 80, title="Scored Role")]))
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+
+    scored_idx = html.index("Scored Role")
+    scored_summary_end = html.index("</summary>", scored_idx)
+    scored_block = html[scored_idx:scored_summary_end]
+    assert "https://example.com/scored" in scored_block  # inside <summary>, not row-detail
+    assert scored_block.index("feedback-buttons") < scored_block.index("apply-link")
+
+    unreviewed_idx = html.index("Unreviewed Role")
+    unreviewed_top_end = html.index("</div>", unreviewed_idx)
+    unreviewed_block = html[unreviewed_idx:unreviewed_top_end]
+    assert "https://example.com/unreviewed" in unreviewed_block
+    assert unreviewed_block.index("feedback-buttons") < unreviewed_block.index("apply-link")
+
+    # Never a filter/gate on the link's own visibility — the row-detail section (only
+    # matches/gaps/sponsorship-evidence, no link) must not contain the URL a second time.
+    row_detail_start = html.index('<div class="row-detail">', scored_idx)
+    row_detail_end = html.index("</details>", row_detail_start)
+    assert "https://example.com/scored" not in html[row_detail_start:row_detail_end]
 
 
 def test_url_title_company_come_from_the_fresh_candidate_not_the_stale_assessment(tmp_path):
@@ -300,11 +442,13 @@ def test_sponsorship_tags_and_never_excludes_a_job(tmp_path):
     yes_idx = html.index("Sponsorship OK Role")
     unmentioned_idx = html.index("Unmentioned Role")
     predates_idx = html.index("Predates Feature Role")
-    assert 'tag-sponsor-no">No Sponsorship' in html[max(0, no_idx - 400) : no_idx]
+    # Tags render inside .job, right after the title — see test_new_tag_uses_posting_
+    # recency_window's comment for why a before-the-title column was removed.
+    assert 'tag-sponsor-no">No Sponsorship' in html[no_idx : no_idx + 400]
     assert "will not be sponsored" in html
-    assert 'tag-sponsor-yes">Sponsorship OK' in html[max(0, yes_idx - 400) : yes_idx]
-    assert 'tag-sponsor' not in html[max(0, unmentioned_idx - 400) : unmentioned_idx]
-    assert 'tag-sponsor' not in html[max(0, predates_idx - 400) : predates_idx]
+    assert 'tag-sponsor-yes">Sponsorship OK' in html[yes_idx : yes_idx + 400]
+    assert 'tag-sponsor' not in html[unmentioned_idx : unmentioned_idx + 400]
+    assert 'tag-sponsor' not in html[predates_idx : predates_idx + 400]
 
 
 def test_job_meta_shows_location_and_salary_in_the_always_visible_summary(tmp_path):
@@ -354,11 +498,16 @@ def test_job_meta_shows_location_and_salary_in_the_always_visible_summary(tmp_pa
     stated_idx = html.index("Salary Stated Role")
     no_salary_idx = html.index("No Salary Role")
     # Both the location and the salary line sit in the <summary> — before the
-    # click-to-expand <div class="row-detail"> even starts, not inside it.
+    # click-to-expand <div class="row-detail"> even starts, not inside it. Salary gets
+    # its own .job-salary span (a distinct color from location's muted default).
     stated_summary_end = html.index("</summary>", stated_idx)
     no_salary_summary_end = html.index("</summary>", no_salary_idx)
-    assert 'job-meta">Detroit, MI · $76,100.00 to $114,300.00' in html[stated_idx:stated_summary_end]
-    assert 'job-meta">Detroit, MI<' in html[no_salary_idx:no_salary_summary_end]
+    assert (
+        'job-location">Detroit, MI</span> · <span class="job-salary">$76,100.00 to $114,300.00'
+        in html[stated_idx:stated_summary_end]
+    )
+    assert 'job-location">Detroit, MI<' in html[no_salary_idx:no_salary_summary_end]
+    assert "job-salary" not in html[no_salary_idx:no_salary_summary_end]
     assert "$76,100.00" not in html[no_salary_idx:no_salary_summary_end]
 
 
@@ -411,12 +560,14 @@ def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):
     hybrid_idx = html.index("Hybrid Role")
     onsite_idx = html.index("Onsite Role")
     unknown_idx = html.index("Unknown Role")
-    assert 'tag-remote">Remote' in html[max(0, remote_idx - 400) : remote_idx]
-    assert 'tag-hybrid">Hybrid' in html[max(0, hybrid_idx - 400) : hybrid_idx]
-    assert "tag-remote" not in html[max(0, onsite_idx - 400) : onsite_idx]
-    assert "tag-hybrid" not in html[max(0, onsite_idx - 400) : onsite_idx]
-    assert "tag-remote" not in html[max(0, unknown_idx - 400) : unknown_idx]
-    assert "tag-hybrid" not in html[max(0, unknown_idx - 400) : unknown_idx]
+    # Tags render inside .job, right after the title — see test_new_tag_uses_posting_
+    # recency_window's comment for why a before-the-title column was removed.
+    assert 'tag-remote">Remote' in html[remote_idx : remote_idx + 400]
+    assert 'tag-hybrid">Hybrid' in html[hybrid_idx : hybrid_idx + 400]
+    assert "tag-remote" not in html[onsite_idx : onsite_idx + 400]
+    assert "tag-hybrid" not in html[onsite_idx : onsite_idx + 400]
+    assert "tag-remote" not in html[unknown_idx : unknown_idx + 400]
+    assert "tag-hybrid" not in html[unknown_idx : unknown_idx + 400]
 
 
 def test_empty_group_renders_fallback_message(tmp_path):
@@ -477,10 +628,12 @@ def test_feedback_buttons_carry_correct_data_attributes(tmp_path):
     assert 'radar-feedback-search.json' in html  # __SEARCH_STEM__ substitution
 
 
-def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
-    """A never-reviewed job still gets the same [New]/sponsorship/arrangement tags and
-    feedback buttons as a scored row — just no score/matches/gaps, since there's no
-    assessment to draw them from."""
+def test_never_reviewed_row_matches_scored_row_layout(tmp_path):
+    """A never-reviewed job gets the exact same layout as a scored row (audited
+    end to end, not just "has the tags somewhere"): an NR placeholder where the score
+    goes, the New tag before the title, location shown in job-meta (this section never
+    showed it at all before), other tags in their own column, and feedback buttons —
+    just no score/matches/gaps, since there's no assessment to draw them from."""
     candidate = _candidate(
         "ford", "77", title="ADAS Engineer", company="Ford Motor Company",
         posted_at="2026-08-28T00:00:00Z",  # 3 days before `now` below -> [New]
@@ -515,10 +668,17 @@ def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
     assert 'data-source-key="ford"' in html
     assert 'data-job-id="77"' in html
     assert 'data-label="relevant"' in html
-    assert 'tag-new">New' in html
-    assert 'tag-hybrid">Hybrid' in html
-    assert 'tag-sponsor-no">No Sponsorship' in html
-    assert "Not yet reviewed by the local model" in html
+    title_idx = html.index("ADAS Engineer")
+    # NR sits where the score goes, immediately before .job — mirroring _row_html's
+    # own <span class="score">...</span><span class="job"> adjacency exactly.
+    assert 'class="score score-nr" title="Not yet reviewed by the local model">NR</span>\n        <span class="job">' in html[max(0, title_idx - 300) : title_idx]
+    # New renders immediately before the title text itself, same as a scored row.
+    assert 'tag-new">New' in html[max(0, title_idx - 100) : title_idx]
+    # Location (job-meta) — this section rendered no location/salary at all before.
+    assert 'job-location">Detroit, MI<' in html[title_idx : title_idx + 400]
+    # Secondary tags (arrangement, sponsorship) sit in their own column after .job.
+    assert 'tag-hybrid">Hybrid' in html[title_idx : title_idx + 700]
+    assert 'tag-sponsor-no">No Sponsorship' in html[title_idx : title_idx + 700]
 
 
 def test_build_surfaces_non_ok_source_health_grouped_and_ordered(tmp_path):
