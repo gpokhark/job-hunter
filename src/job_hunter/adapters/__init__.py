@@ -18,6 +18,7 @@ from .icims_attract import IcimsAttractAdapter
 from .lever import LeverAdapter
 from .oracle_hcm import OracleHcmAdapter
 from .paycom import PaycomAdapter
+from .paylocity import PaylocityAdapter
 from .phenom import PhenomAdapter
 from .smartrecruiters import SmartRecruitersAdapter
 from .stealth_html import StealthHtmlAdapter
@@ -39,6 +40,7 @@ ADAPTERS: dict[str, AdapterType] = {
     "phenom": PhenomAdapter,
     "smartrecruiters": SmartRecruitersAdapter,
     "paycom": PaycomAdapter,
+    "paylocity": PaylocityAdapter,
     "html_paginated": HtmlPaginatedAdapter,
     "html_multi_index": HtmlMultiIndexAdapter,
     "discovered_api": DiscoveredApiAdapter,

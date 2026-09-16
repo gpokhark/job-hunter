@@ -11,7 +11,7 @@ def test_project_configs_validate():
     settings = load_settings(root / "config/settings.yaml")
     assert settings.version == 1
     companies = load_companies(root / "config/companies.yaml")
-    assert len(companies) == 64 and len({item.key for item in companies}) == 64
+    assert len(companies) == 65 and len({item.key for item in companies}) == 65
     # config/settings.yaml's own committed retention: values, not just the model defaults.
     assert settings.retention.closed_job_after_days == 10
     assert settings.retention.report_after_days == 15

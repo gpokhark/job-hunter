@@ -131,7 +131,7 @@ pagination) or `page_number_parameter` (1-indexed page-number pagination), `post
 `html_paginated` key plus `wait_selector`.
 
 Use `scripts/endpoint_probe.py` (or curl) during development to inspect a candidate endpoint
-before writing config for it — never hand-invent an endpoint shape (§5.20).
+before writing config for it — never hand-invent an endpoint shape (§5.21).
 
 ---
 
@@ -191,6 +191,7 @@ is judged still valid.
 | `dayforce` | `DayforceAdapter` | Ceridian Dayforce Candidate Portal — a public two-call CSRF handshake (`/api/auth/csrf` token+cookie replayed on the search POST), the same shape as `adp_recruiting` for an unrelated platform — see §5.17 |
 | `smartrecruiters` | `SmartRecruitersAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for SmartRecruiters' public Job Board API, adding ordinary offset/limit pagination (server caps at 100/page) — see §5.18 |
 | `paycom` | `PaycomAdapter` | Paycom's "career-page" ATS widget — a short-lived anonymous bearer token embedded in the plain page HTML, replayed on a public search/detail API — see §5.19 |
+| `paylocity` | `PaylocityAdapter` | Paylocity Recruiting's public job board — parses a `window.pageData` JS object literal embedded in the listing's own plain HTML for the whole job list at once, and label-matched `Description`/`Requirements` divs (not always-present JSON-LD) for detail — see §5.20 |
 | `unsupported` | `UnsupportedAdapter` | explicit "no viable path" marker; `unsupported_reason` required |
 
 `json_api.ConfigurableJsonAdapter` (not directly registered, but the base several of the above
@@ -202,13 +203,13 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (64, `config/companies.yaml`)
+### 5.2 Currently configured companies (65, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
 code, identically on every run. The only LLM involvement anywhere in the system is later and
 separate: `job-reviewer` scoring the JSON output against a resume — it reads this data, it doesn't
-produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.20), but
+produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.21), but
 that's a cost paid once per company, not per search.
 
 | Key | Company | Adapter | Posted date | Tools used |
@@ -277,11 +278,12 @@ that's a cost paid once per company, not per search.
 | isuzu | Isuzu Commercial Truck of America | paycom | Yes (JSON-LD `googleJobJson.datePosted`) | httpx only — a new platform family, Paycom (§5.19); a short-lived anonymous JWT embedded in the plain career-page HTML is replayed as a Bearer token on a public search API, same "public frontend key" shape as bosch/csod (19 jobs) |
 | toro | The Toro Company | html_paginated | Yes (JobPosting JSON-LD `datePosted`, non-zero-padded) | httpx + selectolax — a genuinely plain, unprotected Radancy TalentBrew site (unlike GM/Stellantis's TalentBrew fronts, which hid a different real backend) covering multiple in-house brands in one listing; ~128 jobs across 9 pages; JSON-LD's malformed "2026-8-19" date format fixed centrally in `normalizer.py` (§5.5) |
 | torc_robotics | Torc Robotics | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io/torcrobotics is already Greenhouse's own public host, no front end to see through; same shape as anthropic/scout_motors/may_mobility (52 jobs) |
+| hyundai_mobis | Hyundai MOBIS | paylocity | Yes (`PublishedDate`, JSON-LD `datePosted` confirmed a stable but wrong +5h and not used) | httpx + selectolax — a new platform family, Paylocity Recruiting (§5.20); the entire job list, with structured per-job location, is embedded in the listing's own plain HTML as `window.pageData`, no separate API; detail-page JSON-LD is confirmed absent on some jobs, so description comes from label-matched `Description`/`Requirements` divs instead (12 jobs, Mobis Technical Center of North America, Plymouth MI) |
 
 Adapter mix: workday ×16, successfactors_rmk ×6, successfactors_rmk_v2 ×2, lever ×3, ashby ×3,
 stealth_html ×2, oracle_hcm ×4, greenhouse ×7, eightfold ×3, html_paginated ×4, unsupported ×3,
-1 each of smartrecruiters/paycom/phenom/html_multi_index/apple/adp_recruiting/bosch/zf/csod/
-icims_attract/dayforce.
+1 each of smartrecruiters/paycom/paylocity/phenom/html_multi_index/apple/adp_recruiting/bosch/zf/
+csod/icims_attract/dayforce.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.
@@ -317,8 +319,11 @@ Three independent mechanisms feed a posting date, in order of coverage:
    separate `creationTs` field on the same record that is *not* the same value), most
    `successfactors_rmk` sites' shared `posted_at_selector: td.colDate span.jobDate` (via
    `normalizer.parse_display_date`) — except jlr, whose own template has no `colDate` column at
-   all, just a bare `span.jobDate` in a mobile-hidden block — and Paycom's embedded schema.org
-   `googleJobJson` (a JSON *string*, needing its own `json.loads`) datePosted (§5.19).
+   all, just a bare `span.jobDate` in a mobile-hidden block — Paycom's embedded schema.org
+   `googleJobJson` (a JSON *string*, needing its own `json.loads`) datePosted (§5.19), and
+   Paylocity's listing-embedded `PublishedDate` (§5.20) — deliberately preferred over its own
+   detail-page JSON-LD `datePosted` when present, confirmed live to run a stable but wrong ~5
+   hours later than the true post time, unlike jlr/Toro's fixable format quirks above.
    `parse_display_date` and `parse_flexible_date` have each grown one non-obvious format fix from
    onboarding: jlr's tenant spells September's abbreviation "Sept" (4 letters, normalized to "Sep"
    before any format is tried) and Toro's TalentBrew JSON-LD emits a non-zero-padded
@@ -750,7 +755,33 @@ reusing the one from `fetch_summaries` (this adapter carries no cross-call state
 at the catalog sizes seen so far (19 jobs) but worth revisiting if a much larger Paycom tenant is
 onboarded later.
 
-### 5.20 Adding a new source
+### 5.20 The `paylocity` adapter — an eager-loaded listing blob, and JSON-LD that isn't always there
+
+**Hyundai MOBIS** (`paylocity.py`, a new adapter and platform family) is on Paylocity Recruiting
+("Citrus HR"), a shared ATS hosting many unrelated employers at `recruiting.paylocity.com` under a
+per-tenant module id — the given URL (`.../recruiting/jobs/All/<guid>/Mobis-North-American-LLC---
+Plymouth`) turned out to need no backend-behind-the-skin chase at all: the entire job list,
+including a structured per-job `JobLocation` (city/state/zip/country), is embedded server-side in
+the listing's own plain HTML as a `window.pageData = {...};` JS object literal — the "eager-loaded
+search-results object" case, same category as a Next.js `__NEXT_DATA__` payload but bespoke to this
+platform, not a framework convention. No pagination endpoint exists or was needed: the whole tenant
+(12 jobs) comes back in one response regardless of count.
+
+The trap: the detail page's own schema.org JobPosting JSON-LD block — the same convention
+`html_paginated.py` already leans on elsewhere — is *not* reliably present here. Confirmed live: a
+job whose listing-level `JobLocation` carried no city/state (only a bare country) had no JSON-LD
+block on its detail page at all, while a job with a full street address did. Depending on it as the
+primary description source would have silently produced empty descriptions for some jobs and not
+others with no error to notice it by. The fix was to match by the detail page's own
+`<div class="job-listing-header">Description/Requirements</div>` labels instead (the same
+"match by adjacent label text, not position" lesson as BMW's `.rtltextaligneligible`, §5.12) —
+present on every sampled page whether or not JSON-LD also was. One more live-verified wrinkle: when
+JSON-LD *was* present, its `datePosted` ran a fixed ~5 hours after the same job's listing-level
+`PublishedDate` on repeated fetches (stable, not a Honda-style live drift — but not the true
+original post time either), so `fetch_detail` never overrides `posted_at` at all; the
+listing-level `PublishedDate` captured in `fetch_summaries` is what's kept.
+
+### 5.21 Adding a new source
 
 A one-time reverse-engineering step, not something that happens on every search: fetch the plain
 page (`scripts/endpoint_probe.py` or curl) to check for a real JSON API or clean static HTML
@@ -1220,7 +1251,7 @@ stops — this is a safe, idempotent skill to invoke any time, not only right af
   Server running locally (or reachable on the LAN) before `job-reviewer` can score anything.
 - The company catalog's history: started from 22 originally requested companies, gained Woven by
   Toyota (onboarded later), and dropped Audi and Mercedes-Benz entirely (neither ever had a working
-  endpoint) — 21 total, then grown steadily via the `onboard-source` skill (§5.20) with each new
+  endpoint) — 21 total, then grown steadily via the `onboard-source` skill (§5.21) with each new
   company's live count, mechanism, and any caveats recorded in its own row/subsection under §5.2 —
   see that section (or `uv run job-hunter source-status`) for the current, authoritative count
   rather than a number restated here that would only go stale again.

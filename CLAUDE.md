@@ -121,7 +121,7 @@ before most commands will find a profile (falls back to the example file otherwi
   `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`, `html_multi_index.py`,
   `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`, `eightfold.py`,
   `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`, `dayforce.py`,
-  `smartrecruiters.py`, `paycom.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
+  `smartrecruiters.py`, `paycom.py`, `paylocity.py`), registered in `adapters/__init__.py`'s `ADAPTERS` dict and selected by the
   `adapter` key in `companies.yaml`. All inherit `JobAdapter` (`adapters/base.py`), which supplies
   retry-with-backoff HTTP (`request()`, retries on 429/500/502/503/504 plus network/timeout errors,
   honors `Retry-After`) and a default `healthcheck()`. Adapters implement `fetch_summaries()`

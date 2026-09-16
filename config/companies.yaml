@@ -1472,6 +1472,30 @@ companies:
       id_attribute: data-job-id
       page_number_parameter: p
       page_size: 15
+  - key: hyundai_mobis
+    company: Hyundai MOBIS
+    adapter: paylocity
+    platform: paylocity
+    config:
+      # recruiting.paylocity.com/recruiting/jobs/All/<guid>/Mobis-North-American-LLC---
+      # Plymouth is a Paylocity Recruiting ("Citrus HR") board scoped to the legal entity
+      # Mobis North American LLC — the Mobis Technical Center of North America (MTCA),
+      # Hyundai MOBIS's Plymouth, MI R&D center (confirmed from the postings' own
+      # "MOBIS Technical Center of North America... an affiliate under Hyundai Motor
+      # Group" boilerplate); this covers that one tenant/module only, not necessarily
+      # every Hyundai MOBIS North America location if others sit on a separate module.
+      # A new, reusable platform (paylocity.py): the whole job list, including a
+      # structured per-job JobLocation (City/State/Zip/Country), is embedded server-side
+      # in the listing's own plain HTML as a `window.pageData = {...}` JS object literal
+      # — no separate API call needed, no pagination found or needed (12 jobs, all
+      # present in one response). Sample job 4495586 ("Program Manager (Hybrid)",
+      # Plymouth, MI) confirmed present with matching title/location/PublishedDate.
+      # Detail pages carry a schema.org JobPosting JSON-LD block only sometimes
+      # (confirmed absent on a job with no listing-level city/state) so it's not used;
+      # full description instead comes from matching the detail page's own
+      # Description/Requirements `<div class="job-listing-header">` sibling pairs by
+      # label text, present on every sampled page regardless of JSON-LD.
+      list_url: https://recruiting.paylocity.com/recruiting/jobs/All/3c45d436-6834-4b85-b82a-a0abdca9f507/Mobis-North-American-LLC---Plymouth
   - key: torc_robotics
     company: Torc Robotics
     adapter: greenhouse
