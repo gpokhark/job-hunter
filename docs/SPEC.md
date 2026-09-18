@@ -41,6 +41,15 @@ profile (or ad-hoc keywords), it:
 for scoring, and does not add credential/session-based scraping workarounds. The one deliberate
 exception to "plain HTTP only" is the `stealth_html` adapter (§5.3).
 
+**Two deliberate, load-bearing working principles** govern tradeoffs throughout this pipeline —
+both favor a cheap, visible correction later over an invisible, uncorrectable loss now:
+- **Filtering must prefer false negatives over false positives** — an irrelevant job slipping
+  through costs a little wasted review time and is easy to notice/fix; a relevant job silently
+  filtered out costs the job itself, invisibly. See §7.3.
+- **The assessment cache is keyed on the job's `content_hash` only, never on `resume_path`,
+  model, or rubric** — a resume/model/rubric change never forces a blanket re-review; only a
+  genuinely changed posting does. See §8.4.
+
 ---
 
 ## 2. Architecture overview
@@ -933,12 +942,19 @@ of an index table.
 only by `scripts/review_with_lm_studio.py` (via `upsert_assessment`) or manually via
 `record-assessment`; Python never produces a verdict itself.
 
-**Cache validity is keyed on `content_hash` only, never on `resume_path`:**
+**Working principle: cache validity is keyed on `content_hash` only, never on `resume_path`,
+model, or rubric.** This sits alongside §7.3's false-negative-over-false-positive rule as one of
+the project's deliberate, load-bearing tradeoffs, not an incidental implementation detail:
 - `get_valid_assessment(source_key, job_id, content_hash)` returns the stored verdict only if the
   posting's current `content_hash` still matches — a changed posting is treated as unassessed
-  again. It does **not** compare `resume_path`, so a resume update never invalidates cached
-  verdicts. This is intentional (confirmed in `skill-split-plan.md` §5): re-scoring every
-  previously-reviewed job just because the resume changed isn't worth the cost.
+  again. It does **not** compare `resume_path`, model identifier, or rubric version, so updating
+  your resume, switching evaluation models, or editing the scoring rubric never invalidates
+  cached verdicts on its own. This is intentional (confirmed in `skill-split-plan.md` §5):
+  re-scoring every previously-reviewed job just because the resume changed isn't worth the cost —
+  the local model runs strictly sequentially, one job at a time, so a blanket invalidation would
+  mean real, visible wall-clock time re-scoring hundreds of jobs that likely wouldn't change
+  outcome. A stale cached score for an unchanged job is the accepted cost; `--force` (below) is
+  the explicit, opt-in escape hatch whenever a full re-review is actually wanted.
 - Every **new** review (a cache miss) is scored against the resume file read fresh at that
   moment (`review_with_lm_studio.py:244`), so newly-seen or newly-changed postings always reflect
   your current resume, even though older cached verdicts don't get retroactively updated.

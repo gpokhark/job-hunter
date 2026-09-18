@@ -500,6 +500,18 @@ before most commands will find a profile (falls back to the example file otherwi
   one specific irrelevant posting keeps resurfacing anyway — always resolve it in favor of fewer
   false positives, even at the cost of more false negatives. See `docs/feedback-exclusion-plan.md`
   for a concrete worked example of this tradeoff being made deliberately.
+- **Assessment cache validity is keyed on the job's `content_hash` only — never on `resume_path`,
+  model, or rubric — by design.** Updating your resume, switching evaluation models, or tweaking
+  the scoring rubric must never force re-review of every already-assessed job; only a job whose
+  own posting actually changed (a new `content_hash`) should trigger a fresh local-LLM call. This
+  is the same category of tradeoff as the false-negative/false-positive principle above: a little
+  staleness (an old cached verdict not reflecting your newest resume until that job's content
+  changes again) is cheap and visible — rerun with `--force` whenever you actually want a full
+  re-review — while forcing a blanket re-review on every resume/model tweak would burn real,
+  sequential local-model time re-scoring hundreds of jobs that didn't change, for no gain on most
+  of them. See `storage.py`'s `assessments` table notes above and `docs/SPEC.md` §8.4. Do not
+  fold `resume_hash`/`rubric_hash`/`model_name`/`profile_version` into the cache key — that
+  reverses this decision, not fixes it.
 - Adapters and location logic fail loudly (raise `SchemaError`/`AdapterError`) rather than
   guessing or silently returning partial data — preserve that when touching adapter code.
 - Don't add credentials or session/CSRF replay for collection. Browser-based stealth fetching is

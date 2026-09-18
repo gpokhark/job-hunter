@@ -181,6 +181,51 @@ class RunInfo(BaseModel):
     completed_at: datetime | None = None
 
 
+class PipelineStage(StrEnum):
+    SEARCH = "search"
+    REVIEW = "review"
+    RADAR = "radar"
+    DONE = "done"
+
+
+class PipelineStatus(StrEnum):
+    """Distinguishes *why* a pipeline run ended, mirroring the review step's own possible
+    outcomes rather than collapsing everything into a bare success/failure exit code — see
+    docs/agent-runtime-audit.md's "Partial review exit status" note."""
+
+    RUNNING = "running"
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    NO_CANDIDATES = "no_candidates"
+    MODEL_UNAVAILABLE = "model_unavailable"
+
+
+class PipelineManifest(BaseModel):
+    """The durable record of one `job-hunter pipeline` run, at `data/runs/<run_id>/manifest.json`
+    — a machine-readable stage contract an agent (or a human) can poll instead of re-parsing
+    command prose/stdout. Written by `pipeline.py`, never by a skill."""
+
+    run_id: str
+    project_root: str
+    keyword: str | None = None
+    stage: PipelineStage = PipelineStage.SEARCH
+    status: PipelineStatus = PipelineStatus.RUNNING
+    archive: str | None = None
+    radar: str | None = None
+    candidates: int | None = None
+    reviewed: int | None = None
+    skipped_cached: int | None = None
+    failed: int = 0
+    profile_fingerprint: str | None = None
+    resume_fingerprint: str | None = None
+    model: str | None = None
+    error: str | None = None
+    started_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    completed_at: datetime | None = None
+
+
 class SearchResult(BaseModel):
     run: RunInfo
     summary: SearchSummary

@@ -59,9 +59,11 @@ import yaml
 # so a job tagged Hybrid/No Sponsorship here and in job-radar's report never disagrees.
 from render_radar import _arrangement_tag, _sponsorship_tag, _tier  # noqa: E402
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_settings
 from job_hunter.models import Assessment, Job
 from job_hunter.prefilter import PrefilterDecision, evaluate_prefilter, passes_recency
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.storage import Storage
 
 _FILTER_FIELDS = (
@@ -105,10 +107,9 @@ def _advance_baseline(profile_path: Path) -> None:
     """Record profile_path's current content as the new check-mode baseline, keeping exactly
     one prior generation for --rollback-baseline. A plain text copy, never a YAML parse/dump —
     see this module's docstring for why that distinction matters."""
-    _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     if _SNAPSHOT_PATH.exists():
-        _SNAPSHOT_PREV_PATH.write_text(_SNAPSHOT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    _SNAPSHOT_PATH.write_text(profile_path.read_text(encoding="utf-8"), encoding="utf-8")
+        atomic_write_text(_SNAPSHOT_PREV_PATH, _SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    atomic_write_text(_SNAPSHOT_PATH, profile_path.read_text(encoding="utf-8"))
 
 
 def _rollback_baseline() -> bool:
@@ -119,9 +120,9 @@ def _rollback_baseline() -> bool:
         return False
     prev_content = _SNAPSHOT_PREV_PATH.read_text(encoding="utf-8")
     current_content = _SNAPSHOT_PATH.read_text(encoding="utf-8") if _SNAPSHOT_PATH.exists() else None
-    _SNAPSHOT_PATH.write_text(prev_content, encoding="utf-8")
+    atomic_write_text(_SNAPSHOT_PATH, prev_content)
     if current_content is not None:
-        _SNAPSHOT_PREV_PATH.write_text(current_content, encoding="utf-8")
+        atomic_write_text(_SNAPSHOT_PREV_PATH, current_content)
     return True
 
 # jobs.canonical_url -> Job.url is the one required rename; every other column already lines
@@ -920,8 +921,7 @@ def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
         .replace("__LOST_ROWS__", _render_rows(result.lost, result, empty_message="Nothing lost."))
         .replace("__GAINED_ROWS__", _render_rows(result.gained, result, empty_message="Nothing gained."))
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
 
 
 def main() -> int:
@@ -960,7 +960,9 @@ def main() -> int:
             "Standalone action: takes no other flags, runs no comparison."
         ),
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     file_pair_mode = args.before is not None or args.after is not None
     convenience_mode = bool(args.add) or bool(args.remove)

@@ -40,7 +40,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_settings
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.search_archive import resolve_search_path
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
@@ -514,8 +516,7 @@ def build(
         )
         .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
     return {
         "strong": len(strong),
         "review": len(review),
@@ -571,7 +572,9 @@ def main() -> int:
         "--undated-stale-days", type=int, default=None,
         help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
     args.search = resolve_search_path(search=args.search, keyword=args.keyword)
 
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"

@@ -74,9 +74,11 @@ from diff_profile import (  # noqa: E402
 )
 from render_radar import _tier  # noqa: E402
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
 from job_hunter.prefilter import passes_prefilter, passes_recency
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -536,8 +538,7 @@ def render_archive_diff_html(
             ),
         )
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
 
 
 def main() -> int:
@@ -546,7 +547,9 @@ def main() -> int:
     parser.add_argument("--keyword", default=None, help="resolve --search by keyword, and use as the positive-match override (same as job-hunter search --keyword)")
     parser.add_argument("--output", type=Path, default=None, help="write here instead of overwriting the input archive in place")
     parser.add_argument("--no-report", action="store_true", help="skip writing the HTML gained/lost report")
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     search_path = resolve_search_path(search=args.search, keyword=args.keyword)
     keywords = [term.strip() for term in args.keyword.split(",") if term.strip()] if args.keyword else None
@@ -563,7 +566,7 @@ def main() -> int:
     retained = len(after_by_key.keys() & before_by_key.keys())
 
     output_path = args.output or search_path
-    output_path.write_text(json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(output_path, json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n")
 
     print(
         f"Re-filtered {search_path} -> {output_path}: {after_count} candidate(s) "

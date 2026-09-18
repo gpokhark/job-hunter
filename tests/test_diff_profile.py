@@ -181,7 +181,7 @@ def test_render_rows_includes_job_link_date_and_tags(tmp_path):
     assert 'tag-new">New' in html_out
     assert 'tag-sponsor-no">No Sponsorship' in html_out
     assert 'tag-hybrid">Hybrid' in html_out
-    assert "no assessment on record" in html_out
+    assert 'class="score score-nr"' in html_out
 
 
 def test_fmt_posted_date_absolute_fallback_is_date_unknown():

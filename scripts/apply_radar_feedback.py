@@ -33,6 +33,7 @@ from typing import Any
 
 from job_hunter.config import load_settings
 from job_hunter.models import JobFeedback
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.storage import Storage
 
 _VALID_LABELS = {"relevant", "okay", "irrelevant"}
@@ -108,7 +109,9 @@ def main() -> int:
         "--downloads-dir", type=Path, default=_DEFAULT_DOWNLOADS_DIR,
         help=f"where to look for an un-specified --file (default: {_DEFAULT_DOWNLOADS_DIR})",
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     resolved = resolve_feedback_file(args.file, args.downloads_dir)
     if resolved is None:

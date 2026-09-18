@@ -28,9 +28,11 @@ jobs with cached assessments are skipped, and interrupted reviews resume where t
 LLM scores can vary when recomputed; deterministic filtering happens before that step.
 Hermes may use its own model provider and tokens for orchestration.
 
-**Refresh only what you need.** Assessment caching uses the job's content hash. After changing
-your resume or evaluation model, run the review script with `--force`. Use
-`job-hunter search --refresh-details` when you want to fetch stored descriptions again.
+**Refresh only what you need.** Assessment caching keys on the job's content hash only — by
+design, never on your resume, evaluation model, or rubric — so changing any of those never forces
+a re-review of jobs that haven't changed. Run the review script with `--force` when you actually
+want a full re-review after such a change. Use `job-hunter search --refresh-details` when you want
+to fetch stored descriptions again.
 
 ## Company coverage
 

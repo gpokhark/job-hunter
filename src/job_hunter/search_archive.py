@@ -21,7 +21,9 @@ def slugify(text: str) -> str:
     return _SLUG_RE.sub("-", text.lower()).strip("-") or "untitled"
 
 
-def archive_path(keyword: str | None, *, now: datetime | None = None) -> Path:
+def archive_path(
+    keyword: str | None, *, companies: str | None = None, now: datetime | None = None
+) -> Path:
     """The deterministic data/searches/{slug}_{date}.json path for --archive, computed from
     the same --keyword string passed to `search` (or "default" without one) and today's date
     in the device's local timezone (not UTC — a run late at night in a US timezone was landing
@@ -30,8 +32,21 @@ def archive_path(keyword: str | None, *, now: datetime | None = None) -> Path:
     same-day rerun with the same keyword deliberately overwrites rather than accumulating
     duplicates. `now`, when passed explicitly (e.g. by tests), is formatted using whatever
     tzinfo it already carries rather than being forced through a local conversion — only the
-    no-argument production default resolves the real system-local instant."""
+    no-argument production default resolves the real system-local instant.
+
+    `companies` (the same --companies filter `search`/`pipeline` accept) is folded into the slug
+    whenever it actually restricts the run — confirmed live the hard way: without this, a
+    --companies-scoped run and a full/default run share the exact same filename and silently
+    clobber each other with zero warning (a company-scoped `job-hunter pipeline` run overwrote a
+    same-day 65-source/474-candidate archive and its radar report with a 20-candidate,
+    single-company one). Sorted before slugifying so "honda,toyota" and "toyota,honda" — the same
+    scope, different order — still resolve to one file, not two. Omitted (the default, and the
+    overwhelming majority of real runs) leaves the filename exactly as before."""
     slug = slugify(keyword) if keyword else "default"
+    if companies:
+        company_slug = slugify("-".join(sorted(c.strip() for c in companies.split(",") if c.strip())))
+        if company_slug:
+            slug = f"{slug}__companies-{company_slug}"
     date_str = (now or datetime.now().astimezone()).strftime("%Y-%m-%d")
     return SEARCH_DIR / f"{slug}_{date_str}.json"
 

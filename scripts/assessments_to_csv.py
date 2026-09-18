@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+
 _COLUMNS = [
     "assessed_at",
     "recommended",
@@ -52,7 +54,9 @@ def main() -> int:
     parser.add_argument(
         "--output", type=Path, default=None, help="CSV path (default: input path with .csv)"
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
     output_path = args.output or args.input.with_suffix(".csv")
     count = convert(args.input, output_path)
     print(f"Wrote {count} assessments to {output_path}")

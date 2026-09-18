@@ -107,12 +107,13 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
     html = output_path.read_text()
     assert "Exceptional Role" in html
     assert "Weak Role" in html  # below-50 candidates are listed in their own section
-    # No separate 90+/80+ text tag — the score number's own color (via the row's
-    # tier-* class) is the only tier signal now.
+    # No separate per-row 90+/80+ text tag — the score number's own color (via the row's
+    # tier-* class) is the only tier signal now. "90+"/"80s" still appear exactly once each,
+    # in the static page-level score-legend key (radar_template.html), not per row.
     assert 'tier-exceptional"' in html
     assert 'tier-strong"' in html
-    assert "90+" not in html
-    assert "80+" not in html
+    assert html.count("90+") == 1
+    assert html.count("80s") == 1
 
 
 def test_score_gradient_covers_the_full_50_to_100_range(tmp_path):

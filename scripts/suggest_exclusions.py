@@ -71,6 +71,7 @@ from diff_profile import (  # noqa: E402
 from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.models import Job, PrefilterRule
 from job_hunter.prefilter import PrefilterDecision, evaluate_prefilter
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.storage import Storage
 
 _WORD = re.compile(r"[a-z]+")
@@ -396,7 +397,9 @@ def _print_not_fixable_bucket(decisions: list[FeedbackDecision]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--min-support", type=int, default=2, help="min distinct titles a phrase must repeat across, per bucket (default 2)")
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     settings = load_settings()
     profile = load_profile()

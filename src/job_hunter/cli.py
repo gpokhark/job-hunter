@@ -13,17 +13,21 @@ from typing import Any
 from pydantic import ValidationError
 
 from .adapters import adapter_class
+from .atomic import atomic_write_text
 from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
-from .models import Assessment
+from .models import Assessment, PipelineStatus
+from .pipeline import latest_run_id, read_manifest, run_pipeline
+from .rootutil import add_project_argument, chdir_to_project_root
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="job-hunter")
+    add_project_argument(root)
     sub = root.add_subparsers(dest="command", required=True)
     search = sub.add_parser("search")
     search.add_argument("--companies")
@@ -53,10 +57,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "write to an auto-named data/searches/{keyword-or-default}_{date}.json instead "
-            "of choosing a path yourself with --output. The same keyword on the same day "
-            "overwrites (today's answer refreshing); a new day or a different keyword gets "
-            "its own file, so an earlier run's candidate snapshot is never silently lost. "
-            "Mutually exclusive with --output."
+            "of choosing a path yourself with --output. The same keyword (and --companies "
+            "scope, if given) on the same day overwrites (today's answer refreshing); a new "
+            "day, a different keyword, or a different --companies scope gets its own file, "
+            "so an earlier run's candidate snapshot is never silently lost. Mutually "
+            "exclusive with --output."
         ),
     )
     search.add_argument("--verbose", action="store_true")
@@ -137,6 +142,30 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip writing the pre-delete export record (only relevant with --apply)",
     )
+    pipeline = sub.add_parser(
+        "pipeline",
+        help=(
+            "run search -> local-LLM review -> radar report end to end as one Python-owned "
+            "command, writing a durable data/runs/<run_id>/manifest.json at every stage — the "
+            "same three commands the job-hunter skill documents, sequenced deterministically "
+            "instead of by agent prose. See `pipeline-status` to poll a run afterward."
+        ),
+    )
+    pipeline.add_argument("--keyword", help="same as job-hunter search --keyword")
+    pipeline.add_argument("--companies", help="same as job-hunter search --companies")
+    pipeline.add_argument("--limit", type=int, help="cap on NEW reviews this run (passed through to the review stage)")
+    pipeline.add_argument("--new-only", action="store_true", help="same as job-hunter search --new-only")
+    pipeline.add_argument("--refresh-details", action="store_true", help="same as job-hunter search --refresh-details")
+    pipeline.add_argument("--max-candidates", type=int, help="same as job-hunter search --max-candidates")
+    pipeline.add_argument("--skip-review", action="store_true", help="search only; leave review/radar for later")
+    pipeline.add_argument(
+        "--skip-radar", action="store_true", help="search + review only; skip rendering the HTML report"
+    )
+    status = sub.add_parser(
+        "pipeline-status",
+        help="print a pipeline run's manifest — the newest run by default, or --run <id>",
+    )
+    status.add_argument("--run", help="a specific run_id (default: the newest run overall)")
     return root
 
 
@@ -170,15 +199,13 @@ def _print_cleanup_result(result: CleanupResult) -> None:
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
     path = settings.database_path.parent / "assessments.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    atomic_write_text(path, _json(rows) + "\n")
     return path
 
 
 def _write_feedback_export(settings, rows: list[dict[str, Any]]) -> Path:
     path = settings.database_path.parent / "job_feedback.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    atomic_write_text(path, _json(rows) + "\n")
     return path
 
 
@@ -265,6 +292,7 @@ def doctor() -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        chdir_to_project_root(args.project)
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
@@ -303,6 +331,31 @@ def main(argv: list[str] | None = None) -> int:
             resolved = resolve_search_path(search=args.search, keyword=args.keyword)
             print(resolved)
             return 0
+        if args.command == "pipeline-status":
+            run_id = args.run or latest_run_id()
+            if run_id is None:
+                print("job-hunter: no pipeline runs found (data/runs is empty)", file=sys.stderr)
+                return 2
+            manifest = read_manifest(run_id)
+            print(_json(manifest.model_dump(mode="json")))
+            return 0 if manifest.status not in {PipelineStatus.FAILED, PipelineStatus.MODEL_UNAVAILABLE} else 2
+        if args.command == "pipeline":
+            manifest = asyncio.run(
+                run_pipeline(
+                    settings,
+                    Path.cwd(),
+                    keyword=args.keyword,
+                    companies_filter=args.companies,
+                    limit=args.limit,
+                    new_only=args.new_only,
+                    refresh_details=args.refresh_details,
+                    max_candidates=args.max_candidates,
+                    skip_review=args.skip_review,
+                    skip_radar=args.skip_radar,
+                )
+            )
+            print(_json(manifest.model_dump(mode="json")))
+            return 0 if manifest.status not in {PipelineStatus.FAILED, PipelineStatus.MODEL_UNAVAILABLE} else 2
         if args.command == "cleanup":
             result = run_cleanup(
                 settings,
@@ -348,10 +401,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         rendered = _json(result.model_dump(mode="json"))
-        output_path = archive_path(args.keyword) if args.archive else args.output
+        output_path = archive_path(args.keyword, companies=args.companies) if args.archive else args.output
         if output_path:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(rendered + "\n", encoding="utf-8")
+            atomic_write_text(output_path, rendered + "\n")
             print(f"Archived to: {output_path}")
         if args.json:
             print(rendered)

@@ -53,6 +53,40 @@ def test_archive_path_uses_the_calendar_date_of_whatever_tzinfo_now_carries():
     assert archive_path("ADAS", now=late_eastern) == Path("data/searches/adas_2026-09-08.json")
 
 
+# --- archive_path + --companies: a company-scoped run must never collide with the full/default
+# run's filename — confirmed live the hard way (see search_archive.py's archive_path docstring:
+# a --companies-scoped job-hunter pipeline run silently overwrote a same-day 65-source archive
+# and its radar report before this scoping existed). ---
+
+
+def test_archive_path_without_companies_is_unchanged():
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    assert archive_path(None, now=now) == Path("data/searches/default_2026-09-17.json")
+    assert archive_path(None, companies=None, now=now) == archive_path(None, now=now)
+
+
+def test_archive_path_with_companies_never_collides_with_the_unscoped_path():
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    scoped = archive_path(None, companies="openai", now=now)
+    unscoped = archive_path(None, now=now)
+    assert scoped != unscoped
+    assert scoped == Path("data/searches/default__companies-openai_2026-09-17.json")
+
+
+def test_archive_path_companies_scope_is_order_independent():
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    assert archive_path("ADAS", companies="honda,toyota", now=now) == archive_path(
+        "ADAS", companies="toyota,honda", now=now
+    )
+
+
+def test_archive_path_different_companies_scopes_are_distinct():
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    assert archive_path(None, companies="openai", now=now) != archive_path(
+        None, companies="honda", now=now
+    )
+
+
 def _company(key: str, adapter: str, *, enabled: bool = True) -> CompanyConfig:
     return CompanyConfig(
         key=key,

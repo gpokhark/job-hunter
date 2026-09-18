@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from refilter_archive import _assessment_note, _render_job_rows, refilter  # noqa: E402
+from refilter_archive import _render_job_rows, refilter  # noqa: E402
 
 from job_hunter.config import CandidateProfile, Settings
 from job_hunter.models import (
@@ -209,7 +209,7 @@ def test_render_job_rows_includes_link_tags_date_and_feedback_buttons():
     assert 'data-source-key="gm"' in html_out
     assert 'data-job-id="1"' in html_out
     assert 'data-label="relevant"' in html_out
-    assert "no assessment on record" in html_out
+    assert 'class="score score-nr"' in html_out
 
 
 def test_render_job_rows_empty_shows_message():
@@ -220,16 +220,24 @@ def test_render_job_rows_empty_shows_message():
     assert "Nothing gained." in html_out
 
 
-def test_assessment_note_reflects_prior_assessment_attached_by_active_jobs():
+def test_render_job_rows_score_badge_reflects_prior_assessment_attached_by_active_jobs():
     """_active_jobs only ever attaches prior_assessment when the content_hash still matches,
     so its mere presence already means valid — no separate staleness check needed here."""
+    now = datetime(2026, 9, 6, tzinfo=UTC)
     job = make_job(job_id="1")
-    assert _assessment_note(job) == "no assessment on record"
+    html_out = _render_job_rows(
+        [job], now=now, empty_message="unused", undated_new_days=15, undated_stale_days=45
+    )
+    assert 'class="score score-nr"' in html_out
+
     job.prior_assessment = Assessment(
         source_key="apple", job_id="1", company="Apple", title="x", url="https://example.com/1",
         score=82, recommended=True,
     )
-    assert _assessment_note(job) == "has a valid prior assessment (score 82)"
+    html_out = _render_job_rows(
+        [job], now=now, empty_message="unused", undated_new_days=15, undated_stale_days=45
+    )
+    assert '<span class="score">82</span>' in html_out
 
 
 def test_refilter_excludes_a_source_that_failed_this_archives_run(monkeypatch, tmp_path):

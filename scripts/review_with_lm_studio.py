@@ -34,8 +34,11 @@ import httpx
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Assessment
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.runlock import RunLockHeld, run_lock
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -206,7 +209,7 @@ def review_one(
 def _refresh_export(storage: Storage, database_path: Path) -> None:
     rows = storage.export_assessments()
     path = database_path.parent / "assessments.json"
-    path.write_text(json.dumps(rows, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(rows, indent=2, default=str, ensure_ascii=False) + "\n")
 
 
 def main() -> int:
@@ -255,7 +258,9 @@ def main() -> int:
             "still to review, then exit — no model calls, no changes made"
         ),
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
     args.input = resolve_search_path(search=args.input, keyword=args.keyword)
 
     settings = load_settings()
@@ -294,6 +299,21 @@ def main() -> int:
         )
         return 0
 
+    try:
+        with run_lock("review"):
+            return _run_review(to_review, skipped_cached, config, settings, profile, resume, rubric)
+    except RunLockHeld as exc:
+        print(
+            f"job-hunter: {exc} — another review run is already in progress for this "
+            "project (data/assessments.json and the sequential local model can only be "
+            "driven by one review run at a time). Wait for it to finish, or remove the "
+            "lock file if you're sure it's stale.",
+            file=sys.stderr,
+        )
+        return 2
+
+
+def _run_review(to_review, skipped_cached, config, settings, profile, resume, rubric) -> int:
     base_url = config["base_url"].rstrip("/")
     with httpx.Client() as client:
         try:

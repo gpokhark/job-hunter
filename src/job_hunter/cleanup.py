@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .atomic import atomic_write_text
 from .config import Settings
 from .storage import Storage
 
@@ -135,11 +136,8 @@ class CleanupResult:
 
 
 def _write_export(payload: dict[str, Any], *, now: datetime, export_dir: Path) -> Path:
-    export_dir.mkdir(parents=True, exist_ok=True)
     path = export_dir / f"{now.strftime('%Y%m%dT%H%M%SZ')}.json"
-    path.write_text(
-        json.dumps(payload, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(path, json.dumps(payload, indent=2, default=str, ensure_ascii=False) + "\n")
     return path
 
 

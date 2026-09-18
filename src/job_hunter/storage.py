@@ -18,6 +18,11 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
+        # Two job-hunter/agent processes (e.g. a search run and a concurrent review run) can
+        # legitimately hit the same SQLite file at once; without a busy_timeout, a writer that
+        # loses the race to WAL/lock contention fails immediately with "database is locked"
+        # instead of waiting briefly for the other transaction to finish.
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         self.initialize()
 
     def close(self) -> None:
