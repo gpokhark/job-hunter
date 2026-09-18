@@ -426,6 +426,32 @@ def build(
     )
     never_reviewed = len(never_reviewed_candidates)
 
+    # "New" here means the same posting-recency flag as every row's own [New] tag
+    # (`is_new`, computed above per scored row / via `_undated_tags` below for an
+    # unreviewed one) — never `is_new`/`is_changed`'s "not previously seen by this
+    # tool" meaning. Counted across every candidate regardless of review status,
+    # since posting recency and sponsorship are candidate-level facts that don't
+    # require a verdict — an unreviewed candidate can still be new or sponsored.
+    never_reviewed_new = 0
+    never_reviewed_sponsorship_new = 0
+    for candidate in never_reviewed_candidates:
+        is_new, _ = _undated_tags(
+            candidate.get("posted_at"), candidate.get("first_seen_at"), now=now, new_days=new_days,
+            undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+        )
+        if is_new:
+            never_reviewed_new += 1
+            if candidate.get("visa_sponsorship") == "available":
+                never_reviewed_sponsorship_new += 1
+    strong_new = sum(1 for r in strong if r["new"])
+    review_new = sum(1 for r in review if r["new"])
+    below_50_new = sum(1 for r in below_50_rows if r["new"])
+    total_new = strong_new + review_new + below_50_new + never_reviewed_new
+    sponsorship_new = (
+        sum(1 for r in rows if r["new"] and r.get("visa_sponsorship") == "available")
+        + never_reviewed_sponsorship_new
+    )
+
     source_issues = sorted(
         (h for h in search.get("source_health", []) if h.get("status") != "ok"),
         key=lambda h: (_SOURCE_ISSUE_ORDER.get(h.get("status"), 99), h.get("company") or h.get("source_key") or ""),
@@ -453,6 +479,7 @@ def build(
         .replace("__H1__", _e(title))
         .replace("__EYEBROW__", _e(eyebrow))
         .replace("__SUBHEAD__", _e(subhead))
+        .replace("__TOTAL_JOBS__", str(len(candidates)))
         .replace("__TOTAL_SCORED__", str(len(rows)))
         .replace("__STRONG_COUNT__", str(len(strong)))
         .replace("__REVIEW_COUNT__", str(len(review)))
@@ -461,6 +488,11 @@ def build(
         .replace("__FAILED_COUNT__", str(failed_count))
         .replace("__SOURCE_ISSUES_COUNT__", str(len(source_issues)))
         .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
+        .replace("__TOTAL_NEW__", str(total_new))
+        .replace("__STRONG_NEW__", str(strong_new))
+        .replace("__REVIEW_NEW__", str(review_new))
+        .replace("__BELOW_50_NEW__", str(below_50_new))
+        .replace("__SPONSORSHIP_NEW__", str(sponsorship_new))
         .replace(
             "__STRONG_ROWS__",
             _rows_html(strong, empty_message="No candidates scored 75 or above for this search."),

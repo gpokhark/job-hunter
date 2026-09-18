@@ -63,7 +63,16 @@ from typing import Any
 
 # Reused rather than reimplemented — same [New]/sponsorship/hybrid-remote tag rules and date
 # formatting as the other two reports, so a job is never tagged differently across all three.
-from diff_profile import _e, _fmt_posted_date, _job_tags, _local, _report_timestamp  # noqa: E402
+from diff_profile import (  # noqa: E402
+    _e,
+    _fmt_posted_date,
+    _is_new,
+    _job_meta_html,
+    _job_tags,
+    _local,
+    _report_timestamp,
+)
+from render_radar import _tier  # noqa: E402
 
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
@@ -208,8 +217,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     --line: #DCE3E7;
     --accent: #0C7F91;
     --accent-soft: #E4F1F3;
-    --tier-exceptional: #1D9A66;
-    --tier-exceptional-soft: #E4F5EC;
+    /* Score tiers — identical values to radar_template.html's/diff_profile.py's. */
+    --score-fair: #5C7A99;
+    --score-moderate: #0C7F91;
+    --score-promising: #A3760E;
+    --score-strong: #D2691E;
+    --score-exceptional: #1D9A66;
+    /* Status color: reserved, fixed meaning ("good") — mirrors diff_profile.py's
+       and radar_template.html's identical --status-good token. */
+    --status-good: #1D9A66;
+    --status-good-soft: #E4F5EC;
     --danger: #C1443A;
     --danger-soft: #FBEAE8;
     --arrangement-remote: #2D6FB0;
@@ -222,14 +239,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --paper: #10151A; --ink: #E9EDEF; --ink-soft: #A6B0B8; --surface: #171E24; --line: #2A333A;
-      --accent: #3FC1D4; --accent-soft: #17323A; --tier-exceptional: #3FCC8C; --tier-exceptional-soft: #163829;
+      --accent: #3FC1D4; --accent-soft: #17323A;
+      --score-fair: #7FA3C4; --score-moderate: #3FC1D4; --score-promising: #E3B24A; --score-strong: #E8875A; --score-exceptional: #3FCC8C;
+      --status-good: #3FCC8C; --status-good-soft: #163829;
       --danger: #E2695E; --danger-soft: #3A1F1C; --arrangement-remote: #6FB1EE; --arrangement-remote-soft: #17293A;
       --arrangement-hybrid: #C0A3EA; --arrangement-hybrid-soft: #2A2038; --muted: #8A95A0; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
   }
   :root[data-theme="dark"] {
     --paper: #10151A; --ink: #E9EDEF; --ink-soft: #A6B0B8; --surface: #171E24; --line: #2A333A;
-    --accent: #3FC1D4; --accent-soft: #17323A; --tier-exceptional: #3FCC8C; --tier-exceptional-soft: #163829;
+    --accent: #3FC1D4; --accent-soft: #17323A;
+    --score-fair: #7FA3C4; --score-moderate: #3FC1D4; --score-promising: #E3B24A; --score-strong: #E8875A; --score-exceptional: #3FCC8C;
+    --status-good: #3FCC8C; --status-good-soft: #163829;
     --danger: #E2695E; --danger-soft: #3A1F1C; --arrangement-remote: #6FB1EE; --arrangement-remote-soft: #17293A;
     --arrangement-hybrid: #C0A3EA; --arrangement-hybrid-soft: #2A2038; --muted: #8A95A0; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
@@ -246,14 +267,26 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   section { margin: 32px 0; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
   .row { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow); padding: 12px 16px; }
-  .row-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-  .job-title { font-weight: 600; font-size: 15px; }
-  .job-company { font-size: 13px; color: var(--muted); }
+  .row-top { display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 14px; }
+  .score { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 20px; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-soft); }
+  .score-nr { color: var(--muted); font-size: 13px; letter-spacing: 0.02em; }
+  .row.tier-exceptional .score { color: var(--score-exceptional); }
+  .row.tier-strong .score { color: var(--score-strong); }
+  .row.tier-promising .score { color: var(--score-promising); }
+  .row.tier-moderate .score { color: var(--score-moderate); }
+  .row.tier-fair .score { color: var(--score-fair); }
+  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .job-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .job-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .job-title-line .tag-new { flex: none; }
+  .job-company { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-salary { color: var(--accent); font-weight: 600; }
   .job-date { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row-end { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 220px; }
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
-  .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
+  .tag-sponsor-yes { background: var(--status-good-soft); color: var(--status-good); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
   .tag-long-standing { background: var(--line); color: var(--muted); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
@@ -264,8 +297,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .apply-link { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; white-space: nowrap; }
   .apply-link:hover, .apply-link:focus-visible { border-bottom-color: var(--accent); }
   .row-meta { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  @media (max-width: 560px) {
+    .row-top { grid-template-columns: 36px 1fr auto auto; }
+    .tags { max-width: 90px; }
+    .job-date { display: none; }
+  }
   .empty { color: var(--muted); font-style: italic; }
-  .row-feedback { margin-top: 8px; }
   .feedback-buttons { display: flex; gap: 4px; align-items: center; }
   .fb-btn { font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
   .fb-btn:hover { border-color: var(--accent); }
@@ -408,15 +445,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def _assessment_note(job: Job) -> str:
-    """`_active_jobs` only ever attaches `prior_assessment` when its content_hash still
-    matches — so its mere presence already means "valid", unlike diff_profile.py's version
-    which has to check staleness itself against a separately-loaded assessments dict."""
-    if job.prior_assessment is None:
-        return "no assessment on record"
-    return f"has a valid prior assessment (score {job.prior_assessment.score})"
-
-
 def _render_job_rows(
     jobs: list[Job], *, now: datetime, empty_message: str, undated_new_days: int, undated_stale_days: int
 ) -> str:
@@ -424,30 +452,55 @@ def _render_job_rows(
         return f'<p class="empty">{_e(empty_message)}</p>'
     parts = []
     for job in jobs:
+        new_badge = (
+            '<span class="tag tag-new">New</span>'
+            if _is_new(job, now=now, undated_new_days=undated_new_days)
+            else ""
+        )
         tags = _job_tags(job, now=now, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days)
         date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
+        # `_active_jobs` only ever attaches `prior_assessment` when its content_hash still
+        # matches the job's current one — so its mere presence already means "valid", unlike
+        # diff_profile.py's version which has to check staleness itself against a
+        # separately-loaded assessments dict.
+        score = job.prior_assessment.score if job.prior_assessment else None
+        if score is None:
+            score_html = '<span class="score score-nr" title="Not yet reviewed by the local model">NR</span>'
+            tier_class = ""
+        else:
+            score_html = f'<span class="score">{score}</span>'
+            tier_class = f" tier-{_tier(score)}"
+        meta_html = _job_meta_html(job.location_raw, job.salary_evidence)
+        job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
         feedback_buttons = f'''<span class="feedback-buttons"
               data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
               data-company="{_e(job.company)}" data-title="{_e(job.title)}"
-              data-department="{_e(job.department)}" data-score=""
+              data-department="{_e(job.department)}" data-score="{score if score is not None else ''}"
               data-db-label="">
               <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
               <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
               <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
             </span>'''
         parts.append(f"""
-        <div class="row">
+        <div class="row{tier_class}">
           <div class="row-top">
-            <span class="tags">{tags}</span>
+            {score_html}
             <span class="job">
-              <span class="job-title">{_e(job.title)}</span>
+              <span class="job-title-line">
+                {new_badge}
+                <span class="job-title">{_e(job.title)}</span>
+              </span>
               <span class="job-company">{_e(job.company)}</span>
+              {job_meta}
             </span>
-            <span class="job-date">{_e(date_display)}</span>
-            <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            <span class="tags">{tags}</span>
+            <span class="row-end">
+              <span class="job-date">{_e(date_display)}</span>
+              {feedback_buttons}
+              <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            </span>
           </div>
-          <div class="row-meta">{_e(_assessment_note(job))}</div>
-          <div class="row-feedback">{feedback_buttons}</div>
+          <div class="row-meta">last seen {_e(str(_local(job.last_seen_at)))}</div>
         </div>""")
     return "".join(parts)
 

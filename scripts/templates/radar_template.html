@@ -13,12 +13,22 @@
     --line: #DCE3E7;
     --accent: #0C7F91;
     --accent-soft: #E4F1F3;
-    --tier-exceptional: #1D9A66;
-    --tier-exceptional-soft: #E4F5EC;
-    --tier-strong: #B4790F;
-    --tier-strong-soft: #FBF0DC;
-    --tier-promising: #A6821E;
-    --tier-fair: #6C8791;
+    /* Score tiers: five distinct hues, one per band (50s through 90s+) — cool
+       slate for a bare pass warming through gold/orange up to green at the top,
+       so "exceptional" reads as an unambiguous "great match" rather than just
+       "the darkest shade of the same color." */
+    --score-fair: #5C7A99;
+    --score-moderate: #0C7F91;
+    --score-promising: #A3760E;
+    --score-strong: #D2691E;
+    --score-exceptional: #1D9A66;
+    /* Status colors: reserved, fixed meaning (good/warning/critical), never a
+       stand-in for a score tier — kept distinct from the ramp above so a
+       sponsorship or source-health color never impersonates a score. */
+    --status-good: #1D9A66;
+    --status-good-soft: #E4F5EC;
+    --status-warning: #B4790F;
+    --status-warning-soft: #FBF0DC;
     --danger: #C1443A;
     --danger-soft: #FBEAE8;
     --arrangement-remote: #2D6FB0;
@@ -40,12 +50,15 @@
       --line: #2A333A;
       --accent: #3FC1D4;
       --accent-soft: #17323A;
-      --tier-exceptional: #3FCC8C;
-      --tier-exceptional-soft: #163829;
-      --tier-strong: #E3AA45;
-      --tier-strong-soft: #3A2E14;
-      --tier-promising: #CBA050;
-      --tier-fair: #7C9CA6;
+      --score-fair: #7FA3C4;
+      --score-moderate: #3FC1D4;
+      --score-promising: #E3B24A;
+      --score-strong: #E8875A;
+      --score-exceptional: #3FCC8C;
+      --status-good: #3FCC8C;
+      --status-good-soft: #163829;
+      --status-warning: #E3AA45;
+      --status-warning-soft: #3A2E14;
       --danger: #E2695E;
       --danger-soft: #3A1F1C;
       --arrangement-remote: #6FB1EE;
@@ -67,12 +80,15 @@
     --line: #2A333A;
     --accent: #3FC1D4;
     --accent-soft: #17323A;
-    --tier-exceptional: #3FCC8C;
-    --tier-exceptional-soft: #163829;
-    --tier-strong: #E3AA45;
-    --tier-strong-soft: #3A2E14;
-    --tier-promising: #CBA050;
-    --tier-fair: #7C9CA6;
+    --score-fair: #7FA3C4;
+    --score-moderate: #3FC1D4;
+    --score-promising: #E3B24A;
+    --score-strong: #E8875A;
+    --score-exceptional: #3FCC8C;
+    --status-good: #3FCC8C;
+    --status-good-soft: #163829;
+    --status-warning: #E3AA45;
+    --status-warning-soft: #3A2E14;
     --danger: #E2695E;
     --danger-soft: #3A1F1C;
     --arrangement-remote: #6FB1EE;
@@ -159,14 +175,51 @@
     margin: 0 0 28px;
   }
 
+  /* Two stat groups — "This run" (what exists) and "New since last check"
+     (what's worth a second look right now) — each its own labeled grid rather
+     than one undifferentiated row of 13 tiles, so a reader can tell at a
+     glance which numbers describe the whole pool and which describe what
+     just showed up. */
+  .stats-group {
+    margin-top: 16px;
+  }
+
+  .stats-group:first-child {
+    margin-top: 0;
+  }
+
+  .stats-group-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     gap: 1px;
     background: var(--line);
     border: 1px solid var(--line);
     border-radius: 3px;
     overflow: hidden;
+  }
+
+  /* Fixed column counts (not auto-fit) so a known-size row of tiles never
+     splits an orphan tile onto its own second line — "This run"'s 8 tiles and
+     "New postings"'s 5 always fill their row evenly, at every breakpoint. */
+  .stats-run { grid-template-columns: repeat(8, 1fr); }
+  .stats-new { grid-template-columns: repeat(5, 1fr); border-color: var(--accent-soft); }
+
+  @media (max-width: 700px) {
+    .stats-run { grid-template-columns: repeat(4, 1fr); }
+    .stats-new { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  @media (max-width: 480px) {
+    .stats-run, .stats-new { grid-template-columns: repeat(2, 1fr); }
   }
 
   .stat {
@@ -177,12 +230,28 @@
     gap: 4px;
   }
 
+  .stats-new .stat {
+    background: var(--accent-soft);
+  }
+
   .stat-value {
     font-family: "IBM Plex Mono", monospace;
     font-weight: 600;
     font-size: 24px;
     font-variant-numeric: tabular-nums;
+    color: var(--ink);
   }
+
+  /* Tones tie each count to the same color it already carries elsewhere in the
+     report (the score ramp, the danger/status tags) rather than inventing a
+     new palette just for the masthead. */
+  .stat-value.tone-strong { color: var(--score-exceptional); }
+  .stat-value.tone-review { color: var(--score-promising); }
+  .stat-value.tone-below { color: var(--score-fair); }
+  .stat-value.tone-muted { color: var(--muted); }
+  .stat-value.tone-danger { color: var(--danger); }
+  .stat-value.tone-new { color: var(--accent); }
+  .stat-value.tone-good { color: var(--status-good); }
 
   .stat-label {
     font-size: 11px;
@@ -191,21 +260,66 @@
     color: var(--muted);
   }
 
+  /* Score-ramp legend — the score column's color is always a secondary cue on
+     top of the visible number itself, never the only way to read it, but a key
+     still names what the ramp means at a glance rather than leaving a reader to
+     infer "darker teal = better" from five rows scattered down the page. */
+  .score-legend {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .score-legend-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .score-legend-scale {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .score-legend-step {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .score-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  .score-legend-step.fair .score-legend-swatch { background: var(--score-fair); }
+  .score-legend-step.moderate .score-legend-swatch { background: var(--score-moderate); }
+  .score-legend-step.promising .score-legend-swatch { background: var(--score-promising); }
+  .score-legend-step.strong .score-legend-swatch { background: var(--score-strong); }
+  .score-legend-step.exceptional .score-legend-swatch { background: var(--score-exceptional); }
+
   /* One deliberate, orchestrated entrance for the page's single most-seen moment (the
      masthead, visible every time this report is opened or regenerated) rather than
      scattered micro-animations throughout — the row list below gets none, since
      animating hundreds of re-rendered cards on every reopen would read as slow, not
      delightful. */
   @media (prefers-reduced-motion: no-preference) {
-    .eyebrow, .masthead h1, .subhead, .stats, .radar-toolbar {
+    .eyebrow, .masthead h1, .subhead, .stats-group, .radar-toolbar {
       opacity: 0;
       animation: reveal-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
     .eyebrow { animation-delay: 0.03s; }
     .masthead h1 { animation-delay: 0.1s; }
     .subhead { animation-delay: 0.2s; }
-    .stats { animation-delay: 0.3s; }
-    .radar-toolbar { animation-delay: 0.4s; }
+    .stats-group:nth-of-type(1) { animation-delay: 0.3s; }
+    .stats-group:nth-of-type(2) { animation-delay: 0.36s; }
+    .radar-toolbar { animation-delay: 0.42s; }
   }
 
   @keyframes reveal-up {
@@ -310,16 +424,41 @@
     .toolbar-count { margin-left: 0; flex-basis: 100%; }
   }
 
-  .group {
+  details.group {
     margin-bottom: 48px;
   }
 
-  .group-head {
+  summary.group-head {
     display: flex;
     align-items: baseline;
-    gap: 12px;
+    gap: 10px;
     margin-bottom: 6px;
     flex-wrap: wrap;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  summary.group-head::-webkit-details-marker {
+    display: none;
+  }
+
+  summary.group-head:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* One glyph, rotated rather than swapped, so open<->closed is a smooth turn
+     instead of a content flash. */
+  .group-toggle {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+    flex: none;
+  }
+
+  details.group[open] > summary.group-head .group-toggle {
+    transform: rotate(90deg);
   }
 
   .group h2 {
@@ -369,7 +508,7 @@
     border-color: var(--accent);
   }
 
-  summary {
+  details.row > summary {
     list-style: none;
     cursor: pointer;
     display: grid;
@@ -405,12 +544,13 @@
 
   /* A five-step gradient across the whole 50-100 range (see render_radar.py's _tier)
      rather than a hard cutoff only at 80/90 — a 76 and a 58 both matter, just less
-     than an 88, and the color should say so at a glance without opening either row. */
-  .tier-exceptional .score { color: var(--tier-exceptional); }
-  .tier-strong .score { color: var(--tier-strong); }
-  .tier-promising .score { color: var(--tier-promising); }
-  .tier-moderate .score { color: var(--accent); }
-  .tier-fair .score { color: var(--tier-fair); }
+     than an 88, and the color should say so at a glance without opening either row.
+     Five distinct hues — see --score-* tokens above. */
+  .tier-exceptional .score { color: var(--score-exceptional); }
+  .tier-strong .score { color: var(--score-strong); }
+  .tier-promising .score { color: var(--score-promising); }
+  .tier-moderate .score { color: var(--score-moderate); }
+  .tier-fair .score { color: var(--score-fair); }
 
   .score-nr {
     color: var(--muted);
@@ -436,13 +576,13 @@
     white-space: nowrap;
   }
 
-  .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
+  .tag-sponsor-yes { background: var(--status-good-soft); color: var(--status-good); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
   .tag-hybrid { background: var(--arrangement-hybrid-soft); color: var(--arrangement-hybrid); }
 
   .tag-source-failed { background: var(--danger-soft); color: var(--danger); }
-  .tag-source-warning { background: var(--tier-strong-soft); color: var(--tier-strong); }
+  .tag-source-warning { background: var(--status-warning-soft); color: var(--status-warning); }
   .tag-source-unsupported { background: var(--line); color: var(--muted); }
   .tag-long-standing { background: var(--line); color: var(--muted); }
 
@@ -653,7 +793,7 @@
   }
 
   @media (max-width: 560px) {
-    summary, .plain-row-top { grid-template-columns: 36px 1fr auto auto; }
+    details.row > summary, .plain-row-top { grid-template-columns: 36px 1fr auto auto; }
     .tags { max-width: 90px; }
     .job-date { display: none; }
     .row-detail { grid-template-columns: 1fr; padding-left: 16px; }
@@ -734,13 +874,38 @@
     <p class="eyebrow">__EYEBROW__</p>
     <h1>__H1__</h1>
     <p class="subhead">__SUBHEAD__</p>
-    <div class="stats">
-      <div class="stat"><span class="stat-value">__TOTAL_SCORED__</span><span class="stat-label">Scored</span></div>
-      <div class="stat"><span class="stat-value">__STRONG_COUNT__</span><span class="stat-label">Strong (75+)</span></div>
-      <div class="stat"><span class="stat-value">__REVIEW_COUNT__</span><span class="stat-label">For review (50&ndash;74)</span></div>
-      <div class="stat"><span class="stat-value">__BELOW_50__</span><span class="stat-label">Below 50</span></div>
-      <div class="stat"><span class="stat-value">__SOURCES__</span><span class="stat-label">Sources</span></div>
-      <div class="stat"><span class="stat-value">__FAILED_COUNT__</span><span class="stat-label">Failed</span></div>
+    <div class="stats-group">
+      <p class="stats-group-label">This run</p>
+      <div class="stats stats-run">
+        <div class="stat"><span class="stat-value">__TOTAL_JOBS__</span><span class="stat-label">Total jobs</span></div>
+        <div class="stat"><span class="stat-value">__TOTAL_SCORED__</span><span class="stat-label">Scored</span></div>
+        <div class="stat"><span class="stat-value tone-muted">__NEVER_REVIEWED_COUNT__</span><span class="stat-label">Not LLM reviewed</span></div>
+        <div class="stat"><span class="stat-value tone-strong">__STRONG_COUNT__</span><span class="stat-label">Strong (75+)</span></div>
+        <div class="stat"><span class="stat-value tone-review">__REVIEW_COUNT__</span><span class="stat-label">For review (50&ndash;74)</span></div>
+        <div class="stat"><span class="stat-value tone-below">__BELOW_50__</span><span class="stat-label">Below 50</span></div>
+        <div class="stat"><span class="stat-value">__SOURCES__</span><span class="stat-label">Sources</span></div>
+        <div class="stat"><span class="stat-value tone-danger">__FAILED_COUNT__</span><span class="stat-label">Failed</span></div>
+      </div>
+    </div>
+    <div class="stats-group">
+      <p class="stats-group-label">New postings</p>
+      <div class="stats stats-new">
+        <div class="stat"><span class="stat-value tone-new">__TOTAL_NEW__</span><span class="stat-label">Total new</span></div>
+        <div class="stat"><span class="stat-value tone-new">__STRONG_NEW__</span><span class="stat-label">Strong new</span></div>
+        <div class="stat"><span class="stat-value tone-new">__REVIEW_NEW__</span><span class="stat-label">For review new</span></div>
+        <div class="stat"><span class="stat-value tone-new">__BELOW_50_NEW__</span><span class="stat-label">Below 50 new</span></div>
+        <div class="stat"><span class="stat-value tone-good">__SPONSORSHIP_NEW__</span><span class="stat-label">Visa sponsorship new</span></div>
+      </div>
+    </div>
+    <div class="score-legend">
+      <span class="score-legend-label">Score</span>
+      <div class="score-legend-scale">
+        <span class="score-legend-step fair"><span class="score-legend-swatch"></span>50s</span>
+        <span class="score-legend-step moderate"><span class="score-legend-swatch"></span>60s</span>
+        <span class="score-legend-step promising"><span class="score-legend-swatch"></span>70s</span>
+        <span class="score-legend-step strong"><span class="score-legend-swatch"></span>80s</span>
+        <span class="score-legend-step exceptional"><span class="score-legend-swatch"></span>90+</span>
+      </div>
     </div>
   </header>
 
@@ -758,59 +923,64 @@
     <span class="toolbar-count" id="filter-count"></span>
   </div>
 
-  <section class="group">
-    <div class="group-head">
+  <details class="group">
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
       <h2>Collection issues</h2>
       <span class="group-count">__SOURCE_ISSUES_COUNT__ sources</span>
-    </div>
+    </summary>
     <p class="group-note">Sources that didn't collect cleanly this run &mdash; failed (a
       transient error, worth retrying), warning (collected, but a suspicious job-count drop
       was flagged), or unsupported (a known, permanent state, disclosed in
       <code>companies.yaml</code>). Candidates above are unaffected by these.</p>
     <div class="rows">__SOURCE_ISSUES_ROWS__</div>
-  </section>
+  </details>
 
-  <section class="group">
-    <div class="group-head">
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
       <h2>Strong matches</h2>
       <span class="group-count">score &ge; 75 &middot; __STRONG_COUNT__ jobs</span>
-    </div>
+    </summary>
     <p class="group-note">Sorted by score, highest first. Tap a row for the model's evidence.</p>
     <div class="rows">__STRONG_ROWS__</div>
     <p class="filter-empty-state" hidden>No matches for the current filters.</p>
-  </section>
+  </details>
 
-  <section class="group">
-    <div class="group-head">
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
       <h2>For review</h2>
       <span class="group-count">score 50&ndash;74 &middot; __REVIEW_COUNT__ jobs</span>
-    </div>
+    </summary>
     <p class="group-note">Lower-confidence matches &mdash; worth a look, not a recommendation.</p>
     <div class="rows">__REVIEW_ROWS__</div>
     <p class="filter-empty-state" hidden>No matches for the current filters.</p>
-  </section>
+  </details>
 
-  <section class="group">
-    <div class="group-head">
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
       <h2>Below 50</h2>
       <span class="group-count">score &lt; 50 &middot; __BELOW_50__ jobs</span>
-    </div>
+    </summary>
     <p class="group-note">Every candidate the local model scored, regardless of fit &mdash; unlikely matches, kept for completeness.</p>
     <div class="rows">__BELOW_50_ROWS__</div>
     <p class="filter-empty-state" hidden>No matches for the current filters.</p>
-  </section>
+  </details>
 
-  <section class="group">
-    <div class="group-head">
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
       <h2>Not LLM Reviewed</h2>
       <span class="group-count">__NEVER_REVIEWED_COUNT__ jobs</span>
-    </div>
+    </summary>
     <p class="group-note">Passed every deterministic filter but hasn't been scored by the local
       model yet &mdash; no verdict to show, so no score/strengths/gaps here. Run job-reviewer to
       move these into one of the groups above.</p>
     <div class="rows">__NEVER_REVIEWED_ROWS__</div>
     <p class="filter-empty-state" hidden>No matches for the current filters.</p>
-  </section>
+  </details>
 
   <footer>
     <p>Full data in <code>data/assessments.csv</code>. See "Collection issues" above for any source that didn't collect cleanly this run.</p>
