@@ -25,6 +25,11 @@ def resolve_project_root(explicit: str | os.PathLike[str] | None) -> Path:
         raise FileNotFoundError(
             f"--project/JOB_HUNTER_ROOT path does not exist or is not a directory: {root}"
         )
+    if not (root / "pyproject.toml").exists() or not (root / "config" / "settings.yaml").exists():
+        raise FileNotFoundError(
+            f"--project/JOB_HUNTER_ROOT path does not look like a job-hunter checkout (missing "
+            f"pyproject.toml and/or config/settings.yaml): {root}"
+        )
     return root
 
 
@@ -38,11 +43,19 @@ def chdir_to_project_root(explicit: str | os.PathLike[str] | None = None) -> Pat
     return root
 
 
-def add_project_argument(parser: argparse.ArgumentParser) -> None:
+def add_project_argument(parser: argparse.ArgumentParser, *, suppress_default: bool = False) -> None:
+    """Register `--project` on `parser`. `suppress_default=True` is for a *subparser* that already
+    shares this flag with its root parser: argparse re-applies a subparser's own default over
+    whatever the root parser already parsed whenever the subcommand's own args don't repeat the
+    flag, so `job-hunter --project X doctor` would otherwise silently lose `X` the moment
+    `doctor`'s subparser re-defaults it to `None`. `default=argparse.SUPPRESS` makes the subparser
+    leave `args.project` untouched when it wasn't given at that position, so whichever parser
+    actually saw the flag wins — confirmed against a standalone argparse repro of both orders
+    plus the "neither given" case before relying on it here."""
     parser.add_argument(
         "--project",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS if suppress_default else None,
         help=(
             "job-hunter project root to run against (falls back to $JOB_HUNTER_ROOT, then the "
             "current directory). Equivalent to running from that directory first: every other "

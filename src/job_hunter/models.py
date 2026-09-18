@@ -207,6 +207,26 @@ class PipelineStatus(StrEnum):
     FAILED = "failed"
     NO_CANDIDATES = "no_candidates"
     MODEL_UNAVAILABLE = "model_unavailable"
+    # Another job-hunter process already held the shared `run_lock("job-hunter")` (see
+    # pipeline.py/cleanup.py/scripts/refilter_archive.py) — this run never started any stage.
+    LOCK_HELD = "lock_held"
+    # A stage's subprocess exceeded `settings.pipeline.stage_timeout_seconds` and was killed —
+    # see pipeline.py's per-stage `subprocess.run(..., timeout=...)`.
+    TIMED_OUT = "timed_out"
+
+
+#: `job-hunter pipeline`/`pipeline-status`'s non-success exit-code set — `PARTIAL`/`NO_CANDIDATES`
+#: exit 0 (both are documented, expected outcomes: a candidate list with some review failures, or
+#: a genuinely empty one), everything else here exits 2. Shared between the two CLI call sites
+#: (`cli.py`) so the contract can't drift between "just ran" and "polled later" the same run.
+PIPELINE_NON_SUCCESS_STATUSES = frozenset(
+    {
+        PipelineStatus.FAILED,
+        PipelineStatus.MODEL_UNAVAILABLE,
+        PipelineStatus.LOCK_HELD,
+        PipelineStatus.TIMED_OUT,
+    }
+)
 
 
 class PipelineManifest(BaseModel):
@@ -216,6 +236,11 @@ class PipelineManifest(BaseModel):
 
     run_id: str
     project_root: str
+    # Set once at run start (`os.getpid()`) — `pipeline-status` uses this to distinguish a
+    # manifest genuinely still `RUNNING` from one whose process has died without updating it
+    # (reported as `abandoned`; see cli.py's `pipeline-status` handling). `None` only for a
+    # manifest written before this field existed.
+    pid: int | None = None
     keyword: str | None = None
     stage: PipelineStage = PipelineStage.SEARCH
     status: PipelineStatus = PipelineStatus.RUNNING

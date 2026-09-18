@@ -18,9 +18,10 @@ from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
-from .models import Assessment, PipelineStatus
+from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus
 from .pipeline import latest_run_id, read_manifest, run_pipeline
 from .rootutil import add_project_argument, chdir_to_project_root
+from .runlock import RunLockHeld, pid_alive
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
@@ -115,6 +116,15 @@ def parser() -> argparse.ArgumentParser:
     resolve_group.add_argument(
         "--keyword", help="resolve to the newest archive for this keyword's slug"
     )
+    resolve.add_argument(
+        "--companies",
+        help=(
+            "disambiguate among archives sharing --keyword by --companies scope (same value "
+            "originally passed to job-hunter search/pipeline --companies) — omit to resolve "
+            "only among unscoped archives, the default and overwhelming majority of real runs. "
+            "Ignored together with --search, which always resolves to exactly that path."
+        ),
+    )
     cleanup = sub.add_parser(
         "cleanup",
         help=(
@@ -192,13 +202,18 @@ def parser() -> argparse.ArgumentParser:
     # works, but argparse subparsers only see arguments that appear *after* the command token —
     # `job-hunter <command> --project X` would otherwise be rejected as unrecognized. Registering
     # it again on every subparser here (rather than only documenting "put it before the
-    # subcommand") makes both positions work: argparse's own default-handling already skips
-    # re-applying a subparser's default over a value the root parser already set, so passing it
-    # in only one position is never overwritten by the other parser's unset default. Confirmed
-    # live: every skills/*/SKILL.md example shows `<command> --project ...` (after the
-    # subcommand) — that shape must work, not just be documented as the "wrong" order to avoid.
+    # subcommand") makes both positions work. This used to re-register with the same `default=None`
+    # as the root parser, which was a real bug: argparse's subparser pass runs *after* the root
+    # pass and unconditionally re-applies its own default whenever the subcommand's own args don't
+    # repeat the flag, so `job-hunter --project X doctor` silently lost `X` the moment `doctor`'s
+    # subparser re-defaulted it to `None` (confirmed live, and with a standalone argparse repro).
+    # `suppress_default=True` fixes this: a subparser with `default=argparse.SUPPRESS` leaves
+    # `args.project` untouched when the flag wasn't given at that position, so whichever parser
+    # actually saw it wins either way. Confirmed live: every skills/*/SKILL.md example shows
+    # `<command> --project ...` (after the subcommand) — that shape must work, not just be
+    # documented as the "wrong" order to avoid.
     for subparser in sub.choices.values():
-        add_project_argument(subparser)
+        add_project_argument(subparser, suppress_default=True)
     return root
 
 
@@ -361,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Re-evaluated salary for every stored job; {changed} changed.")
             return 0
         if args.command == "resolve-search":
-            resolved = resolve_search_path(search=args.search, keyword=args.keyword)
+            resolved = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
             print(resolved)
             return 0
         if args.command == "pipeline-status":
@@ -370,8 +385,24 @@ def main(argv: list[str] | None = None) -> int:
                 print("job-hunter: no pipeline runs found (data/runs is empty)", file=sys.stderr)
                 return 2
             manifest = read_manifest(run_id)
-            print(_json(manifest.model_dump(mode="json")))
-            return 0 if manifest.status not in {PipelineStatus.FAILED, PipelineStatus.MODEL_UNAVAILABLE} else 2
+            # A manifest can be stuck at RUNNING forever if its process died without updating it
+            # (killed, crashed, machine restarted) — the manifest file itself never lies about
+            # what it last wrote, so this is a read-time, presentation-only verdict computed here,
+            # never persisted back to the manifest (see docs/agent-runtime-audit.md's "abandoned
+            # vs. running" finding).
+            abandoned = (
+                manifest.status == PipelineStatus.RUNNING
+                and manifest.pid is not None
+                and not pid_alive(manifest.pid)
+            )
+            payload = manifest.model_dump(mode="json")
+            if abandoned:
+                payload["last_written_status"] = payload["status"]
+                payload["status"] = "abandoned"
+            print(_json(payload))
+            if abandoned:
+                return 2
+            return 0 if manifest.status not in PIPELINE_NON_SUCCESS_STATUSES else 2
         if args.command == "pipeline":
             if args.no_scrape and args.companies:
                 print(
@@ -398,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             print(_json(manifest.model_dump(mode="json")))
-            return 0 if manifest.status not in {PipelineStatus.FAILED, PipelineStatus.MODEL_UNAVAILABLE} else 2
+            return 0 if manifest.status not in PIPELINE_NON_SUCCESS_STATUSES else 2
         if args.command == "cleanup":
             result = run_cleanup(
                 settings,
@@ -464,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{health.source_key}: {health.status.value} ({health.job_count}){': ' + health.message if health.message else ''}"
                 )
         return 0 if result.summary.sources_succeeded else 2
-    except (FileNotFoundError, ValueError, ValidationError) as exc:
+    except (FileNotFoundError, ValueError, ValidationError, RunLockHeld) as exc:
         print(f"job-hunter: {exc}", file=sys.stderr)
         return 2
 

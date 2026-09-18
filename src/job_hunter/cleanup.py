@@ -17,6 +17,7 @@ deleted row/file cannot be re-queried afterward to build that record retroactive
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections import defaultdict
@@ -27,6 +28,7 @@ from typing import Any
 
 from .atomic import atomic_write_text
 from .config import Settings
+from .runlock import run_lock
 from .storage import Storage
 
 PROFILE_DIFF_DIR = Path("data/profile-diff")
@@ -158,7 +160,12 @@ def run_cleanup(
     `apply=True`: writes a pre-delete export (unless `write_export=False`) of exactly what's
     about to be removed, deletes it, and VACUUMs (unless `vacuum=False`) if any jobs were
     deleted. `jobs_only`/`reports_only` are mutually exclusive scopes; passing neither runs
-    both halves."""
+    both halves.
+
+    `apply=True` holds the same shared `run_lock("job-hunter")` a `job-hunter pipeline` run
+    holds (see `pipeline.py`) — cleanup deletes rows/files a concurrent pipeline run could be
+    reading or about to write, so the two must never overlap. A dry run only reads and takes no
+    lock at all. Raises `RunLockHeld` if a pipeline (or another cleanup) is already running."""
     now = now or datetime.now(UTC)
     result = CleanupResult()
     do_jobs = not reports_only
@@ -166,46 +173,47 @@ def run_cleanup(
 
     export_payload: dict[str, Any] = {"cleaned_at": now.isoformat(), "applied": apply}
 
-    if do_jobs:
-        job_cutoff = now - _days(settings.retention.closed_job_after_days)
-        with Storage(settings.database_path) as storage:
-            eligible = storage.find_stale_closed_jobs(job_cutoff)
-            result.closed_jobs_eligible = len(eligible)
-            if apply and eligible:
-                result.db_size_before = _db_size(settings.database_path)
-                deleted = storage.delete_closed_jobs(job_cutoff)
-                export_payload["deleted_jobs"] = deleted["jobs"]
-                export_payload["deleted_assessments"] = deleted["assessments"]
-                export_payload["deleted_job_feedback"] = deleted["job_feedback"]
-                result.closed_jobs_deleted = len(deleted["jobs"])
-                result.assessments_deleted = len(deleted["assessments"])
-                result.job_feedback_deleted = len(deleted["job_feedback"])
-                if vacuum:
-                    storage.vacuum()
-                result.db_size_after = _db_size(settings.database_path)
+    with run_lock("job-hunter") if apply else contextlib.nullcontext():
+        if do_jobs:
+            job_cutoff = now - _days(settings.retention.closed_job_after_days)
+            with Storage(settings.database_path) as storage:
+                eligible = storage.find_stale_closed_jobs(job_cutoff)
+                result.closed_jobs_eligible = len(eligible)
+                if apply and eligible:
+                    result.db_size_before = _db_size(settings.database_path)
+                    deleted = storage.delete_closed_jobs(job_cutoff)
+                    export_payload["deleted_jobs"] = deleted["jobs"]
+                    export_payload["deleted_assessments"] = deleted["assessments"]
+                    export_payload["deleted_job_feedback"] = deleted["job_feedback"]
+                    result.closed_jobs_deleted = len(deleted["jobs"])
+                    result.assessments_deleted = len(deleted["assessments"])
+                    result.job_feedback_deleted = len(deleted["job_feedback"])
+                    if vacuum:
+                        storage.vacuum()
+                    result.db_size_after = _db_size(settings.database_path)
 
-    if do_reports:
-        report_cutoff = now - _days(settings.retention.report_after_days)
-        eligible_reports = select_reports_to_delete(
-            scan_reports(profile_diff_dir=profile_diff_dir, radar_dir=radar_dir),
-            cutoff=report_cutoff,
-            keep_latest_per_group=settings.retention.keep_latest_reports_per_slug,
+        if do_reports:
+            report_cutoff = now - _days(settings.retention.report_after_days)
+            eligible_reports = select_reports_to_delete(
+                scan_reports(profile_diff_dir=profile_diff_dir, radar_dir=radar_dir),
+                cutoff=report_cutoff,
+                keep_latest_per_group=settings.retention.keep_latest_reports_per_slug,
+            )
+            result.reports_eligible = [r.path for r in eligible_reports]
+            if apply and eligible_reports:
+                export_payload["deleted_reports"] = [str(r.path) for r in eligible_reports]
+                for report in eligible_reports:
+                    report.path.unlink(missing_ok=True)
+                result.reports_deleted = result.reports_eligible
+
+        something_deleted = (
+            result.closed_jobs_deleted or result.assessments_deleted
+            or result.job_feedback_deleted or result.reports_deleted
         )
-        result.reports_eligible = [r.path for r in eligible_reports]
-        if apply and eligible_reports:
-            export_payload["deleted_reports"] = [str(r.path) for r in eligible_reports]
-            for report in eligible_reports:
-                report.path.unlink(missing_ok=True)
-            result.reports_deleted = result.reports_eligible
-
-    something_deleted = (
-        result.closed_jobs_deleted or result.assessments_deleted
-        or result.job_feedback_deleted or result.reports_deleted
-    )
-    if apply and write_export and something_deleted:
-        result.export_path = _write_export(export_payload, now=now, export_dir=export_dir)
-    result.applied = apply
-    return result
+        if apply and write_export and something_deleted:
+            result.export_path = _write_export(export_payload, now=now, export_dir=export_dir)
+        result.applied = apply
+        return result
 
 
 def _days(count: int) -> timedelta:

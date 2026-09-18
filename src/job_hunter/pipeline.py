@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
+import os
 import subprocess
 import sys
 import uuid
@@ -39,25 +39,69 @@ from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings, load_companies, load_profile
 from .models import PipelineManifest, PipelineStage, PipelineStatus
+from .runlock import LOCK_INHERITED_ENV, RunLockHeld, run_lock
 from .search_archive import archive_path, resolve_search_path
 
 RUNS_DIR = Path("data/runs")
 
-_REVIEW_SUMMARY_RE = re.compile(
-    r"Reviewed (\d+) job\(s\); skipped (\d+) already-assessed"
-)
-_REVIEW_FAILURE_RE = re.compile(r"^  skipped: ", re.MULTILINE)
-_RADAR_PATH_RE = re.compile(r"^Wrote (.+?) \|", re.MULTILINE)
-# scripts/refilter_archive.py's own two stdout lines: a summary ("Re-filtered X -> Y: N
-# candidate(s) (was M, L removed, G gained)") and, unless --no-report, a second "Wrote
-# <path>" line for its HTML diff report — parsed the same way _REVIEW_SUMMARY_RE/
-# _RADAR_PATH_RE above already parse their own tool's stdout, rather than having
-# refilter_archive.py hand back structured data some other way (e.g. a JSON sidecar) that
-# every other stage in this file would then be the only one not to use.
-_REFILTER_SUMMARY_RE = re.compile(
-    r"Re-filtered .+? -> .+?: \d+ candidate\(s\) \(was \d+, (\d+) removed, (\d+) gained\)"
-)
-_REFILTER_REPORT_RE = re.compile(r"^Wrote (.+)$", re.MULTILINE)
+
+class _StageTimedOut(Exception):
+    """Raised by `_run_stage_subprocess` in place of letting `subprocess.TimeoutExpired`
+    propagate raw — carries whatever partial stdout/stderr the child produced before being
+    killed, decoded to `str` the same way a normal completed run's output is (`text=True`)."""
+
+    def __init__(self, stdout: str, stderr: str):
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__("pipeline stage subprocess timed out")
+
+
+def _run_stage_subprocess(
+    cmd: list[str], *, project_root: Path, timeout: int | None, lock_inherited: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Runs one stage's subprocess (refilter/review/radar), applying
+    `settings.pipeline.stage_timeout_seconds` (`None` means no timeout, preserving pre-timeout
+    behavior). Raises `_StageTimedOut` instead of the raw `subprocess.TimeoutExpired` so callers
+    have a single type to catch regardless of which stage they're running.
+
+    `lock_inherited=True` (refilter/review only — see their own call sites) sets
+    `LOCK_INHERITED_ENV` in the child's environment: `run_pipeline` already holds
+    `run_lock("job-hunter")` for the whole run before this subprocess is ever spawned, and both
+    of those scripts otherwise try to acquire that identically-named lock themselves, which would
+    deadlock against their own parent (confirmed live) — `run_lock_or_inherited` on their side is
+    what actually reads this env var and skips locking when it's set."""
+    env = {**os.environ, LOCK_INHERITED_ENV: "1"} if lock_inherited else None
+    try:
+        return subprocess.run(
+            cmd, cwd=project_root, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _StageTimedOut(exc.stdout or "", exc.stderr or "") from None
+
+
+def _finalize_timed_out(manifest: PipelineManifest, exc: _StageTimedOut, *, timeout: int | None) -> None:
+    stderr_tail = exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else ""
+    manifest.status = PipelineStatus.TIMED_OUT
+    manifest.error = stderr_tail or f"stage exceeded stage_timeout_seconds ({timeout}s) and was killed"
+    manifest.stage = PipelineStage.DONE
+    manifest.completed_at = datetime.now(UTC)
+    write_manifest(manifest)
+
+
+def _result_json_path(run_id: str, stage_name: str, *, runs_dir: Path = RUNS_DIR) -> Path:
+    return runs_dir / run_id / f"{stage_name}.result.json"
+
+
+def _read_result_json(path: Path) -> dict | None:
+    """The structured `--result-json` a stage's subprocess wrote on success, or `None` if it's
+    missing or not valid JSON — a stage that exits 0 but leaves no readable result file is treated
+    as a failure by callers (see their own docstrings), not silently zero-defaulted, since a
+    missing file after a *successful* exit means something is wrong with the contract itself,
+    not with the job data."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def new_run_id(now: datetime | None = None) -> str:
@@ -115,66 +159,40 @@ def _load_model_name(project_root: Path) -> str | None:
     return data.get("model") if isinstance(data, dict) else None
 
 
-def _parse_review_output(stdout: str) -> tuple[int, int, int]:
-    """(reviewed, skipped_cached, per_job_failures) from review_with_lm_studio.py's own stdout —
-    its final summary line plus a count of the "  skipped: <error>" lines it prints for
-    individual model-call failures it deliberately continues past rather than aborting on."""
-    match = _REVIEW_SUMMARY_RE.search(stdout)
-    reviewed, skipped_cached = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
-    per_job_failures = len(_REVIEW_FAILURE_RE.findall(stdout))
-    return reviewed, skipped_cached, per_job_failures
-
-
-def _parse_radar_path(stdout: str) -> str | None:
-    match = _RADAR_PATH_RE.search(stdout)
-    return match.group(1) if match else None
-
-
-def _parse_refilter_output(stdout: str) -> tuple[int | None, int | None, str | None]:
-    """(gained, lost, diff_report_path) from scripts/refilter_archive.py's own stdout — see
-    `_REFILTER_SUMMARY_RE`/`_REFILTER_REPORT_RE` above. `lost` is that script's own "removed"
-    count, renamed here to match `PipelineManifest.lost`/the vocabulary refilter_archive.py's
-    own HTML diff report already uses (its "Retained"/"Gained"/"Lost" stat tiles), not a new
-    synonym invented for the manifest. Returns (None, None, None) for `gained`/`lost` when the
-    summary line isn't found at all (an unexpected stdout shape) — unlike `_parse_review_output`,
-    which defaults its counts to 0, there's a real difference here between "zero gained" and
-    "couldn't tell," and a manifest reader should be able to see that difference rather than
-    have a parse failure silently reported as a legitimate zero."""
-    match = _REFILTER_SUMMARY_RE.search(stdout)
-    lost, gained = (int(match.group(1)), int(match.group(2))) if match else (None, None)
-    report_match = _REFILTER_REPORT_RE.search(stdout)
-    diff_report = report_match.group(1) if report_match else None
-    return gained, lost, diff_report
-
-
 def _run_review_stage(
     manifest: PipelineManifest, *, project_root: Path, archive: Path, keyword: str | None, limit: int | None,
+    stage_timeout_seconds: int | None,
 ) -> bool:
     """Runs `scripts/review_with_lm_studio.py` against `archive` as a subprocess and updates
-    `manifest`'s reviewed/skipped_cached/failed/status fields from its own stdout — factored out
-    of `run_pipeline` once both the live-search branch and `--no-scrape`'s optional `--review`
-    step needed to run this identical subprocess-plus-parse sequence (see
-    `docs/pipeline-refilter-stale-source-plan.md` section 4.2). On a hard failure (non-zero
-    exit), this already finalizes the manifest itself — status (MODEL_UNAVAILABLE vs FAILED,
+    `manifest`'s reviewed/skipped_cached/failed/status fields from its own `--result-json` output
+    (not stdout regex-parsing — see docs/agent-runtime-audit.md's "structured stage results"
+    finding) — factored out of `run_pipeline` once both the live-search branch and
+    `--no-scrape`'s optional `--review` step needed to run this identical subprocess-plus-read
+    sequence (see `docs/pipeline-refilter-stale-source-plan.md` section 4.2). On a hard failure
+    (non-zero exit, a timeout, or a missing/unparseable result file after a zero exit), this
+    already finalizes the manifest itself — status (MODEL_UNAVAILABLE vs FAILED vs TIMED_OUT,
     same distinction the pre-refactor inline code made), stage DONE, completed_at, then writes
     it — since the caller has nothing more useful to do in that case; it returns False so the
     caller knows to stop immediately rather than proceed to the radar stage. On success it sets
     `manifest.status` (PARTIAL if any individual job failed, COMPLETE otherwise) but deliberately
     leaves `stage`/`completed_at`/the actual `write_manifest()` call to the caller, since what
     stage comes next (radar, or straight to done) differs between the two call sites."""
+    result_json = _result_json_path(manifest.run_id, "review")
     review_cmd = [
         sys.executable, "scripts/review_with_lm_studio.py",
-        "--project", str(project_root), "--input", str(archive),
+        "--project", str(project_root), "--input", str(archive), "--result-json", str(result_json),
     ]
     if keyword:
         review_cmd += ["--keyword", keyword]
     if limit is not None:
         review_cmd += ["--limit", str(limit)]
-    proc = subprocess.run(review_cmd, cwd=project_root, capture_output=True, text=True)
-    reviewed, skipped_cached, per_job_failures = _parse_review_output(proc.stdout)
-    manifest.reviewed = reviewed
-    manifest.skipped_cached = skipped_cached
-    manifest.failed = per_job_failures
+    try:
+        proc = _run_stage_subprocess(
+            review_cmd, project_root=project_root, timeout=stage_timeout_seconds, lock_inherited=True
+        )
+    except _StageTimedOut as exc:
+        _finalize_timed_out(manifest, exc, timeout=stage_timeout_seconds)
+        return False
     if proc.returncode != 0:
         stderr_tail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else ""
         manifest.status = (
@@ -187,30 +205,63 @@ def _run_review_stage(
         manifest.completed_at = datetime.now(UTC)
         write_manifest(manifest)
         return False
-    manifest.status = PipelineStatus.PARTIAL if per_job_failures else PipelineStatus.COMPLETE
+    result = _read_result_json(result_json)
+    if result is None:
+        manifest.status = PipelineStatus.FAILED
+        manifest.error = f"review exited 0 but wrote no readable result at {result_json}"
+        manifest.stage = PipelineStage.DONE
+        manifest.completed_at = datetime.now(UTC)
+        write_manifest(manifest)
+        return False
+    manifest.reviewed = result.get("reviewed", 0)
+    manifest.skipped_cached = result.get("skipped_cached", 0)
+    manifest.failed = result.get("failed", 0)
+    manifest.status = PipelineStatus.PARTIAL if manifest.failed else PipelineStatus.COMPLETE
     return True
 
 
-def _run_radar_stage(manifest: PipelineManifest, *, project_root: Path, archive: Path, keyword: str | None) -> None:
+def _run_radar_stage(
+    manifest: PipelineManifest, *, project_root: Path, archive: Path, keyword: str | None,
+    stage_timeout_seconds: int | None,
+) -> None:
     """Runs `scripts/render_radar.py` against `archive` as a subprocess and updates
-    `manifest.radar` (on success) or `manifest.status`/`manifest.error` (on failure) — the final
-    stage both the live-search branch and `--no-scrape` branch share identically, factored out
-    for the same reason as `_run_review_stage` above. Leaves `stage`/`completed_at`/the final
+    `manifest.radar` (on success) or `manifest.status`/`manifest.error` (on failure/timeout) — the
+    final stage both the live-search branch and `--no-scrape` branch share identically, factored
+    out for the same reason as `_run_review_stage` above. Leaves `stage`/`completed_at`/the final
     `write_manifest()` call to the caller."""
+    result_json = _result_json_path(manifest.run_id, "radar")
     radar_cmd = [
         sys.executable, "scripts/render_radar.py",
-        "--project", str(project_root), "--search", str(archive),
+        "--project", str(project_root), "--search", str(archive), "--result-json", str(result_json),
     ]
     if keyword:
         radar_cmd += ["--keyword", keyword]
-    proc = subprocess.run(radar_cmd, cwd=project_root, capture_output=True, text=True)
+    try:
+        proc = _run_stage_subprocess(radar_cmd, project_root=project_root, timeout=stage_timeout_seconds)
+    except _StageTimedOut as exc:
+        # Unlike `_run_review_stage`'s use of `_finalize_timed_out`, radar's own convention (see
+        # its normal failure branch just below) is to set only status/error and leave
+        # stage/completed_at/the final write_manifest() to the caller, which always runs
+        # unconditionally right after this call regardless of outcome -- self-finalizing here
+        # too would just mean writing the manifest twice.
+        stderr_tail = exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else ""
+        manifest.status = PipelineStatus.TIMED_OUT
+        manifest.error = (
+            stderr_tail or f"radar stage exceeded stage_timeout_seconds ({stage_timeout_seconds}s) and was killed"
+        )
+        return
     if proc.returncode != 0:
         manifest.status = PipelineStatus.FAILED
         manifest.error = (
             proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"radar exited {proc.returncode}"
         )
-    else:
-        manifest.radar = _parse_radar_path(proc.stdout)
+        return
+    result = _read_result_json(result_json)
+    if result is None:
+        manifest.status = PipelineStatus.FAILED
+        manifest.error = f"radar exited 0 but wrote no readable result at {result_json}"
+        return
+    manifest.radar = result.get("report_path")
 
 
 async def run_pipeline(
@@ -251,6 +302,7 @@ async def run_pipeline(
     manifest = PipelineManifest(
         run_id=new_run_id(),
         project_root=str(project_root),
+        pid=os.getpid(),
         keyword=keyword,
         stage=PipelineStage.REFILTER if no_scrape else PipelineStage.SEARCH,
         status=PipelineStatus.RUNNING,
@@ -261,23 +313,37 @@ async def run_pipeline(
     write_manifest(manifest)
 
     try:
-        return await _run_pipeline_body(
-            manifest,
-            settings=settings,
-            project_root=project_root,
-            keyword=keyword,
-            keywords=keywords,
-            profile=profile,
-            companies_filter=companies_filter,
-            limit=limit,
-            new_only=new_only,
-            refresh_details=refresh_details,
-            max_candidates=max_candidates,
-            skip_review=skip_review,
-            skip_radar=skip_radar,
-            no_scrape=no_scrape,
-            review=review,
-        )
+        # Shared with `job-hunter cleanup --apply`, `scripts/review_with_lm_studio.py`, and
+        # `scripts/refilter_archive.py`'s in-place rewrite — the operations that mutate SQLite,
+        # an archive file, or assessments.json. One lock name means none of them can ever race a
+        # pipeline run touching the same state (see docs/agent-runtime-audit.md's pipeline-lock
+        # finding). A held lock is caught below as its own status rather than falling into the
+        # generic FAILED branch, since it's an expected, actionable outcome, not an error.
+        with run_lock("job-hunter"):
+            return await _run_pipeline_body(
+                manifest,
+                settings=settings,
+                project_root=project_root,
+                keyword=keyword,
+                keywords=keywords,
+                profile=profile,
+                companies_filter=companies_filter,
+                limit=limit,
+                new_only=new_only,
+                refresh_details=refresh_details,
+                max_candidates=max_candidates,
+                skip_review=skip_review,
+                skip_radar=skip_radar,
+                no_scrape=no_scrape,
+                review=review,
+            )
+    except RunLockHeld as exc:
+        manifest.status = PipelineStatus.LOCK_HELD
+        manifest.error = str(exc)
+        manifest.stage = PipelineStage.DONE
+        manifest.completed_at = datetime.now(UTC)
+        write_manifest(manifest)
+        raise
     except Exception as exc:
         # Every failure branch inside `_run_pipeline_body` already finalizes the manifest
         # itself before returning — this except only catches what *isn't* one of those, e.g.
@@ -316,6 +382,7 @@ async def _run_pipeline_body(
     """The actual stage sequencing for `run_pipeline`, split out so `run_pipeline` itself can
     wrap this whole body in one try/except that finalizes the manifest on any exception this
     body doesn't already handle itself (see `run_pipeline`'s own try/except)."""
+    stage_timeout_seconds = settings.pipeline.stage_timeout_seconds
     if no_scrape:
         # No fresh `archive_path()` here — --no-scrape's whole point is re-evaluating an
         # archive that already exists, resolved the identical way review/radar already resolve
@@ -324,13 +391,21 @@ async def _run_pipeline_body(
         manifest.archive = str(archive)
         write_manifest(manifest)
 
+        refilter_result_json = _result_json_path(manifest.run_id, "refilter")
         refilter_cmd = [
             sys.executable, "scripts/refilter_archive.py",
             "--project", str(project_root), "--search", str(archive),
+            "--result-json", str(refilter_result_json),
         ]
         if keyword:
             refilter_cmd += ["--keyword", keyword]
-        proc = subprocess.run(refilter_cmd, cwd=project_root, capture_output=True, text=True)
+        try:
+            proc = _run_stage_subprocess(
+                refilter_cmd, project_root=project_root, timeout=stage_timeout_seconds, lock_inherited=True
+            )
+        except _StageTimedOut as exc:
+            _finalize_timed_out(manifest, exc, timeout=stage_timeout_seconds)
+            return manifest
         if proc.returncode != 0:
             manifest.status = PipelineStatus.FAILED
             manifest.error = (
@@ -341,10 +416,17 @@ async def _run_pipeline_body(
             write_manifest(manifest)
             return manifest
 
-        gained, lost, diff_report = _parse_refilter_output(proc.stdout)
-        manifest.gained = gained
-        manifest.lost = lost
-        manifest.diff_report = diff_report
+        refilter_result = _read_result_json(refilter_result_json)
+        if refilter_result is None:
+            manifest.status = PipelineStatus.FAILED
+            manifest.error = f"refilter exited 0 but wrote no readable result at {refilter_result_json}"
+            manifest.stage = PipelineStage.DONE
+            manifest.completed_at = datetime.now(UTC)
+            write_manifest(manifest)
+            return manifest
+        manifest.gained = refilter_result.get("gained")
+        manifest.lost = refilter_result.get("lost")
+        manifest.diff_report = refilter_result.get("diff_report")
         # refilter_archive.py rewrites `archive` in place with its own recomputed
         # prefilter_candidates count — re-read it so manifest.candidates means the same thing
         # here it means for a live search below, rather than staying null just because this
@@ -363,7 +445,8 @@ async def _run_pipeline_body(
             manifest.stage = PipelineStage.REVIEW
             write_manifest(manifest)
             if not _run_review_stage(
-                manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit
+                manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit,
+                stage_timeout_seconds=stage_timeout_seconds,
             ):
                 return manifest
         else:
@@ -377,7 +460,10 @@ async def _run_pipeline_body(
         write_manifest(manifest)
 
         if not skip_radar:
-            _run_radar_stage(manifest, project_root=project_root, archive=archive, keyword=keyword)
+            _run_radar_stage(
+                manifest, project_root=project_root, archive=archive, keyword=keyword,
+                stage_timeout_seconds=stage_timeout_seconds,
+            )
             manifest.stage = PipelineStage.DONE
 
         manifest.completed_at = datetime.now(UTC)
@@ -415,14 +501,18 @@ async def _run_pipeline_body(
         manifest.stage = PipelineStage.REVIEW
         write_manifest(manifest)
         if not _run_review_stage(
-            manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit
+            manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit,
+            stage_timeout_seconds=stage_timeout_seconds,
         ):
             return manifest
         manifest.stage = PipelineStage.RADAR if not skip_radar else PipelineStage.DONE
         write_manifest(manifest)
 
     if not skip_radar:
-        _run_radar_stage(manifest, project_root=project_root, archive=archive, keyword=keyword)
+        _run_radar_stage(
+            manifest, project_root=project_root, archive=archive, keyword=keyword,
+            stage_timeout_seconds=stage_timeout_seconds,
+        )
         manifest.stage = PipelineStage.DONE
 
     manifest.completed_at = datetime.now(UTC)

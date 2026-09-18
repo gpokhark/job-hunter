@@ -64,6 +64,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,7 @@ from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
 from job_hunter.prefilter import passes_prefilter, passes_recency
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
 
 _FAILED_STATUSES = {"failed", "unsupported"}
@@ -517,6 +519,15 @@ def main() -> int:
     parser.add_argument("--keyword", default=None, help="resolve --search by keyword, and use as the positive-match override (same as job-hunter search --keyword)")
     parser.add_argument("--output", type=Path, default=None, help="write here instead of overwriting the input archive in place")
     parser.add_argument("--no-report", action="store_true", help="skip writing the HTML gained/lost report")
+    parser.add_argument(
+        "--result-json", type=Path, default=None,
+        help=(
+            "also write {\"gained\": N, \"lost\": N, \"diff_report\": \"...\"|null} to this path "
+            "on success — a structured result for a caller (job-hunter pipeline) to read instead "
+            "of parsing this script's own human-readable stdout. Purely additive: stdout is "
+            "unchanged."
+        ),
+    )
     add_project_argument(parser)
     args = parser.parse_args()
     chdir_to_project_root(args.project)
@@ -536,38 +547,74 @@ def main() -> int:
     retained = len(after_by_key.keys() & before_by_key.keys())
 
     output_path = args.output or search_path
-    atomic_write_text(output_path, json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n")
+    try:
+        # Shared with `job-hunter pipeline`/`job-hunter cleanup --apply`/
+        # `scripts/review_with_lm_studio.py` (see docs/agent-runtime-audit.md's pipeline-lock
+        # finding) — this rewrites `output_path` in place (by default, the same archive a
+        # concurrent pipeline run could be reading or about to write), so it must never overlap
+        # with any of those. `run_lock_or_inherited` (not `run_lock`) because `job-hunter
+        # pipeline` already holds this exact lock for the whole run before spawning this script
+        # as its REFILTER stage — reacquiring it here would deadlock against that parent
+        # (confirmed live).
+        with run_lock_or_inherited("job-hunter"):
+            atomic_write_text(
+                output_path, json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n"
+            )
 
-    print(
-        f"Re-filtered {search_path} -> {output_path}: {after_count} candidate(s) "
-        f"(was {before_count}, {len(lost_keys)} removed, {len(gained_keys)} gained)"
-    )
+            print(
+                f"Re-filtered {search_path} -> {output_path}: {after_count} candidate(s) "
+                f"(was {before_count}, {len(lost_keys)} removed, {len(gained_keys)} gained)"
+            )
 
-    if not args.no_report:
-        # Reconstructs Job objects from the archive dicts directly (both before_by_key's and
-        # after_by_key's entries are exactly job.model_dump_json() output — see refilter()
-        # above) rather than re-querying SQLite, so the report always matches what was just
-        # written to output_path, not a second, potentially-inconsistent snapshot.
-        gained_jobs = [Job(**after_by_key[key]) for key in gained_keys]
-        lost_jobs = [Job(**before_by_key[key]) for key in lost_keys]
-        gained_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
-        lost_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
+            diff_report_path: Path | None = None
+            if not args.no_report:
+                # Reconstructs Job objects from the archive dicts directly (both before_by_key's
+                # and after_by_key's entries are exactly job.model_dump_json() output — see
+                # refilter() above) rather than re-querying SQLite, so the report always matches
+                # what was just written to output_path, not a second, potentially-inconsistent
+                # snapshot.
+                gained_jobs = [Job(**after_by_key[key]) for key in gained_keys]
+                lost_jobs = [Job(**before_by_key[key]) for key in lost_keys]
+                gained_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
+                lost_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
 
-        settings = load_settings()
-        source_scope = _successful_source_scope(data)
-        active_pool = len(raw_active_jobs(settings.database_path, source_scope))
+                settings = load_settings()
+                source_scope = _successful_source_scope(data)
+                active_pool = len(raw_active_jobs(settings.database_path, source_scope))
 
-        report_path = Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
-        render_archive_diff_html(
-            gained=gained_jobs, lost=lost_jobs, retained=retained,
-            before_count=before_count, after_count=after_count, active_pool=active_pool,
-            max_age_days=settings.search.max_posting_age_days,
-            undated_new_days=settings.search.undated_new_days,
-            undated_stale_days=settings.search.undated_stale_days,
-            output_path=report_path,
-            title=f"Archive Refilter: {search_path.stem}", now=now,
+                diff_report_path = (
+                    Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
+                )
+                render_archive_diff_html(
+                    gained=gained_jobs, lost=lost_jobs, retained=retained,
+                    before_count=before_count, after_count=after_count, active_pool=active_pool,
+                    max_age_days=settings.search.max_posting_age_days,
+                    undated_new_days=settings.search.undated_new_days,
+                    undated_stale_days=settings.search.undated_stale_days,
+                    output_path=diff_report_path,
+                    title=f"Archive Refilter: {search_path.stem}", now=now,
+                )
+                print(f"Wrote {diff_report_path}")
+
+            if args.result_json is not None:
+                atomic_write_text(
+                    args.result_json,
+                    json.dumps(
+                        {
+                            "gained": len(gained_keys),
+                            "lost": len(lost_keys),
+                            "diff_report": str(diff_report_path) if diff_report_path else None,
+                        }
+                    )
+                    + "\n",
+                )
+    except RunLockHeld as exc:
+        print(
+            f"job-hunter: {exc} — another job-hunter run is already in progress for this "
+            "project. Wait for it to finish, or remove the lock file if you're sure it's stale.",
+            file=sys.stderr,
         )
-        print(f"Wrote {report_path}")
+        return 2
 
     return 0
 

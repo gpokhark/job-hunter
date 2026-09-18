@@ -26,4 +26,10 @@ retention:
   closed_job_after_days: 10
   report_after_days: 15
   keep_latest_reports_per_slug: 2
+# job-hunter pipeline's child-process supervision (docs/agent-runtime-audit.md). Unset by
+# default -- a stage can legitimately run a long time (a large sequential local-model review),
+# so this only ever catches a genuinely hung child, never bounds normal runtime. Uncomment and
+# size it comfortably above your largest real review run if you want that safety net:
+# pipeline:
+#   stage_timeout_seconds: 14400  # 4 hours
 

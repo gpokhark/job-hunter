@@ -2,10 +2,13 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from job_hunter.cleanup import classify_report, run_cleanup, scan_reports, select_reports_to_delete
 from job_hunter.config import Settings
 from job_hunter.models import Job, LocationConfidence
 from job_hunter.normalizer import description_hash
+from job_hunter.runlock import RunLockHeld, run_lock
 from job_hunter.storage import Storage
 
 
@@ -209,6 +212,23 @@ def test_run_cleanup_apply_deletes_and_writes_export(tmp_path):
     payload = json.loads(result.export_path.read_text())
     assert payload["deleted_jobs"][0]["job_id"] == "stale"
     assert payload["deleted_reports"] == [str(stale_report)]
+
+
+def test_run_cleanup_apply_raises_when_job_hunter_lock_already_held(tmp_path):
+    """`apply=True` shares the `run_lock("job-hunter")` lock with `job-hunter pipeline` (see
+    pipeline.py) so cleanup can never delete rows/files a concurrent pipeline run is reading or
+    about to write."""
+    settings = _settings(tmp_path)
+    with run_lock("job-hunter"), pytest.raises(RunLockHeld):
+        run_cleanup(settings, apply=True, now=datetime.now(UTC))
+
+
+def test_run_cleanup_dry_run_does_not_take_the_lock(tmp_path):
+    """A dry run only reads -- it must not contend with a real pipeline/cleanup run for the lock."""
+    settings = _settings(tmp_path)
+    with run_lock("job-hunter"):
+        result = run_cleanup(settings, apply=False, now=datetime.now(UTC))
+    assert result.applied is False
 
 
 def test_run_cleanup_keep_latest_protects_reports_apply_mode(tmp_path):

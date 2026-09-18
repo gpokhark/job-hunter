@@ -692,6 +692,15 @@ def main() -> int:
         "--keyword", default=None,
         help="the --keyword string used for this search, if any (drives the subhead/eyebrow/default title; omit for a default profile-driven search)",
     )
+    parser.add_argument(
+        "--companies", default=None,
+        help=(
+            "disambiguate --keyword resolution among archives sharing that keyword by "
+            "--companies scope (same value originally passed to job-hunter search/pipeline "
+            "--companies) — omit to resolve only among unscoped archives; ignored if --search "
+            "is given"
+        ),
+    )
     parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
     parser.add_argument(
         "--undated-new-days", type=int, default=None,
@@ -709,10 +718,18 @@ def main() -> int:
             "note-with-no-jobs behavior for a source that failed to scrape this run"
         ),
     )
+    parser.add_argument(
+        "--result-json", type=Path, default=None,
+        help=(
+            "also write {\"report_path\": \"...\"} to this path on success — a structured "
+            "result for a caller (job-hunter pipeline) to read instead of parsing this "
+            "script's own human-readable stdout. Purely additive: stdout is unchanged."
+        ),
+    )
     add_project_argument(parser)
     args = parser.parse_args()
     chdir_to_project_root(args.project)
-    args.search = resolve_search_path(search=args.search, keyword=args.keyword)
+    args.search = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
 
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
     title = args.title or _default_title(args.keyword)
@@ -744,6 +761,8 @@ def main() -> int:
         f"below_50={stats['below_50']} never_reviewed={stats['never_reviewed']} "
         f"source_issues={stats['source_issues']} (failed={stats['failed']})"
     )
+    if args.result_json is not None:
+        atomic_write_text(args.result_json, json.dumps({"report_path": str(output_path)}) + "\n")
     return 0
 
 

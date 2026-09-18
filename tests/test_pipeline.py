@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -9,9 +10,6 @@ from job_hunter.config import CandidateProfile, Settings
 from job_hunter.models import PipelineManifest, PipelineStage, PipelineStatus
 from job_hunter.pipeline import (
     _fingerprint,
-    _parse_radar_path,
-    _parse_refilter_output,
-    _parse_review_output,
     latest_run_id,
     manifest_path,
     new_run_id,
@@ -19,6 +17,7 @@ from job_hunter.pipeline import (
     run_pipeline,
     write_manifest,
 )
+from job_hunter.runlock import RunLockHeld, run_lock
 
 
 def test_new_run_id_is_stable_for_the_same_instant_up_to_its_random_suffix():
@@ -89,68 +88,11 @@ def test_fingerprint_changes_when_content_changes(tmp_path):
     assert _fingerprint(path) != first
 
 
-def test_parse_review_output_reads_the_summary_line_and_per_job_failures():
-    stdout = (
-        "Reviewing [1/3] Acme — Engineer ...\n"
-        "  score=82 recommended=True\n"
-        "Reviewing [2/3] Acme — Analyst ...\n"
-        "  skipped: model returned invalid JSON\n"
-        "Reviewing [3/3] Acme — Manager ...\n"
-        "  score=61 recommended=False\n"
-        "Reviewed 2 job(s); skipped 5 already-assessed (unchanged) job(s).\n"
-    )
-    reviewed, skipped_cached, failures = _parse_review_output(stdout)
-    assert reviewed == 2
-    assert skipped_cached == 5
-    assert failures == 1
-
-
-def test_parse_review_output_with_no_summary_line_defaults_to_zero():
-    reviewed, skipped_cached, failures = _parse_review_output("")
-    assert (reviewed, skipped_cached, failures) == (0, 0, 0)
-
-
-def test_parse_radar_path_extracts_the_written_path():
-    stdout = "Wrote data/radar/adas_2026-09-17.html | strong=3 review=1 below_50=0 never_reviewed=0 (failed=0)\n"
-    assert _parse_radar_path(stdout) == "data/radar/adas_2026-09-17.html"
-
-
-def test_parse_radar_path_with_no_match_is_none():
-    assert _parse_radar_path("something else entirely") is None
-
-
 # --- section 4.2: `pipeline --no-scrape [--review]` ---
 
 
-def test_parse_refilter_output_reads_gained_lost_and_report_path():
-    stdout = (
-        "Re-filtered data/searches/default_2026-09-17.json -> data/searches/default_2026-09-17.json: "
-        "45 candidate(s) (was 44, 3 removed, 4 gained)\n"
-        "Wrote data/profile-diff/archive-default_2026-09-17-2026-09-17-T-10-00-00.html\n"
-    )
-    gained, lost, diff_report = _parse_refilter_output(stdout)
-    assert (gained, lost) == (4, 3)
-    assert diff_report == "data/profile-diff/archive-default_2026-09-17-2026-09-17-T-10-00-00.html"
-
-
-def test_parse_refilter_output_with_no_report_line_has_no_diff_report():
-    """--no-report skips the second "Wrote ..." line entirely — must not be confused with a
-    parse failure (None), which is exactly what this returns for a genuinely missing report."""
-    stdout = "Re-filtered x -> x: 10 candidate(s) (was 10, 0 removed, 0 gained)\n"
-    gained, lost, diff_report = _parse_refilter_output(stdout)
-    assert (gained, lost) == (0, 0)
-    assert diff_report is None
-
-
-def test_parse_refilter_output_with_no_summary_line_is_none_not_zero():
-    """Unlike _parse_review_output's 0-defaulting, a missing refilter summary line must show up
-    as None (genuinely couldn't tell), not a legitimate-looking zero."""
-    gained, lost, diff_report = _parse_refilter_output("")
-    assert (gained, lost, diff_report) == (None, None, None)
-
-
-def _fake_proc(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+def _fake_proc(stdout: str = "", stderr: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 def _write_archive(path, prefilter_candidates: int) -> None:
@@ -160,12 +102,42 @@ def _write_archive(path, prefilter_candidates: int) -> None:
     )
 
 
+def _write_result_json_for(cmd: list[str], payload: dict) -> None:
+    """Every stage subprocess (refilter/review/radar) writes its structured result to whatever
+    path follows its own `--result-json` flag — pipeline.py reads that file, not stdout (see
+    docs/agent-runtime-audit.md's "structured stage results" finding). A fake `subprocess.run`
+    replacement must write it too, the same way the real script would, or pipeline.py correctly
+    treats a zero-exit-but-no-result-file subprocess as a stage failure."""
+    result_path = Path(cmd[cmd.index("--result-json") + 1])
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps(payload))
+
+
 async def test_no_scrape_rejects_companies_filter():
     """cli.py rejects this combination before ever calling run_pipeline, but run_pipeline
     guards it too — see its own docstring — so a direct (non-CLI) caller can't silently get a
     companies_filter that quietly does nothing."""
     with pytest.raises(ValueError, match="--companies has no effect with --no-scrape"):
         await run_pipeline(Settings(), None, no_scrape=True, companies_filter="honda")
+
+
+async def test_run_pipeline_finalizes_as_lock_held_instead_of_racing(tmp_path, monkeypatch):
+    """A second overlapping `job-hunter pipeline` (or cleanup/refilter/review) run must never
+    race SQLite/archive/assessments state — `run_pipeline` shares `run_lock("job-hunter")`
+    (see pipeline.py). Held elsewhere, it should finalize the manifest as LOCK_HELD (not leave
+    it stuck at RUNNING) and re-raise, rather than falling into the generic FAILED branch."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr("job_hunter.pipeline.new_run_id", lambda now=None: "fixed-run-id")
+
+    with run_lock("job-hunter"), pytest.raises(RunLockHeld):
+        await run_pipeline(Settings(), tmp_path, no_scrape=True, keyword="nope")
+
+    manifest = read_manifest("fixed-run-id")
+    assert manifest.status == PipelineStatus.LOCK_HELD
+    assert manifest.stage == PipelineStage.DONE
+    assert manifest.completed_at is not None
+    assert "job-hunter" in manifest.error
 
 
 async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeypatch):
@@ -185,16 +157,13 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if "scripts/refilter_archive.py" in cmd:
-            return _fake_proc(
-                stdout=(
-                    f"Re-filtered {archive} -> {archive}: 5 candidate(s) (was 4, 1 removed, 2 gained)\n"
-                    "Wrote data/profile-diff/archive-default_2026-09-17-x.html\n"
-                )
+            _write_result_json_for(
+                cmd, {"gained": 2, "lost": 1, "diff_report": "data/profile-diff/archive-default_2026-09-17-x.html"}
             )
+            return _fake_proc()
         if "scripts/render_radar.py" in cmd:
-            return _fake_proc(
-                stdout="Wrote data/radar/default_2026-09-17.html | strong=1 review=1 below_50=0 never_reviewed=3 source_issues=0 (failed=0)\n"
-            )
+            _write_result_json_for(cmd, {"report_path": "data/radar/default_2026-09-17.html"})
+            return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
     monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
@@ -224,15 +193,14 @@ async def test_no_scrape_with_review_runs_review_stage_too(tmp_path, monkeypatch
 
     def fake_run(cmd, **kwargs):
         if "scripts/refilter_archive.py" in cmd:
-            return _fake_proc(
-                stdout=f"Re-filtered {archive} -> {archive}: 5 candidate(s) (was 5, 0 removed, 0 gained)\n"
-            )
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
         if "scripts/review_with_lm_studio.py" in cmd:
-            return _fake_proc(stdout="Reviewed 2 job(s); skipped 3 already-assessed (unchanged) job(s).\n")
+            _write_result_json_for(cmd, {"reviewed": 2, "skipped_cached": 3, "failed": 0})
+            return _fake_proc()
         if "scripts/render_radar.py" in cmd:
-            return _fake_proc(
-                stdout="Wrote data/radar/default_2026-09-17.html | strong=1 review=1 below_50=0 never_reviewed=0 source_issues=0 (failed=0)\n"
-            )
+            _write_result_json_for(cmd, {"report_path": "data/radar/default_2026-09-17.html"})
+            return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
     monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
@@ -257,9 +225,8 @@ async def test_no_scrape_with_zero_candidates_stops_before_review_or_radar(tmp_p
 
     def fake_run(cmd, **kwargs):
         if "scripts/refilter_archive.py" in cmd:
-            return _fake_proc(
-                stdout=f"Re-filtered {archive} -> {archive}: 0 candidate(s) (was 5, 5 removed, 0 gained)\n"
-            )
+            _write_result_json_for(cmd, {"gained": 0, "lost": 5, "diff_report": None})
+            return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd} (review/radar must not run)")
 
     monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
@@ -346,10 +313,163 @@ async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatc
     monkeypatch.setattr("job_hunter.pipeline.write_manifest", spy_write_manifest)
 
     def fake_run(cmd, **kwargs):
-        return _fake_proc(stdout=f"Re-filtered {archive} -> {archive}: 0 candidate(s) (was 0, 0 removed, 0 gained)\n")
+        _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+        return _fake_proc()
 
     monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
 
     await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
     assert seen_stages[0] == PipelineStage.REFILTER
+
+
+# --- structured stage results / timeouts (docs/agent-runtime-audit.md) ---
+
+
+def _base_setup(tmp_path, monkeypatch, *, prefilter_candidates: int = 5):
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    _write_archive(archive, prefilter_candidates=prefilter_candidates)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+    return archive
+
+
+async def test_run_pipeline_records_its_own_pid(tmp_path, monkeypatch):
+    _base_setup(tmp_path, monkeypatch, prefilter_candidates=0)
+
+    def fake_run(cmd, **kwargs):
+        _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+        return _fake_proc()
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
+
+    assert manifest.pid == os.getpid()
+
+
+async def test_refilter_missing_result_json_is_treated_as_failure_not_zero(tmp_path, monkeypatch):
+    """A stage that exits 0 but never wrote its --result-json is a broken contract, not a
+    legitimate empty result — must surface as FAILED, never silently zero-defaulted."""
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        assert "scripts/refilter_archive.py" in cmd
+        return _fake_proc()  # exits 0, writes nothing to --result-json
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
+
+    assert manifest.status == PipelineStatus.FAILED
+    assert "wrote no readable result" in manifest.error
+
+
+async def test_review_missing_result_json_is_treated_as_failure_not_zero(tmp_path, monkeypatch):
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            return _fake_proc()  # exits 0, writes nothing to --result-json
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
+
+    assert manifest.status == PipelineStatus.FAILED
+    assert "wrote no readable result" in manifest.error
+    assert manifest.reviewed is None
+
+
+async def test_radar_missing_result_json_is_treated_as_failure_not_zero(tmp_path, monkeypatch):
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/render_radar.py" in cmd:
+            return _fake_proc()  # exits 0, writes nothing to --result-json
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
+
+    assert manifest.status == PipelineStatus.FAILED
+    assert "wrote no readable result" in manifest.error
+    assert manifest.radar is None
+
+
+async def test_review_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, monkeypatch):
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="stuck calling LM Studio\n")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    settings = Settings()
+    settings.pipeline.stage_timeout_seconds = 1
+    manifest = await run_pipeline(settings, tmp_path, no_scrape=True, review=True)
+
+    assert manifest.status == PipelineStatus.TIMED_OUT
+    assert manifest.stage == PipelineStage.DONE
+    assert "stuck calling LM Studio" in manifest.error
+    assert manifest.completed_at is not None
+
+
+async def test_radar_stage_timeout_sets_status_and_lets_caller_finalize(tmp_path, monkeypatch):
+    """Unlike review's self-finalizing timeout path, radar's own convention leaves
+    stage/completed_at/the final write to the caller (which always runs right after) — confirm
+    the run still reaches DONE with a real completed_at rather than being left half-finalized."""
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/render_radar.py" in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    settings = Settings()
+    settings.pipeline.stage_timeout_seconds = 1
+    manifest = await run_pipeline(settings, tmp_path, no_scrape=True)
+
+    assert manifest.status == PipelineStatus.TIMED_OUT
+    assert manifest.stage == PipelineStage.DONE
+    assert manifest.completed_at is not None
+
+
+async def test_refilter_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, monkeypatch):
+    _base_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        assert "scripts/refilter_archive.py" in cmd
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="refilter hung\n")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    settings = Settings()
+    settings.pipeline.stage_timeout_seconds = 1
+    manifest = await run_pipeline(settings, tmp_path, no_scrape=True)
+
+    assert manifest.status == PipelineStatus.TIMED_OUT
+    assert manifest.stage == PipelineStage.DONE
+    assert "refilter hung" in manifest.error
+    assert manifest.completed_at is not None

@@ -38,7 +38,7 @@ from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Assessment
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
-from job_hunter.runlock import RunLockHeld, run_lock
+from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -235,6 +235,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--companies",
+        default=None,
+        help=(
+            "disambiguate --keyword resolution among archives sharing that keyword by "
+            "--companies scope (same value originally passed to job-hunter search/pipeline "
+            "--companies) — omit to resolve only among unscoped archives; ignored if --input "
+            "is given"
+        ),
+    )
+    parser.add_argument(
         "--config", type=Path, default=Path("config/lm_studio.yaml"), help="LM Studio connection config"
     )
     parser.add_argument(
@@ -258,10 +268,21 @@ def main() -> int:
             "still to review, then exit — no model calls, no changes made"
         ),
     )
+    parser.add_argument(
+        "--result-json",
+        type=Path,
+        default=None,
+        help=(
+            "also write {\"reviewed\": N, \"skipped_cached\": N, \"failed\": N} to this path on "
+            "a successful run — a structured result for a caller (job-hunter pipeline) to read "
+            "instead of parsing this script's own human-readable stdout. Purely additive: stdout "
+            "is unchanged either way."
+        ),
+    )
     add_project_argument(parser)
     args = parser.parse_args()
     chdir_to_project_root(args.project)
-    args.input = resolve_search_path(search=args.input, keyword=args.keyword)
+    args.input = resolve_search_path(search=args.input, keyword=args.keyword, companies=args.companies)
 
     settings = load_settings()
     config = _load_config(args.config)
@@ -277,6 +298,7 @@ def main() -> int:
     candidates = [c for c in data.get("candidates", []) if c.get("us_eligible")]
     if not candidates:
         print(f"No U.S.-eligible candidates in {args.input}.")
+        _write_result_json(args.result_json, reviewed=0, skipped_cached=0, failed=0)
         return 0
 
     skipped_cached = 0
@@ -300,20 +322,39 @@ def main() -> int:
         return 0
 
     try:
-        with run_lock("review"):
-            return _run_review(to_review, skipped_cached, config, settings, profile, resume, rubric)
+        # Shared with `job-hunter pipeline`/`job-hunter cleanup --apply`/`refilter_archive.py`'s
+        # in-place rewrite (see docs/agent-runtime-audit.md's pipeline-lock finding) — one lock
+        # name so a review run and any of those can never race the same SQLite/assessments state.
+        # `run_lock_or_inherited` (not `run_lock`) because `job-hunter pipeline` already holds
+        # this exact lock for the whole run before spawning this script as a subprocess —
+        # reacquiring it here would deadlock against that parent (confirmed live).
+        with run_lock_or_inherited("job-hunter"):
+            return _run_review(
+                to_review, skipped_cached, config, settings, profile, resume, rubric,
+                result_json=args.result_json,
+            )
     except RunLockHeld as exc:
         print(
-            f"job-hunter: {exc} — another review run is already in progress for this "
-            "project (data/assessments.json and the sequential local model can only be "
-            "driven by one review run at a time). Wait for it to finish, or remove the "
-            "lock file if you're sure it's stale.",
+            f"job-hunter: {exc} — another job-hunter run is already in progress for this "
+            "project (data/assessments.json, the sequential local model, and other shared "
+            "state can only be driven by one run at a time). Wait for it to finish, or remove "
+            "the lock file if you're sure it's stale.",
             file=sys.stderr,
         )
         return 2
 
 
-def _run_review(to_review, skipped_cached, config, settings, profile, resume, rubric) -> int:
+def _write_result_json(path: Path | None, *, reviewed: int, skipped_cached: int, failed: int) -> None:
+    if path is None:
+        return
+    atomic_write_text(
+        path, json.dumps({"reviewed": reviewed, "skipped_cached": skipped_cached, "failed": failed}) + "\n"
+    )
+
+
+def _run_review(
+    to_review, skipped_cached, config, settings, profile, resume, rubric, *, result_json: Path | None = None
+) -> int:
     base_url = config["base_url"].rstrip("/")
     with httpx.Client() as client:
         try:
@@ -328,6 +369,7 @@ def _run_review(to_review, skipped_cached, config, settings, profile, resume, ru
             return 2
 
         reviewed = 0
+        failed = 0
         with Storage(settings.database_path) as storage:
             for candidate in to_review:
                 source_key, job_id = candidate["source_key"], candidate["job_id"]
@@ -351,6 +393,7 @@ def _run_review(to_review, skipped_cached, config, settings, profile, resume, ru
                     )
                 except Exception as exc:  # a bad response must not stop the remaining jobs
                     print(f"  skipped: {exc}", file=sys.stderr)
+                    failed += 1
                     continue
                 assessment = Assessment(
                     source_key=source_key,
@@ -368,6 +411,7 @@ def _run_review(to_review, skipped_cached, config, settings, profile, resume, ru
                 print(f"  score={assessment.score} recommended={assessment.recommended}")
 
     print(f"Reviewed {reviewed} job(s); skipped {skipped_cached} already-assessed (unchanged) job(s).")
+    _write_result_json(result_json, reviewed=reviewed, skipped_cached=skipped_cached, failed=failed)
     return 0
 
 
