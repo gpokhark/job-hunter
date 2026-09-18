@@ -9,6 +9,7 @@ import pytest
 from job_hunter.config import CandidateProfile, Settings
 from job_hunter.models import PipelineManifest, PipelineStage, PipelineStatus
 from job_hunter.pipeline import (
+    _decode_timeout_output,
     _fingerprint,
     latest_run_id,
     manifest_path,
@@ -473,3 +474,65 @@ async def test_refilter_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, 
     assert manifest.stage == PipelineStage.DONE
     assert "refilter hung" in manifest.error
     assert manifest.completed_at is not None
+
+
+# --- TimeoutExpired can carry raw bytes even under text=True (docs/agent-runtime-audit.md) ---
+
+
+def test_decode_timeout_output_passes_through_str():
+    assert _decode_timeout_output("already text") == "already text"
+
+
+def test_decode_timeout_output_none_becomes_empty_string():
+    assert _decode_timeout_output(None) == ""
+
+
+def test_decode_timeout_output_decodes_valid_utf8_bytes():
+    assert _decode_timeout_output("stuck — waiting".encode()) == "stuck — waiting"
+
+
+def test_decode_timeout_output_replaces_truncated_utf8_instead_of_raising():
+    """A real kill can land mid multi-byte character -- must never raise, since this runs inside
+    an exception handler that's already unwinding a timeout; raising here would replace a clean
+    TIMED_OUT finalization with an unrelated crash."""
+    truncated = "stuck —".encode()[:-1]  # chop the em dash's last byte
+    result = _decode_timeout_output(truncated)
+    assert "�" in result
+    assert result.startswith("stuck ")
+
+
+async def test_review_stage_timeout_with_real_bytes_output_does_not_crash_manifest_write(
+    tmp_path, monkeypatch
+):
+    """Regression test for the exact bug docs/agent-runtime-audit.md's re-audit caught:
+    `subprocess.TimeoutExpired.stdout`/`.stderr` can be raw `bytes` even when `text=True` was
+    passed to `subprocess.run` -- confirmed live on this project's own Python. Earlier tests only
+    ever mocked `TimeoutExpired` with `str` output, which never exercised this path. Truncated,
+    invalid-UTF-8 bytes (a kill landing mid multi-byte character) used to reach
+    `PipelineManifest.error` and blow up `write_manifest()`'s `model_dump_json()` call with
+    `PydanticSerializationError` instead of cleanly recording TIMED_OUT."""
+    _base_setup(tmp_path, monkeypatch)
+
+    truncated_stderr = "stuck calling —".encode()[:-1]  # invalid UTF-8: cut mid multi-byte char
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output=b"partial stdout", stderr=truncated_stderr)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+
+    settings = Settings()
+    settings.pipeline.stage_timeout_seconds = 1
+    manifest = await run_pipeline(settings, tmp_path, no_scrape=True, review=True)
+
+    assert manifest.status == PipelineStatus.TIMED_OUT
+    assert isinstance(manifest.error, str)
+    assert "stuck calling" in manifest.error
+    # The manifest write itself must have succeeded (no PydanticSerializationError) -- confirm by
+    # reading it back from disk, not just from the in-memory object.
+    reread = read_manifest(manifest.run_id)
+    assert reread.status == PipelineStatus.TIMED_OUT

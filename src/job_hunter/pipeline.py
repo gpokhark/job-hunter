@@ -48,12 +48,33 @@ RUNS_DIR = Path("data/runs")
 class _StageTimedOut(Exception):
     """Raised by `_run_stage_subprocess` in place of letting `subprocess.TimeoutExpired`
     propagate raw — carries whatever partial stdout/stderr the child produced before being
-    killed, decoded to `str` the same way a normal completed run's output is (`text=True`)."""
+    killed, always as genuine `str` (see `_decode_timeout_output` for why that's not automatic)."""
 
     def __init__(self, stdout: str, stderr: str):
         self.stdout = stdout
         self.stderr = stderr
         super().__init__("pipeline stage subprocess timed out")
+
+
+def _decode_timeout_output(value: str | bytes | None) -> str:
+    """`subprocess.TimeoutExpired.stdout`/`.stderr` can carry raw `bytes` even when `Popen`/`run`
+    was called with `text=True` — confirmed live on this project's own Python (3.12.13):
+    `communicate()` collects partial output as bytes before the timeout fires, and only a
+    *successful* `communicate()` call applies the text-mode decode step; the timeout path skips
+    it. Passing that `bytes` value straight into `PipelineManifest.error` (a `str` field) mostly
+    "works" by accident — pydantic's lax `str` validation silently decodes valid UTF-8 bytes — but
+    a real kill can land mid-multi-byte-character, producing truncated, invalid UTF-8 that instead
+    raises `PydanticSerializationError` out of `write_manifest()`'s `model_dump_json()` call,
+    turning a clean `TIMED_OUT` finalization into an unhandled crash (confirmed with a direct
+    reproduction: `TimeoutExpired.stderr` of `b"...\\xe2\\x82"` serializes fine as an *attribute*
+    but blows up at JSON-dump time). `errors="replace"` never raises, at the cost of a `�`
+    replacement character in place of whatever byte(s) got cut off — acceptable for an error
+    message that's read by a human/agent, not parsed."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _run_stage_subprocess(
@@ -76,7 +97,9 @@ def _run_stage_subprocess(
             cmd, cwd=project_root, capture_output=True, text=True, timeout=timeout, env=env
         )
     except subprocess.TimeoutExpired as exc:
-        raise _StageTimedOut(exc.stdout or "", exc.stderr or "") from None
+        raise _StageTimedOut(
+            _decode_timeout_output(exc.stdout), _decode_timeout_output(exc.stderr)
+        ) from None
 
 
 def _finalize_timed_out(manifest: PipelineManifest, exc: _StageTimedOut, *, timeout: int | None) -> None:
