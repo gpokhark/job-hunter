@@ -153,3 +153,39 @@ def test_cleanup_defaults_to_dry_run():
 def test_cleanup_jobs_only_and_reports_only_are_mutually_exclusive():
     with pytest.raises(SystemExit):
         parser().parse_args(["cleanup", "--jobs-only", "--reports-only"])
+
+
+# --- section 4.2: `pipeline --no-scrape [--review]` ---
+
+
+def test_pipeline_no_scrape_and_review_default_off():
+    """Normal (live-search) pipeline mode is the default — no-scrape/review are both opt-in
+    flags, not the other way around."""
+    args = parser().parse_args(["pipeline"])
+    assert args.no_scrape is False
+    assert args.review is False
+
+
+def test_pipeline_no_scrape_and_review_flags_parse():
+    args = parser().parse_args(["pipeline", "--no-scrape", "--review"])
+    assert args.no_scrape is True
+    assert args.review is True
+
+
+def test_pipeline_no_scrape_with_companies_is_rejected_before_run_pipeline_is_ever_called(
+    monkeypatch, capsys
+):
+    """cli.py's own guard (independent of run_pipeline's matching ValueError guard, covered in
+    tests/test_pipeline.py) — this must short-circuit with a clear stderr message and exit code
+    2 without ever invoking run_pipeline, since --companies silently doing nothing here would be
+    worse than refusing outright."""
+    import job_hunter.cli as cli_module
+
+    def _unexpected_run_pipeline(*args, **kwargs):
+        raise AssertionError("run_pipeline must not be called when --no-scrape+--companies is rejected")
+
+    monkeypatch.setattr(cli_module, "run_pipeline", _unexpected_run_pipeline)
+
+    exit_code = cli_module.main(["pipeline", "--no-scrape", "--companies", "honda"])
+    assert exit_code == 2
+    assert "--no-scrape" in capsys.readouterr().err

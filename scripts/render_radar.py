@@ -25,6 +25,24 @@ on these rows.
 This is pure presentation: it never re-derives, adjusts, or overrides a score — every
 number here is exactly what's already in data/assessments.json.
 
+One deliberate, disclosed exception to "pure presentation": this module also implements the
+stale-source-collection fallback (`docs/pipeline-refilter-stale-source-plan.md` section 4.3) — a
+source whose live collection genuinely `failed` this run (not `warning`, which already produced
+real live data this run just fewer jobs than expected, and not `unsupported`, which never has
+cached data to fall back to) still has its last-known-good jobs sitting in SQLite untouched by
+that failure. `build()` merges that source's current active/US-eligible/prefilter-passing/
+recency-passing jobs (via `job_hunter.active_pool.source_jobs()`, deduped against whatever's
+already in `candidates`) straight into the same candidate pool everything else in this module
+already renders, and extends that source's Collection Issues row with a note naming how many
+jobs came from the fallback and when they were last actually collected. This is why `build()`
+now takes a `database_path` for the first time — the one new dependency this module didn't have
+before — but it still never touches a *score*: a merged job is scored (or shown as "NR") exactly
+like any other candidate, using whatever's already in `data/assessments.json`, and the archive
+file on disk is never rewritten by this — only the rendered HTML changes, so re-running this
+script against the same archive stays idempotent. `--no-collection-fallback` (default: fallback
+on) disables this and restores today's plain "no jobs, just the note" behavior, mirroring the
+escape-hatch style of `cleanup.py`'s `--no-vacuum`/`--no-export` flags.
+
 Usage:
     uv run python scripts/render_radar.py                              # newest archive, any keyword
     uv run python scripts/render_radar.py --keyword "product manager"  # newest archive for that keyword
@@ -40,10 +58,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from job_hunter.active_pool import source_jobs as _pool_source_jobs
 from job_hunter.atomic import atomic_write_text
-from job_hunter.config import load_settings
+from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.search_archive import resolve_search_path
+from job_hunter.storage import Storage
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
 
@@ -74,6 +94,17 @@ def _fmt_first_seen(iso: str | None) -> str | None:
         return None
     moment = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
     return f"First seen {moment.strftime('%b %-d, %Y')}"
+
+
+def _fmt_local_date(iso: str | None) -> str | None:
+    """Same "Sep 10, 2026"-style day formatting as `_fmt_first_seen`, for
+    `source_health.last_success_at` — a genuine instant (not a date-only value the way
+    `posted_at` often is), so converting it to the device's local timezone before display is
+    correct here for the same reason it's correct for first_seen_at."""
+    if not iso:
+        return None
+    moment = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    return moment.strftime("%b %-d, %Y")
 
 
 def _undated_tags(
@@ -351,6 +382,84 @@ def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
     return "".join(_source_issue_row_html(h) for h in entries)
 
 
+def _apply_collection_fallback(
+    *,
+    source_issues: list[dict[str, Any]],
+    candidates: dict[tuple[str, str], dict[str, Any]],
+    database_path: Path,
+    profile: CandidateProfile,
+    max_age_days: int,
+    keywords: list[str] | None,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Ability 3 from docs/pipeline-refilter-stale-source-plan.md section 4.3: a source whose
+    live collection genuinely `failed` this run still has its last-known-good jobs sitting in
+    SQLite, completely untouched by that failure — this is what actually surfaces them in the
+    rendered report (with a note explaining why they're there) instead of a `failed` source
+    silently showing zero jobs even though real, recently-collected data for it exists on disk.
+
+    Deliberately scoped to `status == "failed"` only, never `warning` or `unsupported` — see the
+    plan's section 4.3 for the reasoning: a `warning` source already produced real live data this
+    run (health.py's count-anomaly check just flagged the count as suspiciously low), so mixing
+    in old jobs on top of a partial-but-real result would blur what actually happened this run
+    rather than clarify it; `unsupported` is a permanent, already-disclosed config.py state that
+    never fetches jobs at all, so it never has cached data to fall back to regardless.
+
+    Returns a new list of source_issues dicts — every `failed` entry's own `message` extended
+    with the fallback note, everything else passed through unchanged — and merges any
+    qualifying, not-already-present job straight into the `candidates` dict *in place*, so the
+    caller's own scoring/tiering loop over `candidates` picks them up exactly as if they were
+    part of this run's live search output. The archive file on disk is never touched by this —
+    only the in-memory `candidates` dict this one render pass builds its HTML from, which is
+    what keeps re-running this script against the same archive idempotent.
+
+    Opens exactly one `Storage` connection for the whole call (not one per failed source) and
+    reads `health_rows()` once into a dict keyed by `source_key` — `source_health` is a small,
+    one-row-per-configured-company table, so this was never the expensive part the way the
+    `jobs` table scan `source_jobs()` used to be, but there's no reason a run with several
+    concurrently-failing sources (this project's own docs note `stealth_html` sources like
+    astemo/google failing together as a real, recurring case) should reopen the connection and
+    re-scan that table once per failure either."""
+    updated: list[dict[str, Any]] = []
+    failed_keys = [h.get("source_key") for h in source_issues if h.get("status") == "failed"]
+    last_success_by_key: dict[str, str | None] = {}
+    if failed_keys:
+        with Storage(database_path) as storage:
+            health_by_key = {row["source_key"]: row for row in storage.health_rows()}
+        last_success_by_key = {
+            key: (health_by_key[key]["last_success_at"] if key in health_by_key else None)
+            for key in failed_keys
+        }
+    for health in source_issues:
+        if health.get("status") != "failed":
+            updated.append(health)
+            continue
+        health = dict(health)
+        source_key = health.get("source_key")
+        last_success_at = last_success_by_key.get(source_key)
+        base_message = health.get("message") or "No error message recorded."
+        if not last_success_at:
+            note = "Failed to scrape — no prior successful data available for this source."
+        else:
+            fallback_jobs = _pool_source_jobs(
+                database_path, source_key, profile, max_age_days, keywords=keywords, now=now
+            )
+            merged = 0
+            for job in fallback_jobs:
+                key = (job.source_key, job.job_id)
+                if key in candidates:
+                    continue
+                candidates[key] = json.loads(job.model_dump_json())
+                merged += 1
+            note = (
+                f"Failed to scrape today — showing {merged} job(s) from the last successful "
+                f"scrape on {_fmt_local_date(last_success_at)}."
+            )
+        health["message"] = f"{base_message} {note}"
+        updated.append(health)
+    return updated
+
+
 def build(
     *,
     search_path: Path,
@@ -362,6 +471,11 @@ def build(
     undated_new_days: int = 15,
     undated_stale_days: int = 45,
     now: datetime | None = None,
+    database_path: Path | None = None,
+    profile: CandidateProfile | None = None,
+    max_age_days: int | None = None,
+    keywords: list[str] | None = None,
+    collection_fallback: bool = True,
 ) -> dict[str, int]:
     search = json.loads(search_path.read_text(encoding="utf-8"))
     candidates = {(c["source_key"], c["job_id"]): c for c in search["candidates"]}
@@ -373,6 +487,21 @@ def build(
     # is what the "eyebrow" date string below is formatted from, so a late-night run displays
     # the date as it was actually experienced, not tomorrow's UTC date.
     now = now or datetime.now().astimezone()
+
+    # Ability 3's stale-source-collection fallback (see this module's docstring and
+    # docs/pipeline-refilter-stale-source-plan.md section 4.3) — deliberately run *before* the
+    # scoring loop below, not after, so a merged-in job is scored/tiered exactly like any other
+    # candidate rather than needing a second, separate pass over just the merged ones. Callers
+    # that never pass `database_path` (every existing test, and any other embedder of this
+    # function) get exactly today's behavior — this whole block is a no-op without it, by
+    # design, not merely by accident of argument defaults.
+    source_issues_raw = [h for h in search.get("source_health", []) if h.get("status") != "ok"]
+    if collection_fallback and database_path is not None and profile is not None and max_age_days is not None:
+        source_issues_raw = _apply_collection_fallback(
+            source_issues=source_issues_raw, candidates=candidates, database_path=database_path,
+            profile=profile, max_age_days=max_age_days, keywords=keywords, now=now,
+        )
+
     rows: list[dict[str, Any]] = []
     never_reviewed_candidates: list[dict[str, Any]] = []
     for key, candidate in candidates.items():
@@ -455,7 +584,7 @@ def build(
     )
 
     source_issues = sorted(
-        (h for h in search.get("source_health", []) if h.get("status") != "ok"),
+        source_issues_raw,
         key=lambda h: (_SOURCE_ISSUE_ORDER.get(h.get("status"), 99), h.get("company") or h.get("source_key") or ""),
     )
     failed_count = sum(1 for h in source_issues if h.get("status") == "failed")
@@ -572,6 +701,14 @@ def main() -> int:
         "--undated-stale-days", type=int, default=None,
         help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
     )
+    parser.add_argument(
+        "--no-collection-fallback", action="store_true",
+        help=(
+            "disable the failed-source stale-job fallback merge (section 4.3/4.5 of "
+            "docs/pipeline-refilter-stale-source-plan.md) — falls back to today's plain "
+            "note-with-no-jobs behavior for a source that failed to scrape this run"
+        ),
+    )
     add_project_argument(parser)
     args = parser.parse_args()
     chdir_to_project_root(args.project)
@@ -585,6 +722,7 @@ def main() -> int:
     undated_stale_days = (
         args.undated_stale_days if args.undated_stale_days is not None else settings.search.undated_stale_days
     )
+    keywords = [term.strip() for term in args.keyword.split(",") if term.strip()] if args.keyword else None
 
     stats = build(
         search_path=args.search,
@@ -595,6 +733,11 @@ def main() -> int:
         new_days=args.new_days,
         undated_new_days=undated_new_days,
         undated_stale_days=undated_stale_days,
+        database_path=settings.database_path,
+        profile=load_profile(),
+        max_age_days=settings.search.max_posting_age_days,
+        keywords=keywords,
+        collection_fallback=not args.no_collection_fallback,
     )
     print(
         f"Wrote {output_path} | strong={stats['strong']} review={stats['review']} "

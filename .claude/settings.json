@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path' | { read -r f; case \"$f\" in */config/candidate_profile.yaml) uv run python scripts/diff_profile.py 2>/dev/null || true ;; esac; }",
+            "command": "uv run python \"${CLAUDE_PROJECT_DIR}/scripts/claude_profile_hook.py\" \"${CLAUDE_PROJECT_DIR}\"",
             "statusMessage": "Regenerating candidate_profile.yaml diff report"
           }
         ]

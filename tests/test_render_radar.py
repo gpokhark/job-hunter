@@ -6,6 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from render_radar import _default_title, build  # noqa: E402
 
+from job_hunter.config import CandidateProfile
+from job_hunter.models import HealthStatus, Job, LocationConfidence, SourceHealth
+from job_hunter.storage import Storage
+
 
 def _search_json(candidates: list[dict], source_health: list[dict] | None = None) -> dict:
     return {
@@ -852,3 +856,250 @@ def test_undated_job_recently_first_seen_gets_new_tag_not_long_standing(tmp_path
     assert "First seen" in html
     assert 'tag-new">New' in html
     assert 'tag-long-standing">Long-standing' not in html
+
+
+# --- ability 3: stale-source-collection fallback (docs/pipeline-refilter-stale-source-plan.md section 4.3) ---
+
+
+def _make_stored_job(**updates) -> Job:
+    values = dict(
+        source_key="waymo", source_platform="test", company="Waymo", job_id="1",
+        title="AV Perception Engineer", url="https://example.com/waymo/1",
+        us_eligible=True, location_confidence=LocationConfidence.HIGH,
+    )
+    values.update(updates)
+    return Job(**values)
+
+
+def test_collection_fallback_merges_only_recency_passing_jobs_with_a_dated_note(tmp_path):
+    """The core ability-3 scenario: a source that failed to scrape *this* run still shows its
+    last-known-good jobs, but only the ones that still pass the normal recency filter — a source
+    down long enough eventually shows zero fallback jobs while still carrying the note (plan
+    section 3, decision 2), it never bypasses passes_recency."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="fresh", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.upsert_job(
+            _make_stored_job(job_id="stale", title="AV Perception Engineer", posted_at=now - timedelta(days=400))
+        )
+        # A mid-day UTC instant (not midnight) so its local-timezone calendar date is stable
+        # across common timezones when this test runs — same reasoning as
+        # test_eyebrow_date_uses_the_calendar_date_of_whatever_tzinfo_now_carries above: the
+        # expected display string is derived from the same instant with the same .astimezone()
+        # call `_fmt_local_date` itself uses, rather than a separately hand-typed date string
+        # that could silently drift out of sync with whatever timezone actually runs this test.
+        last_success = datetime(2026, 9, 10, 18, 0, tzinfo=UTC)
+        storage.update_health(
+            SourceHealth(
+                source_key="waymo", company="Waymo", status=HealthStatus.OK,
+                job_count=2, attempted_at=last_success,
+            )
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[
+                    {"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Connection timed out."}
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    html = output_path.read_text()
+    assert "AV Perception Engineer" in html  # the recency-passing job made it into the report
+    assert stats["never_reviewed"] == 1  # merged, but not yet scored -> "Not LLM Reviewed"
+    expected_date = last_success.astimezone().strftime("%b %-d, %Y")
+    assert (
+        f"Connection timed out. Failed to scrape today — showing 1 job(s) from the last "
+        f"successful scrape on {expected_date}."
+    ) in html
+
+
+def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
+    """A source that has *never* succeeded (source_health.last_success_at IS NULL) gets the
+    "no prior successful data" note instead, with zero jobs merged — there's nothing to merge."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        # A job happens to sit active in SQLite (e.g. from some other source key sharing a
+        # database, or stale test data) but this source itself has no recorded success.
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.FAILED, job_count=0)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "DNS error."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    html = output_path.read_text()
+    assert stats["never_reviewed"] == 0
+    assert "DNS error. Failed to scrape — no prior successful data available for this source." in html
+
+
+def test_collection_fallback_never_triggers_for_warning_or_unsupported_sources(tmp_path):
+    """Deliberately scoped to status == "failed" only — a warning source already produced real
+    live data this run (just fewer jobs than health.py's count-anomaly check expected), and an
+    unsupported source never has cached data to fall back to; neither should ever pull in old
+    SQLite jobs or gain the fallback note text."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(
+                source_key="widget", job_id="1", company="Widget Inc", title="AV Perception Engineer",
+                posted_at=now - timedelta(days=5),
+            )
+        )
+        storage.upsert_job(
+            _make_stored_job(
+                source_key="zeta", job_id="2", company="Zeta Motors", title="AV Perception Engineer",
+                posted_at=now - timedelta(days=5),
+            )
+        )
+        storage.update_health(
+            SourceHealth(source_key="widget", company="Widget Inc", status=HealthStatus.WARNING, job_count=1)
+        )
+        storage.update_health(
+            SourceHealth(source_key="zeta", company="Zeta Motors", status=HealthStatus.UNSUPPORTED, job_count=0)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[
+                    {"source_key": "widget", "company": "Widget Inc", "status": "warning", "message": "Job count dropped 80%."},
+                    {"source_key": "zeta", "company": "Zeta Motors", "status": "unsupported", "message": "Akamai blocks every request."},
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    assert stats["never_reviewed"] == 0  # nothing merged for either source
+    html = output_path.read_text()
+    assert "AV Perception Engineer" not in html
+    assert "Failed to scrape" not in html
+    assert "Job count dropped 80%." in html  # original messages untouched
+    assert "Akamai blocks every request." in html
+
+
+def test_collection_fallback_dedupes_against_jobs_already_in_the_archive(tmp_path):
+    """A `failed` status can still coexist with a job already present in `candidates` (e.g. a
+    partially-succeeded detail fetch before the failure) — the fallback must not double-add it."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="1", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.OK, job_count=1)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [_candidate("waymo", "1", title="AV Perception Engineer")],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Timed out."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("waymo", "1", 80, title="AV Perception Engineer")]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    assert stats["strong"] == 1  # not duplicated into a second row
+    html = output_path.read_text()
+    # One rendered row for this job, not two — html.count() on the title text itself would
+    # also count the row's own data-title="..." feedback attribute, so count the row wrapper
+    # instead, the thing that would actually double up if the dedupe were broken.
+    assert html.count('data-job-id="1"') == 1
+    assert "showing 0 job(s)" in html  # the only fallback candidate was already present
+
+
+def test_no_collection_fallback_flag_disables_the_merge(tmp_path):
+    """`collection_fallback=False` (the --no-collection-fallback CLI flag) restores today's
+    plain note-with-no-jobs behavior even when a database_path/profile/max_age_days are given —
+    the escape hatch must actually take effect, not just be accepted and ignored."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="1", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.OK, job_count=1)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Timed out."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+        collection_fallback=False,
+    )
+
+    assert stats["never_reviewed"] == 0
+    html = output_path.read_text()
+    assert "AV Perception Engineer" not in html
+    assert "Timed out." in html
+    assert "Failed to scrape" not in html  # no note appended at all when the flag disables this

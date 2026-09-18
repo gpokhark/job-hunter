@@ -161,11 +161,44 @@ def parser() -> argparse.ArgumentParser:
     pipeline.add_argument(
         "--skip-radar", action="store_true", help="search + review only; skip rendering the HTML report"
     )
+    pipeline.add_argument(
+        "--no-scrape",
+        action="store_true",
+        help=(
+            "skip the live search stage and re-run scripts/refilter_archive.py against an "
+            "already-resolved archive instead (the 'I edited candidate_profile.yaml, show me "
+            "the report reflecting that, without a new scrape' workflow) — rejected together "
+            "with --companies, since refiltering re-evaluates an archive's own already-"
+            "attempted source scope, not a fresh company selection; see "
+            "docs/pipeline-refilter-stale-source-plan.md section 4.2"
+        ),
+    )
+    pipeline.add_argument(
+        "--review",
+        action="store_true",
+        help=(
+            "with --no-scrape only: also run the local-LLM review stage against whatever the "
+            "refilter surfaced as new/changed — review defaults OFF in --no-scrape mode "
+            "(opt in with this flag), the opposite default from normal pipeline mode's "
+            "--skip-review opt-out"
+        ),
+    )
     status = sub.add_parser(
         "pipeline-status",
         help="print a pipeline run's manifest — the newest run by default, or --run <id>",
     )
     status.add_argument("--run", help="a specific run_id (default: the newest run overall)")
+    # --project is registered on the root parser above so `job-hunter --project X <command>`
+    # works, but argparse subparsers only see arguments that appear *after* the command token —
+    # `job-hunter <command> --project X` would otherwise be rejected as unrecognized. Registering
+    # it again on every subparser here (rather than only documenting "put it before the
+    # subcommand") makes both positions work: argparse's own default-handling already skips
+    # re-applying a subparser's default over a value the root parser already set, so passing it
+    # in only one position is never overwritten by the other parser's unset default. Confirmed
+    # live: every skills/*/SKILL.md example shows `<command> --project ...` (after the
+    # subcommand) — that shape must work, not just be documented as the "wrong" order to avoid.
+    for subparser in sub.choices.values():
+        add_project_argument(subparser)
     return root
 
 
@@ -340,6 +373,14 @@ def main(argv: list[str] | None = None) -> int:
             print(_json(manifest.model_dump(mode="json")))
             return 0 if manifest.status not in {PipelineStatus.FAILED, PipelineStatus.MODEL_UNAVAILABLE} else 2
         if args.command == "pipeline":
+            if args.no_scrape and args.companies:
+                print(
+                    "job-hunter: --companies has no effect with --no-scrape (refiltering "
+                    "re-evaluates an archive's own already-attempted source scope, not a "
+                    "fresh company selection) — drop one of the two flags",
+                    file=sys.stderr,
+                )
+                return 2
             manifest = asyncio.run(
                 run_pipeline(
                     settings,
@@ -352,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
                     max_candidates=args.max_candidates,
                     skip_review=args.skip_review,
                     skip_radar=args.skip_radar,
+                    no_scrape=args.no_scrape,
+                    review=args.review,
                 )
             )
             print(_json(manifest.model_dump(mode="json")))

@@ -183,6 +183,14 @@ class RunInfo(BaseModel):
 
 class PipelineStage(StrEnum):
     SEARCH = "search"
+    # `--no-scrape` mode's own first stage, replacing SEARCH — see pipeline.py's `run_pipeline`
+    # and docs/pipeline-refilter-stale-source-plan.md section 4.2. Distinct from SEARCH rather
+    # than reusing it because it runs a different subprocess (scripts/refilter_archive.py, not
+    # a live Collector.search()) and populates different manifest fields (`gained`/`lost`/
+    # `diff_report` instead of a freshly-collected job count) — collapsing the two into one
+    # stage name would hide which of two very different operations actually produced a run's
+    # `candidates` count.
+    REFILTER = "refilter"
     REVIEW = "review"
     RADAR = "radar"
     DONE = "done"
@@ -214,6 +222,17 @@ class PipelineManifest(BaseModel):
     archive: str | None = None
     radar: str | None = None
     candidates: int | None = None
+    # Populated only by --no-scrape mode's REFILTER stage, parsed from scripts/
+    # refilter_archive.py's own stdout summary line the same way `reviewed`/`skipped_cached`
+    # below are parsed from review_with_lm_studio.py's — see pipeline.py's
+    # `_parse_refilter_output`. `gained`/`lost` name the exact vocabulary refilter_archive.py's
+    # own HTML diff report already uses (not "added"/"removed" or some other synonym), so a
+    # human reading a manifest and that report side by side sees the same two words for the
+    # same two counts. All three stay None for a live-search (non-`--no-scrape`) run, since
+    # nothing was refiltered — there was nothing to diff against.
+    diff_report: str | None = None
+    gained: int | None = None
+    lost: int | None = None
     reviewed: int | None = None
     skipped_cached: int | None = None
     failed: int = 0

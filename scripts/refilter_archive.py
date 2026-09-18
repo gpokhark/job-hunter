@@ -45,6 +45,14 @@ snapshot from when this archive was first written — matching this tool's exist
 handling, which already recomputes against wall-clock *now* rather than assuming nothing aged
 since collection.
 
+The raw "every active/US-eligible job, optionally source-scoped" query this module's `refilter()`
+runs against SQLite used to be a private `_active_jobs()` right here; it now lives in
+`job_hunter.active_pool.raw_active_jobs()` instead (see `docs/pipeline-refilter-stale-source-plan.md`
+section 4.4), moved into the installed package once `scripts/render_radar.py`'s stale-source
+fallback needed the same query for one source at a time (`active_pool.source_jobs()`). This
+module is a behavior-preserving refactor around that move, not a behavior change — every test in
+`tests/test_refilter_archive.py` still exercises the identical `refilter()` output.
+
 Usage:
     uv run python scripts/refilter_archive.py
     uv run python scripts/refilter_archive.py --keyword ADAS
@@ -56,7 +64,6 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,34 +81,13 @@ from diff_profile import (  # noqa: E402
 )
 from render_radar import _tier  # noqa: E402
 
+from job_hunter.active_pool import raw_active_jobs
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
 from job_hunter.prefilter import passes_prefilter, passes_recency
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.search_archive import resolve_search_path
-from job_hunter.storage import Storage
-
-# jobs.canonical_url -> Job.url is the one required rename; every other column already lines up
-# with a Job field by name. Same allowlist as scripts/diff_profile.py's _row_to_job — duplicated
-# rather than shared, matching this project's existing per-script self-containment for these
-# support scripts.
-_JOB_COLUMNS = (
-    "source_key", "company", "job_id", "source_platform", "title",
-    "location_raw", "city", "state", "country", "work_arrangement",
-    "us_eligible", "location_confidence", "location_evidence",
-    "visa_sponsorship", "sponsorship_evidence", "department",
-    "employment_type", "posted_at", "description", "salary_min",
-    "salary_max", "salary_currency", "salary_evidence", "content_hash", "first_seen_at",
-    "last_seen_at",
-)
-
-
-def _row_to_job(row: sqlite3.Row) -> Job:
-    data = {column: row[column] for column in _JOB_COLUMNS}
-    data["url"] = row["canonical_url"]
-    return Job(**data)
-
 
 _FAILED_STATUSES = {"failed", "unsupported"}
 
@@ -143,27 +129,6 @@ def _successful_source_scope(data: dict[str, Any]) -> set[str] | None:
     return {key for key, status in statuses.items() if status not in _FAILED_STATUSES}
 
 
-def _active_jobs(database_path: Path, source_scope: set[str] | None) -> list[Job]:
-    """Every currently-active, US-eligible job in SQLite, optionally restricted to a source-key
-    scope. Attaches `prior_assessment` exactly like `collector.py` does for a live search, so a
-    rebuilt candidate carries the same fields a fresh search would have produced."""
-    with Storage(database_path) as storage:
-        rows = storage.connection.execute(
-            "SELECT * FROM jobs WHERE status='active' AND us_eligible=1"
-        ).fetchall()
-        assessments = storage.all_assessments()
-    jobs = []
-    for row in rows:
-        if source_scope is not None and row["source_key"] not in source_scope:
-            continue
-        job = _row_to_job(row)
-        prior = assessments.get((job.source_key, job.job_id))
-        if prior and prior.content_hash == job.content_hash:
-            job.prior_assessment = prior
-        jobs.append(job)
-    return jobs
-
-
 def refilter(
     data: dict[str, Any],
     *,
@@ -182,7 +147,12 @@ def refilter(
     resolved_db_path = Path(database_path) if database_path is not None else settings.database_path
 
     source_scope = _successful_source_scope(data)
-    jobs = _active_jobs(resolved_db_path, source_scope)
+    # Deliberately the *unfiltered* multi-source pool (job_hunter.active_pool.raw_active_jobs,
+    # not its sibling source_jobs()) — this loop still needs to distinguish a prefilter failure
+    # from a recency failure itself (stale_excluded counts only the latter), which a
+    # pre-filtered single-source list can no longer tell apart once the excluded jobs are
+    # already gone from it. See active_pool.py's module docstring for the full reasoning.
+    jobs = raw_active_jobs(resolved_db_path, source_scope)
 
     kept: list[Job] = []
     stale_excluded = 0
@@ -461,7 +431,7 @@ def _render_job_rows(
         )
         tags = _job_tags(job, now=now, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days)
         date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
-        # `_active_jobs` only ever attaches `prior_assessment` when its content_hash still
+        # `raw_active_jobs` only ever attaches `prior_assessment` when its content_hash still
         # matches the job's current one — so its mere presence already means "valid", unlike
         # diff_profile.py's version which has to check staleness itself against a
         # separately-loaded assessments dict.
@@ -585,7 +555,7 @@ def main() -> int:
 
         settings = load_settings()
         source_scope = _successful_source_scope(data)
-        active_pool = len(_active_jobs(settings.database_path, source_scope))
+        active_pool = len(raw_active_jobs(settings.database_path, source_scope))
 
         report_path = Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
         render_archive_diff_html(

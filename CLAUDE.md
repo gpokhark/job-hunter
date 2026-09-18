@@ -378,7 +378,82 @@ before most commands will find a profile (falls back to the example file otherwi
   with no "Profile terms" word-diff section — there's no second profile to diff against here, only
   one on-disk profile evaluated against two different job snapshots (an old archive vs. today's
   live SQLite pool), so `_field_term_diffs` doesn't apply. `--keyword` here means the same full
-  positive-term replacement it means everywhere else in this project.
+  positive-term replacement it means everywhere else in this project. As of the
+  `docs/pipeline-refilter-stale-source-plan.md` round, its own SQLite query (every active/eligible
+  job, optionally source-scoped) no longer lives here privately — it moved to
+  `src/job_hunter/active_pool.py`'s `raw_active_jobs()` once `render_radar.py`'s stale-source
+  fallback (below) needed the identical query for one source at a time; this module now imports
+  that instead of keeping its own copy, a behavior-preserving refactor confirmed by every existing
+  test in `tests/test_refilter_archive.py` still passing unchanged.
+
+- **`src/job_hunter/active_pool.py`** — the shared SQLite active/eligible-job-pool query, lifted
+  out of `refilter_archive.py` once a second caller needed it. Two functions: `raw_active_jobs()`
+  (every active/US-eligible job, optionally scoped to a set of source keys, **no** prefilter/
+  recency applied — `refilter_archive.py`'s own gained/lost accounting needs the unfiltered shape
+  to distinguish "failed recency" from "failed prefilter for some other reason") and
+  `source_jobs()` (one source's active/eligible/prefilter-passing/recency-passing jobs, built on
+  `raw_active_jobs()` — what `render_radar.py`'s fallback actually calls). `source_scope` is
+  pushed into the SQL `WHERE ... source_key IN (...)` clause rather than fetched-then-filtered in
+  Python — this table is the one documented above as 230MB, 98.5% `description` text, and a naive
+  fetch-everything-then-discard-most-of-it approach here would mean a full scan per failed source
+  in a single render; an empty (but non-`None`) `source_scope` short-circuits before touching
+  SQLite at all, since an empty SQL `IN ()` is invalid syntax, not merely slow.
+
+- **`src/job_hunter/pipeline.py`** — `job-hunter pipeline`, a Python-owned command sequencing
+  search → review → radar end to end (or, with `--no-scrape`, refilter → optional review → radar,
+  entirely offline — see below), writing a durable `data/runs/<run_id>/manifest.json` at every
+  stage (`PipelineManifest`/`PipelineStage`/`PipelineStatus` in `models.py`) so an agent or a human
+  can poll `job-hunter pipeline-status` instead of re-parsing three separate commands' stdout. The
+  review/radar (and, in `--no-scrape` mode, refilter) stages are still driven via `subprocess`
+  against the existing standalone scripts — this module supervises them, it does not reimplement
+  their logic, matching the "scoring is delegated entirely to `review_with_lm_studio.py`"
+  principle. `--no-scrape` skips the live search stage and instead re-runs `refilter_archive.py`
+  against an already-resolved archive (rejected together with `--companies`, since refiltering
+  re-evaluates an archive's own already-attempted source scope, not a fresh company selection);
+  its `--review` flag defaults review **off**, the opposite default from normal pipeline mode's
+  `--skip-review` opt-out — a deliberate, disclosed asymmetry (see
+  `docs/pipeline-refilter-stale-source-plan.md` §4.2), not an oversight. `status` distinguishes
+  `complete`/`partial`/`failed`/`no_candidates`/`model_unavailable`, parsed from the review
+  script's own stdout/stderr rather than guessed. Records `profile_fingerprint`/
+  `resume_fingerprint`/`model` on the manifest for provenance only — explicitly never wired into
+  cache invalidation, respecting the content-hash-only assessment-cache principle above. The whole
+  function body runs inside one try/except that finalizes the manifest as `failed` with the real
+  exception message on any unhandled error before re-raising — without this, an archive-resolution
+  failure in `--no-scrape` mode (no archive matches the given keyword) left the manifest stuck at
+  `running` forever, confirmed live and fixed with a regression test in `test_pipeline.py`.
+
+- **`src/job_hunter/rootutil.py`, `atomic.py`, `runlock.py`** — agent-runtime portability
+  infrastructure, all three used by the CLI and every `scripts/*.py` entry point.
+  `rootutil.py`'s `--project`/`JOB_HUNTER_ROOT` resolve and `chdir` into the real project root
+  once, early, before any relative config/data path is touched (`git -C <path>` semantics) — every
+  config/data default in this codebase is a bare relative `Path`, resolved against whatever the
+  process's CWD happens to be, so this is the single choke point that makes a command
+  location-independent instead of requiring "already `cd`'d into the repo." Registered on *every*
+  subparser, not just the root one — argparse only sees a flag if it appears in the right parser
+  for its position, so `job-hunter <command> --project X` (the position every skill's example
+  command actually uses) needs the subparser to declare it too, not just `job-hunter --project X
+  <command>`; confirmed live as a real, initially-shipped bug before this was fixed. `atomic.py`'s
+  `atomic_write_text()` (temp file + `os.replace()`) backs every load-bearing JSON/HTML write —
+  `assessments.json`, search archives, radar/profile-diff reports, the profile baseline snapshots
+  — so a killed/interrupted process or two writers racing the same path never leaves a truncated
+  file behind. `runlock.py`'s `run_lock()` is a per-project file lock (PID-based, stale-lock
+  reclaim on a dead PID) guarding `review_with_lm_studio.py`'s write-heavy loop specifically, so a
+  second overlapping review run gets an explicit "already running" error instead of silently
+  racing the first run's `assessments.json` writes and burning duplicate local-model time.
+
+- **`src/job_hunter/hook_adapter.py`** — the shared logic behind the Claude Code
+  (`scripts/claude_profile_hook.py`) and Hermes (`scripts/hermes_profile_hook.py`)
+  candidate-profile-diff hooks: `should_run_diff()` (does an edited path, as a runtime reports it,
+  resolve to *this project's* `config/candidate_profile.yaml`) and `run_diff()` (actually run
+  `scripts/diff_profile.py`, check mode). Each runtime's own adapter script owns only its stdin
+  JSON wire shape (Claude's `PostToolUse`: `tool_input.file_path`; Hermes's `post_tool_call`:
+  `tool_input.path`) and calls these two shared functions — no argparse/stdin concerns live here,
+  which is what makes it directly unit-testable without spawning a subprocess or faking stdin.
+  `run_diff()` discovers `uv` via `shutil.which` rather than assuming it's on `PATH`, and logs
+  every failure mode (`uv` missing, non-zero exit, timeout) to `logs/profile-hook.log` instead of
+  swallowing it silently the way the previous Hermes-only hook's bare `contextlib.suppress(...)`
+  did — a hook that fails invisibly is worse than one that's merely advisory, since nothing else
+  in this pipeline would ever hint an edit-triggered report quietly stopped updating.
 
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
@@ -425,7 +500,10 @@ before most commands will find a profile (falls back to the example file otherwi
   it already means exactly "last confirmed present." One real gotcha worth remembering for any
   future storage cleanup: SQLite's `DELETE` only frees pages for internal reuse, it does **not**
   shrink the file on disk — an explicit `VACUUM` afterward is required to actually reclaim space,
-  easy to forget when the whole point was reducing disk usage.
+  easy to forget when the whole point was reducing disk usage. Sets `PRAGMA busy_timeout = 5000`
+  on every connection — two job-hunter/agent processes legitimately hitting the same file at once
+  (a search run and a concurrent review run, say) now wait briefly on lock contention instead of
+  failing immediately with "database is locked."
 
 - **`health.py`** — `detect_count_anomaly` flags (but does not fail) a source whose job count drops
   more than 70% from its last known count, guarding against adapters that "succeed" against a
@@ -435,31 +513,45 @@ before most commands will find a profile (falls back to the example file otherwi
   `Job` (summary + detail + location decision + dedup metadata) is the full record; `SearchResult`
   is the CLI/skill-facing output envelope.
 
-- **`skills/`** — the agent-facing half of the system, split into five independently-invocable
+- **`skills/`** — the agent-facing half of the system, split into six independently-invocable
   skills (see `docs/skill-split-plan.md` for the full design rationale): `job-scout` (search →
   archive), `job-reviewer` (local-LLM scoring), `job-radar` (compile + render), `job-feedback`
   (turn radar feedback and/or a `candidate_profile.yaml` change — manual or suggested — into a
-  confirmed profile update via `diff_profile.py`'s check mode; see that section above), and
-  `job-hunter` (a thin orchestrator that runs the search/review/render three commands end to end
-  — it never invokes the other skills as sub-calls, since cross-runtime support for that isn't
-  guaranteed, and `job-feedback` in particular is a separate, occasionally-invoked loop rather than
-  part of every run). Each stage's `SKILL.md` is the canonical procedure for its own stage: run the
-  collector, read only `candidates`, never recommend `us_eligible=false`, never invent
-  salary/sponsorship/qualifications. Scoring itself is delegated entirely to
-  `scripts/review_with_lm_studio.py` — a deterministic script, not a sub-agent — which sends each
-  not-yet-assessed candidate to a **local** model via LM Studio's OpenAI-compatible API
-  (`config/lm_studio.yaml`, one job at a time, strictly sequential), so no Claude/cloud tokens are
-  spent scoring anything; the calling agent's job is just to run it, then read
-  `data/assessments.json`/`export-assessments` and present the results. It persists each verdict
-  immediately inside its loop, so an interrupted run is already resumable by re-invoking it with
-  the same `--keyword`/`--input` — no separate resume logic needed. `job-reviewer/references/
-  scoring.md` defines the rubric embedded into that script's prompt; `job-scout/references/
-  troubleshooting.md` covers source-health diagnosis. `job-feedback` is deliberately the one skill
-  whose own `SKILL.md` mandates two explicit stop-and-confirm points with the user — which
-  suggested terms to write into `candidate_profile.yaml`, and whether to accept a shown diff as the
-  new baseline — never inferred from silence or applied because a prior step wasn't rejected; every
-  number it reports still comes from a deterministic script, never an LLM judgment. Install/copy
-  all five skills for other agent runtimes via `scripts/install_skill.sh`.
+  confirmed profile update via `diff_profile.py`'s check mode; see that section above),
+  `job-hunter` (the orchestrator — see below), and `onboard-source` (a repo-maintenance skill for
+  extending `job-hunter` itself with a new employer source, not an end-user job-search skill;
+  moved from `.claude/skills`-only to `skills/onboard-source` — `.claude/skills/onboard-source` is
+  now a symlink to it — so it installs for every runtime, Hermes included). Each stage's
+  `SKILL.md` is the canonical procedure for its own stage: run the collector, read only
+  `candidates`, never recommend `us_eligible=false`, never invent salary/sponsorship/
+  qualifications. Scoring itself is delegated entirely to `scripts/review_with_lm_studio.py` — a
+  deterministic script, not a sub-agent — which sends each not-yet-assessed candidate to a
+  **local** model via LM Studio's OpenAI-compatible API (`config/lm_studio.yaml`, one job at a
+  time, strictly sequential), so no Claude/cloud tokens are spent scoring anything; the calling
+  agent's job is just to run it, then read `data/assessments.json`/`export-assessments` and
+  present the results. It persists each verdict immediately inside its loop, so an interrupted run
+  is already resumable by re-invoking it with the same `--keyword`/`--input` — no separate resume
+  logic needed. `job-reviewer/references/scoring.md` defines the rubric embedded into that
+  script's prompt; `job-scout/references/troubleshooting.md` covers source-health diagnosis.
+  `job-feedback` is deliberately the one skill whose own `SKILL.md` mandates two explicit
+  stop-and-confirm points with the user — which suggested terms to write into
+  `candidate_profile.yaml`, and whether to accept a shown diff as the new baseline — never
+  inferred from silence or applied because a prior step wasn't rejected; every number it reports
+  still comes from a deterministic script, never an LLM judgment. `job-hunter` is now a genuinely
+  thin wrapper around `job-hunter pipeline`/`pipeline-status` (`pipeline.py`, above) rather than
+  three separately-sequenced commands it used to inline in full — it documents `--no-scrape
+  [--review]` for "I edited the profile, show me the report reflecting that, no new scrape"
+  without re-explaining `job-radar`'s tiering/tagging rules or its own disclaimer text, citing
+  `job-radar`'s `SKILL.md` by step number instead of restating them, once that duplication was
+  identified and removed. Every skill's frontmatter now carries `compatibility`/`metadata`
+  (`metadata.hermes.tags` for Hermes-side discovery; no `license:` field — this project is
+  deliberately unlicensed) and a `## Contract` section (Input/Output, stated once per skill)
+  alongside the pre-existing `name`/`description`/`version` — see
+  `docs/skill-frontmatter-and-hook-plan.md`. A skill's `version` must bump on any content change
+  (see "Working in this repo" below). Install/copy all six skills for other agent runtimes via
+  `scripts/install_skill.sh`, which also now supports `--update` (replace a stale symlink/copy,
+  e.g. after a moved repo), `--uninstall`, `--dry-run`, and an explicit `--link` (named alongside
+  the pre-existing `--copy`, rather than being only "the default when `--copy` isn't given").
 
   `job-hunter search --archive` writes each run's candidate bundle to
   `data/searches/{slug}_{date}.json` (`search_archive.py`'s `archive_path()`) instead of one fixed
@@ -469,6 +561,13 @@ before most commands will find a profile (falls back to the example file otherwi
   later via `search_archive.py`'s `resolve_search_path()` (also exposed as `job-hunter
   resolve-search --keyword ...`) — resolving "which archive" by globbing the directory's own
   deterministic filenames rather than maintaining a separate pointer file that could drift.
+  `archive_path()` also folds `--companies` into the filename whenever it actually restricts the
+  run (`default__companies-openai_{date}.json`, company keys sorted before slugifying so order
+  never creates a spurious second file) — added after a real, confirmed-live incident where a
+  `--companies`-scoped `job-hunter pipeline` run silently overwrote a same-day 65-source archive
+  and its radar report, since the filename previously encoded only `keyword`, never `--companies`.
+  Omitting `--companies` (the overwhelming majority of real runs) leaves the filename exactly as
+  before.
   `data/assessments.json` / the SQLite `assessments` table stay deliberately **global**, never
   split per keyword or per run: a job's fitness verdict is a property of *(job, resume)*, not of
   whichever search happened to surface it, and splitting it would mean re-reviewing the same job
@@ -485,7 +584,25 @@ before most commands will find a profile (falls back to the example file otherwi
   presentation: it never re-derives, adjusts, or overrides a score. Every candidate the model
   actually scored appears in one of the three sections, however low the score — only a candidate
   the review step skipped entirely (an LM Studio error, or an explicit `--limit`) has no verdict
-  to show, so it's counted in `never_reviewed` but never listed.
+  to show, so it's counted in `never_reviewed` but never listed. One deliberate, disclosed
+  exception to "pure presentation": it also implements the stale-source-collection fallback
+  (`docs/pipeline-refilter-stale-source-plan.md` §4.3) — a source whose live collection genuinely
+  `failed` this run (never `warning`, which already produced real live data this run just fewer
+  jobs than expected, and never `unsupported`, which never has cached data to fall back to) still
+  has its last-known-good jobs sitting in SQLite, untouched by that failure. `build()` merges that
+  source's current active/eligible/prefilter-passing/recency-passing jobs
+  (`active_pool.source_jobs()`, above) into the same candidate pool it already renders, extending
+  that source's Collection Issues row with a note naming how many jobs came from the fallback and
+  when they were last actually collected (or, if the source has never once succeeded, that no
+  prior data exists to fall back on) — merged jobs get no special per-row badge, by deliberate
+  choice, the note is the only signal. This is why `build()` takes a `database_path` for the first
+  time; the archive file on disk is never rewritten by it, only the rendered HTML, so re-running
+  against the same archive stays idempotent. `--no-collection-fallback` (default: fallback on)
+  restores the old note-with-no-jobs behavior. Deliberately scoped to `render_radar.py` alone, not
+  the live collector (`collector.py`) — the collector's own meaning ("jobs I actually fetched this
+  run") stays simple and untouched; a report-layer merge was the smaller, more contained change
+  for what was actually asked (the report shows old data, clearly marked), not a live-collection
+  behavior change.
 
 ## Working in this repo
 
@@ -522,3 +639,13 @@ before most commands will find a profile (falls back to the example file otherwi
   job returned by a source regardless of CLI flags.
 - When adding a company to `companies.yaml`, prefer reusing `ConfigurableJsonAdapter`/`json_api`
   via config over writing a new adapter class unless the platform truly needs bespoke parsing.
+- **Any content change to a `skills/*/SKILL.md` file must bump its frontmatter `version` field —
+  never leave it unchanged.** A skill's version is the only signal an install (Hermes's spec
+  mandates it as a top-level field; see `docs/skill-frontmatter-and-hook-plan.md` section 2.2) or
+  a person diffing an update has that its procedure actually changed. Judge the bump size by
+  semver convention: a new/changed capability or command the procedure now documents (e.g. a new
+  CLI flag it calls, a changed sequencing of steps) is a minor bump; a wording/citation/robustness
+  trim with no behavior change (e.g. adding `--project`, de-duplicating restated rationale) is a
+  patch bump. This was missed once already — five skills were substantially rewritten in the same
+  change that added `job-hunter pipeline` support without any of their versions moving — treat
+  that as the mistake to not repeat, not as precedent.

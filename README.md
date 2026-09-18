@@ -68,6 +68,11 @@ to match your server's address.
 ## Commands
 
 ```bash
+uv run job-hunter pipeline                              # search -> review -> radar, one command
+uv run job-hunter pipeline --keyword "ADAS,Robotics"
+uv run job-hunter pipeline --no-scrape [--review]        # re-filter + re-render, no new scrape
+uv run job-hunter pipeline-status [--run <run-id>]       # poll/inspect a pipeline run's manifest
+
 uv run job-hunter search
 uv run job-hunter search --json --archive [--keyword "ADAS,Robotics"]
 uv run job-hunter search --companies tri,toyota --new-only
@@ -91,11 +96,24 @@ uv run python scripts/diff_profile.py --remove target_domains:"some term"
 uv run python scripts/refilter_archive.py [--keyword "..."] [--search <path>] [--output <path>]
 ```
 
+Every command above (and every `scripts/*.py` entry point) also takes `--project <path>`, falling
+back to `$JOB_HUNTER_ROOT`, then the current directory — run job-hunter from any directory,
+including from inside an agent whose working directory isn't this checkout, without `cd`-ing in
+first (works whether the flag comes before or after the subcommand).
+
 Searches attempt every enabled source by default; one source's failure doesn't stop the others.
 `--new-only` limits output only — collection always observes and persists every job returned.
-`--archive` writes to a deterministic `data/searches/{keyword-or-default}_{date}.json`; omitting
-`--keyword`/`--search` on the review/radar scripts resolves to the newest archive (see
-`docs/SPEC.md` §11 and `docs/skill-split-plan.md` §4 for the full resolution rule).
+`--archive` writes to a deterministic `data/searches/{keyword-or-default}_{date}.json`, factoring
+in `--companies` too when given (so a company-scoped run never silently overwrites a full,
+unscoped one — or vice versa); omitting `--keyword`/`--search` on the review/radar scripts
+resolves to the newest archive (see `docs/SPEC.md` §11 and `docs/skill-split-plan.md` §4 for the
+full resolution rule).
+
+If a source fails to collect on a given run, the radar report still shows its last-known-good
+jobs from a prior successful run rather than silently dropping the source to zero — the report's
+"Collection issues" section names the failure and, for each affected source, when its data is
+actually from. Pass `--no-collection-fallback` to `render_radar.py` to disable this and see only
+what this run actually fetched.
 
 Nothing is ever deleted automatically — `data/jobs.sqlite3` and `data/profile-diff/`/`data/radar/`
 only ever grow. `job-hunter cleanup` (dry-run by default, `--apply` to commit, writing an export of
@@ -127,7 +145,21 @@ edit can do both at once.
 ### Regenerating the radar without scraping
 
 To refresh the HTML report from what's already in `data/searches/`/SQLite — e.g. after editing
-`candidate_profile.yaml`, or just to re-render — without hitting any employer site, run in order:
+`candidate_profile.yaml` — without hitting any employer site:
+
+```bash
+uv run job-hunter pipeline --no-scrape                 # refilter + re-render, review stays cached
+uv run job-hunter pipeline --no-scrape --review         # also score whatever's newly surfaced
+```
+
+This resolves the same archive-selection rule as everything else (`--keyword`, or the newest
+archive overall if omitted), rebuilds its candidates from SQLite against the current profile,
+writes both the updated radar report and a gained/lost diff report, and — unlike plain
+`pipeline` mode — leaves review **off** by default, since a profile edit alone doesn't necessarily
+warrant spending local-model time; pass `--review` when it does.
+
+The equivalent manual three-step version (what `pipeline --no-scrape` runs under the hood, useful
+if you want to inspect or skip a step individually) still works the same way it always has:
 
 ```bash
 # 1. (optional) rebuild the archive's candidates from SQLite against the current profile — no network call
@@ -147,13 +179,16 @@ through all of them. Step 3 alone is enough for "just re-render what's already t
 
 ## Skills
 
-Five independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
+Six independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
 
 - **`job-scout`** — search (`job-hunter search --archive`)
 - **`job-reviewer`** — score candidates against your resume via local LM Studio
 - **`job-radar`** — compile + render the report
-- **`job-hunter`** — orchestrator that runs all three end to end
+- **`job-hunter`** — orchestrator that runs `job-hunter pipeline` end to end (or `pipeline
+  --no-scrape` to re-filter + re-render without a new scrape)
 - **`job-feedback`** — turn relevance feedback and profile edits into a confirmed profile update
+- **`onboard-source`** — repo-maintenance skill for adding a new employer source to job-hunter
+  itself (see "Adding a new source" below); not part of a normal job-search session
 
 Example invocations (see `docs/SPEC.md` §11.1 for the full set, including exact-path resume and
 `--status` progress checks):
@@ -161,6 +196,8 @@ Example invocations (see `docs/SPEC.md` §11.1 for the full set, including exact
 ```
 /job-hunter                          # full pipeline, profile-driven
 /job-hunter ADAS                     # full pipeline, keyword-scoped
+/job-hunter --no-scrape              # you edited candidate_profile.yaml — refilter + re-render,
+                                      #   no new scrape; add --review to also score what's new
 /job-scout                           # search only, profile-driven
 /job-scout ADAS                      # search only, keyword-scoped
 /job-reviewer --keyword ADAS         # start or resume review for that keyword — re-invoking
@@ -187,28 +224,36 @@ Install with:
 sh scripts/install_skill.sh
 ```
 
-This installs all five skills and prompts interactively for which runtime(s) to install into
+This installs all six skills and prompts interactively for which runtime(s) to install into
 (Hermes, Claude Code globally, Claude Code for this repo only, OpenCode, or any combination). To
 skip the prompt, pass one or more target flags instead, e.g. `sh scripts/install_skill.sh
 --claude-local`, `sh scripts/install_skill.sh --all`. Add `--copy` to create independent copies
-instead of symlinks. Run `sh scripts/install_skill.sh --help` for the full flag list.
+instead of symlinks (`--link` names the default explicitly, if you want to say so). Re-run with
+`--update` to replace a stale install (e.g. after moving the repo or a skill), or `--uninstall` to
+remove one; `--dry-run` shows what any of the above would do without touching anything. Run
+`sh scripts/install_skill.sh --help` for the full flag list.
 
 For Hermes, `sh scripts/install_skill.sh --hermes` also installs the candidate-profile
 diff hook under `~/.hermes/agent-hooks/` and registers it in `~/.hermes/config.yaml`
 (`HERMES_HOME` overrides this location for both hooks and skills). Installation needs
 `uv` and the project's dependencies. The installer preserves existing config values
 and hooks, saves the original config as `config.yaml.job-hunter.bak` before rewriting
-YAML (comments/formatting may change), and skips an identical registration on reruns.
+YAML (comments/formatting may change), and skips an identical registration on reruns;
+`--uninstall --hermes` unregisters exactly the entry it added, nothing else.
 `--copy` copies the hook too; the command still points to this checkout for the profile,
 database, and diff script, so keep the checkout available.
 
 Following the [Hermes shell hook format](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks#shell-hooks),
-the hook uses `post_tool_call` with `write_file|patch` and reads `tool_input.path`.
-Edits to this checkout's `config/candidate_profile.yaml` run the same best-effort
-`diff_profile.py` check as `.claude/settings.json`, generating reports in `data/profile-diff/`.
-Relative paths are resolved against the event's `cwd`; other profiles are ignored.
-Terminal-based edits are not covered. Restart Hermes after installing; its normal
-first-use hook approval still applies. Inspect registration with `hermes hooks list`.
+the hook uses `post_tool_call` with `write_file|patch` and reads `tool_input.path`. Both this hook
+and Claude Code's (`.claude/settings.json`) now delegate to the same shared adapter
+(`src/job_hunter/hook_adapter.py`) — each runtime script only parses its own stdin JSON shape and
+calls it. Edits to this checkout's `config/candidate_profile.yaml` run the same best-effort
+`diff_profile.py` check either way, generating reports in `data/profile-diff/`. `uv` is located
+via `shutil.which` rather than assumed on `PATH`, and every failure (uv missing, a non-zero exit,
+a timeout) is logged to `logs/profile-hook.log` instead of failing silently. Relative paths are
+resolved against the event's `cwd`; other profiles are ignored. Terminal-based edits are not
+covered. Restart Hermes after installing; its normal first-use hook approval still applies.
+Inspect registration with `hermes hooks list`.
 
 ## Development
 
@@ -227,10 +272,11 @@ Tests use saved response fixtures and do not require internet. Standard runtime 
 ## Adding a new source
 
 Given a company name, its careers listing URL, and one sample job URL, the `onboard-source`
-project skill (`.claude/skills/onboard-source`) discovers the real backing system, wires up (or
-writes) an adapter, tests it, verifies it live, and updates this README and `docs/SPEC.md`. See
-`docs/SPEC.md` §5.20 for the manual process and `.claude/skills/onboard-source/references/
-discovery-playbook.md` for known ATS/platform signatures.
+project skill (`skills/onboard-source` — installable for every runtime including Hermes via
+`install_skill.sh`, same as the other five; `.claude/skills/onboard-source` is a symlink to it)
+discovers the real backing system, wires up (or writes) an adapter, tests it, verifies it live,
+and updates this README and `docs/SPEC.md`. See `docs/SPEC.md` §5.20 for the manual process and
+`skills/onboard-source/references/discovery-playbook.md` for known ATS/platform signatures.
 
 ## Keep your search history
 
@@ -246,3 +292,6 @@ from the new location. Git alone does not transfer these ignored personal and ge
 - [Agent skills and pipeline stages](docs/skill-split-plan.md)
 - [Feedback-driven exclusion suggestions](docs/feedback-exclusion-plan.md)
 - [Previewing profile changes](docs/profile-diff-plan.md)
+- [`job-hunter pipeline`, `--no-scrape`, and the stale-source radar fallback](docs/pipeline-refilter-stale-source-plan.md)
+- [Skill frontmatter and the shared Claude/Hermes hook adapter](docs/skill-frontmatter-and-hook-plan.md)
+- [Agent-runtime portability audit (`--project`, locking, atomic writes)](docs/agent-runtime-audit.md)

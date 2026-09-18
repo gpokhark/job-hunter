@@ -1032,9 +1032,21 @@ explicit, dry-run-by-default answer:
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 | `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
+| `pipeline` | `--keyword`, `--companies`, `--limit`, `--new-only`, `--refresh-details`, `--max-candidates`, `--skip-review`, `--skip-radar`, `--no-scrape`, `--review` | search → review → radar end to end as one command, writing `data/runs/<run_id>/manifest.json` at every stage (`docs/pipeline-refilter-stale-source-plan.md`). `--no-scrape` skips the live search and instead refilters an already-resolved archive against SQLite + the current profile (rejected together with `--companies`); its own `--review` defaults **off** (opposite of normal mode's `--skip-review` opt-out) |
+| `pipeline-status` | `--run <id>` (default: newest run overall) | prints a pipeline run's manifest as JSON; exit `2` if `status` is `failed`/`model_unavailable` |
 
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
 `source-test` returns `1` if the healthcheck itself reports failed/unsupported.
+
+**`--project <path>` / `$JOB_HUNTER_ROOT`** — a global flag available on *every* subcommand
+(registered on both the root parser and each subparser, so it works whether given before or after
+the command token — `job-hunter pipeline --project X` and `job-hunter --project X pipeline` both
+work) — resolves and `chdir`s into the given project root once, before any relative config/data
+path is touched, the same convention `git -C <path>` uses. Falls back to `$JOB_HUNTER_ROOT`, then
+the current directory (unchanged behavior for anyone already running from the repo root). Every
+`scripts/*.py` entry point accepts the identical flag via `rootutil.add_project_argument()`. This
+is what makes every command in this section (and every skill's example invocation) safe to run
+without first `cd`-ing into the repo.
 
 ---
 
@@ -1043,15 +1055,17 @@ Exit codes: `0` success; `2` on config/validation error or (for `search`) zero s
 | Script | Role |
 |---|---|
 | `review_with_lm_studio.py` | Sends each not-yet-cached U.S.-eligible candidate to a local model (LM Studio OpenAI-compatible API), **one at a time, strictly sequential**, persisting each verdict immediately (§8.4). `--input` (search JSON; if omitted, resolved via `--keyword`/newest-overall), `--keyword` (resolve `--input` by slug), `--config` (LM Studio connection), `--limit` (cap *new* reviews), `--force`, `--status` (print remaining/cached counts, no model calls, no changes). Strict JSON-schema validation of the model's verdict (`ModelVerdict`) — rejects malformed responses rather than coercing them. |
-| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score. `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10). |
+| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score, with one disclosed exception: for a `failed` (never `warning`/`unsupported`) source, merges that source's current active/eligible/prefilter-passing/recency-passing jobs from SQLite (`active_pool.source_jobs()`) into the rendered candidate pool, extending its Collection Issues note with how many jobs came from the fallback and when it last actually succeeded — never rewrites the archive file, only the rendered HTML (§4.3 of `docs/pipeline-refilter-stale-source-plan.md`). `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10), `--no-collection-fallback` (disable the merge, default on). |
 | `assessments_to_csv.py` | Human-readable `data/assessments.csv` from the assessments store. |
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |
-| `install_skill.sh` | Symlinks (or `--copy`s) all four skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. |
+| `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all six skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
+| `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` as `uv run python "${CLAUDE_PROJECT_DIR}/scripts/claude_profile_hook.py" "${CLAUDE_PROJECT_DIR}"`. |
+| `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
 | `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` (required). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
 | `suggest_exclusions.py` | Suggests safe `soft_exclude_terms` candidates from `job_feedback`'s `irrelevant`-tagged titles — n-gram frequency (`--min-support`, default 2) filtered against a protected set (every `assessments` row scoring ≥50, plus explicit `relevant`/`okay` labels; an `irrelevant` label always overrides that job's own stale score for this check). Prints a per-term diff preview against a real archive (default newest, or `--search`/`--keyword`) showing exactly what it would exclude and what `strong_relevance_terms` would rescue. Below-`--min-support` (single-occurrence) candidates are shown separately, not silently omitted. **Never writes to `candidate_profile.yaml`** — suggestions only. |
 | `diff_profile.py` | Preview-only: compares two `CandidateProfile`s — `--before`/`--after` (two saved YAML files) or the real on-disk profile plus an in-memory `--add field:term`/`--remove field:term` patch (never written back) — against every stored, `us_eligible`, recency-passing job, using `evaluate_prefilter` directly. Reports retained/still-excluded/gained/lost counts, a per-job before/after reason, and existing assessment/`job_feedback` context (a lost job someone tagged `relevant`/`okay` is flagged loudly). `--keyword` replaces `target_domains`/`target_title_terms` exactly like `search --keyword` does — not a narrowing of them, so testing an edit to either field under `--keyword` correctly shows no effect. Reads via a genuine read-only SQLite connection, not `Storage`. No `--apply` — preview only. `--output` (HTML path, default `data/profile-diff/{YYYY-MM-DD-T-HH-MM-SS}.html`, filename timestamp in US Eastern local time via `_report_timestamp`; the report's own `evaluated_at` field stays UTC). See `docs/profile-diff-plan.md`. |
-| `refilter_archive.py` | Applies (not preview-only, unlike `diff_profile.py`): rebuilds an already-collected search archive's `candidates` from SQLite's current `status='active' AND us_eligible=1` job pool, scoped to the sources that *succeeded* in that archive's own `source_health` (not merely attempted — see the source-scoping note below) — **no network/adapter call**. For after editing `candidate_profile.yaml` and wanting an existing archive/report to reflect it without a fresh `search`. `--search`/`--keyword` resolve the archive exactly like every other script (`search_archive.resolve_search_path`); `--keyword` also serves as the positive-match override, identical semantics to `search --keyword`. Recomputes recency against wall-clock *now*, not the archive's original collection time. **Rebuilds from SQLite rather than narrowing the archive's own previous `candidates`** — the original design did the latter and was found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job from `candidates`, its data was gone from the file, so a later *loosening* edit (a new `strong_relevance_terms` override, a removed exclude term) had nothing left to restore and silently produced no effect. Every job observed by any run is persisted in SQLite regardless of prefilter outcome (`collector.py` upserts before prefilter runs), so this is always possible offline — the same "stored, `us_eligible`, recency-passing job" universe `diff_profile.py` already previews against. One consequence: a candidate's title/description reflects the latest content SQLite has for it (from any run), not a frozen snapshot from this archive's original collection, matching the tool's pre-existing recency-recomputation philosophy. Restricting to the archive's own source scope prevents an old, dated archive from silently gaining a company's jobs just because that company was onboarded later. Prints `N removed, M gained` (not just a net count) so a loosening and tightening edit in the same profile change are both visible. Rewrites only `candidates` and `summary.prefilter_candidates`/`stale_excluded`; every other field (`jobs_observed`, `source_health`, `run` metadata) is left untouched since it describes collection, not filtering. `--output` (default: overwrite the input archive in place). Unless `--no-report`, also writes an HTML gained/lost report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (e.g. `archive-default_2026-09-06-2026-09-06-T-21-36-05.html`; filename timestamp in US Eastern local time via `diff_profile.py`'s shared `_report_timestamp`, imported rather than duplicated) — reuses `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical click-to-feedback export JS, but through its own separate, simpler HTML template with **no "Profile terms" word-diff section**: unlike `diff_profile.py`, which diffs two actual `CandidateProfile` objects and can show `+added`/`-removed` terms per field, this script only ever loads one (the current on-disk) profile and diffs two *job snapshots* (an old archive vs. today's live SQLite pool) against it, so there's no second profile to compute a term diff from. Source scoping only counts a source as in-scope when its `source_health` entry in the archive did **not** record it as `failed`/`unsupported` (opt-out on known failure, not opt-in on known success — a row with no `status` field at all stays in scope) — fixed 2026-09-07 after a live case where a `stealth_html` source failing with "the 'stealth' dependency group is not installed" during an archive's own run still had older `active` jobs in SQLite from an unrelated earlier success, which the old "present in `source_health` at all" scoping pulled back in as spurious "Gained" entries with zero connection to any actual profile edit. Invoked as an optional step in the `job-radar` skill, never automatically. |
+| `refilter_archive.py` | Applies (not preview-only, unlike `diff_profile.py`): rebuilds an already-collected search archive's `candidates` from SQLite's current `status='active' AND us_eligible=1` job pool, scoped to the sources that *succeeded* in that archive's own `source_health` (not merely attempted — see the source-scoping note below) — **no network/adapter call**. For after editing `candidate_profile.yaml` and wanting an existing archive/report to reflect it without a fresh `search`. `--search`/`--keyword` resolve the archive exactly like every other script (`search_archive.resolve_search_path`); `--keyword` also serves as the positive-match override, identical semantics to `search --keyword`. Recomputes recency against wall-clock *now*, not the archive's original collection time. **Rebuilds from SQLite rather than narrowing the archive's own previous `candidates`** — the original design did the latter and was found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job from `candidates`, its data was gone from the file, so a later *loosening* edit (a new `strong_relevance_terms` override, a removed exclude term) had nothing left to restore and silently produced no effect. Every job observed by any run is persisted in SQLite regardless of prefilter outcome (`collector.py` upserts before prefilter runs), so this is always possible offline — the same "stored, `us_eligible`, recency-passing job" universe `diff_profile.py` already previews against. One consequence: a candidate's title/description reflects the latest content SQLite has for it (from any run), not a frozen snapshot from this archive's original collection, matching the tool's pre-existing recency-recomputation philosophy. Restricting to the archive's own source scope prevents an old, dated archive from silently gaining a company's jobs just because that company was onboarded later. Prints `N removed, M gained` (not just a net count) so a loosening and tightening edit in the same profile change are both visible. Rewrites only `candidates` and `summary.prefilter_candidates`/`stale_excluded`; every other field (`jobs_observed`, `source_health`, `run` metadata) is left untouched since it describes collection, not filtering. `--output` (default: overwrite the input archive in place). Unless `--no-report`, also writes an HTML gained/lost report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (e.g. `archive-default_2026-09-06-2026-09-06-T-21-36-05.html`; filename timestamp in US Eastern local time via `diff_profile.py`'s shared `_report_timestamp`, imported rather than duplicated) — reuses `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical click-to-feedback export JS, but through its own separate, simpler HTML template with **no "Profile terms" word-diff section**: unlike `diff_profile.py`, which diffs two actual `CandidateProfile` objects and can show `+added`/`-removed` terms per field, this script only ever loads one (the current on-disk) profile and diffs two *job snapshots* (an old archive vs. today's live SQLite pool) against it, so there's no second profile to compute a term diff from. Source scoping only counts a source as in-scope when its `source_health` entry in the archive did **not** record it as `failed`/`unsupported` (opt-out on known failure, not opt-in on known success — a row with no `status` field at all stays in scope) — fixed 2026-09-07 after a live case where a `stealth_html` source failing with "the 'stealth' dependency group is not installed" during an archive's own run still had older `active` jobs in SQLite from an unrelated earlier success, which the old "present in `source_health` at all" scoping pulled back in as spurious "Gained" entries with zero connection to any actual profile edit. Its own SQLite query moved to `src/job_hunter/active_pool.py`'s `raw_active_jobs()` once `render_radar.py`'s stale-source fallback needed the identical query for one source at a time — a behavior-preserving refactor, every existing test still passes unchanged. Invoked as an optional step in the `job-radar` skill (now via `job-hunter pipeline --no-scrape`, see §11), never automatically. |
 
 `src/job_hunter/search_archive.py` is the shared module behind both flags above and the CLI's
 `resolve-search`: `slugify()`, `archive_path()` (forward direction — compute where `search
@@ -1065,8 +1079,17 @@ by mtime). One implementation shared by `cli.py`, `review_with_lm_studio.py`, an
 
 ## 11. Agent/skill layer
 
-Five independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
-`docs/skill-split-plan.md` for the design rationale and the sequence/flow diagrams):
+Six independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
+`docs/skill-split-plan.md` for the design rationale and the sequence/flow diagrams). Every skill's
+frontmatter carries `name`/`version`/`description` (top-level, unchanged in position — see
+`docs/skill-frontmatter-and-hook-plan.md` §3.1 for why `version` stays there rather than nesting
+under `metadata`, a real conflict between Hermes's spec, which requires it top-level, and Claude's
+strict claude.ai-upload allowlist, which this project doesn't use), `compatibility`,
+`metadata.job_hunter.stage`/`metadata.hermes.tags`, and a `## Contract` section (Input/Output,
+stated once, not re-explained through the procedure). No `license:` field — this project is
+deliberately unlicensed. A skill's `version` bumps on any content change (minor for a new
+documented capability, patch for wording/robustness only — see `CLAUDE.md`'s "Working in this
+repo").
 
 - **`job-scout`** — normalizes keyword args, runs `job-hunter search --archive`, reports source
   health and the `prefilter_candidates` count. `references/troubleshooting.md` (moved here from
@@ -1085,12 +1108,21 @@ Five independently-invocable skills under `skills/`, each with its own canonical
   rendered row also carries 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
   button (§8.5, `docs/feedback-exclusion-plan.md`) — a job nobody clicks is never assumed to be
   anything, in either direction.
-- **`job-hunter`** (orchestrator) — runs the same three commands end to end for the "just do the
-  whole thing" case, explicitly threading the resolved keyword/path from its own search step into
-  the review and radar steps (never relying on their no-arg defaults, since it already knows
-  exactly which run it started). It runs these as direct CLI/script commands, not by invoking the
-  other three skills as sub-calls — cross-runtime support for one skill invoking another isn't
-  guaranteed across every runtime `install_skill.sh` targets.
+- **`job-hunter`** (orchestrator) — a thin wrapper around `job-hunter pipeline`/`pipeline-status`
+  (§9, `pipeline.py`), the Python-owned command that actually sequences search → review → radar
+  and writes a durable `data/runs/<run_id>/manifest.json` at every stage, rather than three
+  separately-inlined commands the skill used to sequence itself. Also documents `--no-scrape
+  [--review]` — refilter an already-resolved archive against the current profile with no new
+  scrape, review defaulting **off** in this mode (opposite of normal mode's `--skip-review`
+  opt-out). Cites `job-radar`'s tiering/tagging/disclaimer text by step number rather than
+  restating it (a ~200-word near-duplicate block, identified and removed — see
+  `docs/pipeline-refilter-stale-source-plan.md` §9). Still runs its command as a direct CLI
+  invocation, not by invoking the other skills as sub-calls — cross-runtime support for one skill
+  invoking another isn't guaranteed across every runtime `install_skill.sh` targets.
+- **`onboard-source`** — a repo-maintenance skill (extending `job-hunter` itself with a new
+  employer source), not an end-user job-search skill. Lives at `skills/onboard-source` (moved from
+  `.claude/skills`-only; `.claude/skills/onboard-source` is now a symlink to it), installed for
+  every `install_skill.sh` target including Hermes.
 - **`job-feedback`** — a separate, occasionally-invoked loop, never part of a `job-hunter` run: runs
   `apply_radar_feedback.py` (ingest any newly-exported radar/profile-diff feedback JSON),
   `suggest_exclusions.py` (turn every recorded `job_feedback` label, old and new, into per-field
@@ -1116,18 +1148,17 @@ Skill names below are shown slash-command style (`/job-hunter ...`), the convent
 `install_skill.sh` targets recognizes once installed; the CLI/script line under each is the exact
 command that invocation runs, for a runtime with no slash-command layer or for running by hand.
 
-**Full pipeline, profile-driven (no keyword) — search, review everything, render:**
+**Full pipeline, profile-driven (no keyword) — search, review everything, render, one command:**
 ```
 /job-hunter
 ```
 ```bash
-uv run job-hunter search --json --archive
-uv run python scripts/review_with_lm_studio.py --search data/searches/default_{date}.json
-uv run python scripts/render_radar.py --search data/searches/default_{date}.json
+uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR"
+uv run job-hunter pipeline-status --project "$CLAUDE_PROJECT_DIR"   # poll/inspect afterward
 ```
-(The orchestrator captures the exact `Archived to:` path from the first command and threads it
-into the other two explicitly, rather than relying on their own no-arg "newest overall" default —
-see the resolution rule above for why that distinction matters.)
+(`pipeline` sequences search → review → radar itself and writes `data/runs/<run_id>/manifest.json`
+at every stage — no separate keyword/path threading needed the way the old three-command sequence
+required, since one Python-owned command already knows exactly which run it started.)
 
 **Full pipeline, with keyword(s)** — multi-word phrases stay single entries:
 ```
@@ -1135,19 +1166,30 @@ see the resolution rule above for why that distinction matters.)
 /job-hunter ADAS or Robotics or "Product Technical Leader"
 ```
 ```bash
-uv run job-hunter search --json --archive --keyword "ADAS,Robotics,Product Technical Leader"
-uv run python scripts/review_with_lm_studio.py --keyword "ADAS,Robotics,Product Technical Leader"
-uv run python scripts/render_radar.py --keyword "ADAS,Robotics,Product Technical Leader"
+uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" --keyword "ADAS,Robotics,Product Technical Leader"
 ```
-The orchestrator threads this same keyword string through all three stages itself (§11) — you
-never have to repeat it three times by hand when going through `/job-hunter`.
+
+**You edited `candidate_profile.yaml` and want the report to reflect it, no new scrape:**
+```
+/job-hunter --no-scrape
+/job-hunter --no-scrape --review    # also score whatever the refilter surfaces as new/changed
+```
+```bash
+uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" --no-scrape [--review] [--keyword "..."]
+```
+Refilters an already-resolved archive against SQLite + the current profile (no network), writes
+both an updated radar report and the gained/lost diff report `refilter_archive.py` already
+produces. Review defaults **off** here — the opposite default from plain `pipeline` mode, an
+explicit, disclosed asymmetry (§9, `docs/pipeline-refilter-stale-source-plan.md` §4.2). Not
+combinable with `--companies` (refiltering re-evaluates an archive's own already-attempted source
+scope, not a fresh company selection).
 
 **Search only — no review or render yet:**
 ```
 /job-scout ADAS
 ```
 ```bash
-uv run job-hunter search --json --archive --keyword ADAS
+uv run job-hunter search --project "$CLAUDE_PROJECT_DIR" --json --archive --keyword ADAS
 ```
 Archives `data/searches/adas_{date}.json`, reports source health + `prefilter_candidates`. Stops
 there — nothing scored or rendered.
@@ -1157,7 +1199,7 @@ there — nothing scored or rendered.
 /job-reviewer --keyword ADAS
 ```
 ```bash
-uv run python scripts/review_with_lm_studio.py --keyword ADAS
+uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" --keyword ADAS
 ```
 Resolves to the newest `adas_*.json` archive and reviews whatever isn't already cached.
 **Interrupted?** Re-invoke this exact same command — already-scored jobs are skipped automatically
@@ -1168,7 +1210,7 @@ Resolves to the newest `adas_*.json` archive and reviews whatever isn't already 
 /job-reviewer --status --keyword ADAS
 ```
 ```bash
-uv run python scripts/review_with_lm_studio.py --status --keyword ADAS
+uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" --status --keyword ADAS
 ```
 No model calls, no changes — prints remaining/cached/total counts (useful before committing to a
 long run, or to confirm a prior run actually finished).
@@ -1179,7 +1221,7 @@ e.g. an older day's run, when the newest archive for that keyword isn't the one 
 /job-reviewer --search data/searches/adas_2026-08-20.json
 ```
 ```bash
-uv run python scripts/review_with_lm_studio.py --search data/searches/adas_2026-08-20.json
+uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" --search data/searches/adas_2026-08-20.json
 ```
 
 **Render/update the radar report, standalone, at any point — including mid-review:**
@@ -1187,7 +1229,7 @@ uv run python scripts/review_with_lm_studio.py --search data/searches/adas_2026-
 /job-radar --keyword ADAS
 ```
 ```bash
-uv run python scripts/render_radar.py --keyword ADAS
+uv run python scripts/render_radar.py --project "$CLAUDE_PROJECT_DIR" --keyword ADAS
 ```
 Always reflects exactly what's been reviewed so far; re-running overwrites the same output
 file/artifact — "update the radar" is just "call this again," nothing to sync.
@@ -1198,8 +1240,8 @@ file/artifact — "update the radar" is just "call this again," nothing to sync.
 /job-radar
 ```
 ```bash
-uv run python scripts/review_with_lm_studio.py
-uv run python scripts/render_radar.py
+uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR"
+uv run python scripts/render_radar.py --project "$CLAUDE_PROJECT_DIR"
 ```
 Both resolve to the newest archive of any keyword. This is a convenience for "I don't know/care
 which run," **not** a resume guarantee — see the resolution rule above before relying on it to
@@ -1207,9 +1249,9 @@ pick up a specific run you know you started.
 
 **Find out which archive a keyword resolves to, without running or reviewing anything:**
 ```bash
-uv run job-hunter resolve-search --keyword ADAS
-uv run job-hunter resolve-search --search data/searches/adas_2026-08-20.json   # echoes it back verbatim
-uv run job-hunter resolve-search                                              # newest archive overall
+uv run job-hunter resolve-search --project "$CLAUDE_PROJECT_DIR" --keyword ADAS
+uv run job-hunter resolve-search --project "$CLAUDE_PROJECT_DIR" --search data/searches/adas_2026-08-20.json   # echoes it back verbatim
+uv run job-hunter resolve-search --project "$CLAUDE_PROJECT_DIR"                                              # newest archive overall
 ```
 
 **Close the loop on radar feedback and/or a profile edit** — after tagging jobs in a radar report
@@ -1219,12 +1261,12 @@ after any `candidate_profile.yaml` change made by hand, with no feedback file in
 /job-feedback
 ```
 ```bash
-uv run python scripts/apply_radar_feedback.py            # ingest any newly-exported feedback JSON
-uv run python scripts/suggest_exclusions.py               # per-field term suggestions from all recorded feedback
+uv run python scripts/apply_radar_feedback.py --project "$CLAUDE_PROJECT_DIR"            # ingest any newly-exported feedback JSON
+uv run python scripts/suggest_exclusions.py --project "$CLAUDE_PROJECT_DIR"               # per-field term suggestions from all recorded feedback
 # ... stop and ask which suggestions (if any) to apply, then make minimal edits to candidate_profile.yaml ...
-uv run python scripts/diff_profile.py                      # check mode: diff current profile vs. last-accepted baseline
+uv run python scripts/diff_profile.py --project "$CLAUDE_PROJECT_DIR"                      # check mode: diff current profile vs. last-accepted baseline
 # ... stop and ask before accepting ...
-uv run python scripts/diff_profile.py --accept-baseline    # only on explicit confirmation
+uv run python scripts/diff_profile.py --project "$CLAUDE_PROJECT_DIR" --accept-baseline    # only on explicit confirmation
 ```
 A routine check-in with nothing new to ingest and no profile change reports "nothing changed" and
 stops — this is a safe, idempotent skill to invoke any time, not only right after tagging jobs.
