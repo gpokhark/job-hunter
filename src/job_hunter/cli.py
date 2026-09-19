@@ -20,7 +20,7 @@ from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
 from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus
 from .pipeline import latest_run_id, read_manifest, run_pipeline
-from .rootutil import add_project_argument, chdir_to_project_root
+from .rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from .runlock import RunLockHeld, pid_alive, process_start_time
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
@@ -39,7 +39,7 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("--refresh-details", action="store_true")
     search.add_argument(
         "--max-candidates",
-        type=int,
+        type=nonneg_int,
         help="optional cap on candidates returned; none by default — every prefilter match is kept",
     )
     search.add_argument(
@@ -163,10 +163,14 @@ def parser() -> argparse.ArgumentParser:
     )
     pipeline.add_argument("--keyword", help="same as job-hunter search --keyword")
     pipeline.add_argument("--companies", help="same as job-hunter search --companies")
-    pipeline.add_argument("--limit", type=int, help="cap on NEW reviews this run (passed through to the review stage)")
+    pipeline.add_argument(
+        "--limit", type=nonneg_int, help="cap on NEW reviews this run (passed through to the review stage)"
+    )
     pipeline.add_argument("--new-only", action="store_true", help="same as job-hunter search --new-only")
     pipeline.add_argument("--refresh-details", action="store_true", help="same as job-hunter search --refresh-details")
-    pipeline.add_argument("--max-candidates", type=int, help="same as job-hunter search --max-candidates")
+    pipeline.add_argument(
+        "--max-candidates", type=nonneg_int, help="same as job-hunter search --max-candidates"
+    )
     pipeline.add_argument("--skip-review", action="store_true", help="search only; leave review/radar for later")
     pipeline.add_argument(
         "--skip-radar", action="store_true", help="search + review only; skip rendering the HTML report"

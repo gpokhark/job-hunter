@@ -375,6 +375,30 @@ passing, `ruff`/`compileall` clean.
 - Add bootstrap and CI smoke paths, then test them from a temporary clone/outside working directory.
 - Add hook debounce/serialization and explicit best-effort/staleness documentation.
 
+**Resolved (2026-09-18) — negative values rejected on every numeric count/limit/window CLI
+option.** A new `nonneg_int()` argparse `type=` in `src/job_hunter/rootutil.py` (shared, not
+duplicated — every script that needed it already imports `rootutil` for `--project`) raises
+`argparse.ArgumentTypeError` for a negative value, letting `int()`'s own `ValueError` handle a
+non-numeric one; both produce a clean CLI error via argparse's normal mechanism, not a downstream
+crash or silently-wrong behavior. Replaced bare `type=int` everywhere in the codebase (confirmed
+via `grep -rn 'type=int\b'` — zero remaining matches): `cli.py`'s `search --max-candidates` and
+`pipeline --limit`/`--max-candidates`; `scripts/review_with_lm_studio.py`'s `--limit`;
+`scripts/render_radar.py`'s `--new-days`/`--undated-new-days`/`--undated-stale-days`;
+`scripts/suggest_exclusions.py`'s `--min-support`; and `scripts/prototype_tfidf_broad_match.py`'s
+`--top`/`--min-postings` (the prototype script included, for consistency, despite its exception
+status elsewhere in this project's conventions). `cleanup`'s retention windows turned out to be
+config-file values (`config/settings.yaml`'s `retention:` block, already `ge=1`-constrained
+pydantic fields), not CLI flags — nothing to change there. Zero is still accepted (a legitimate,
+if degenerate, cap/limit value); only negative values are rejected. New coverage:
+`tests/test_rootutil.py` (`nonneg_int` directly — accepts non-negative, rejects negative,
+rejects non-integer), `tests/test_cli.py` (parametrized across all three `cli.py` options, plus a
+zero-is-still-accepted regression), and one negative-rejection test added to each of
+`tests/test_render_radar.py`/`test_review_with_lm_studio.py`/`test_suggest_exclusions.py`, plus a
+new minimal `tests/test_prototype_tfidf_broad_match.py` (that script had no prior test file at
+all). Verified live via the real CLI (`uv run job-hunter search --max-candidates -1`) for the
+exact error message and exit code 2, not just the test suite. 397 tests passing, `ruff`/
+`compileall` clean.
+
 ### P2 — maintainability and reproducibility
 
 - Centralize numeric argument validation.

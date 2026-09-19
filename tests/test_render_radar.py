@@ -3,8 +3,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from render_radar import _default_title, build  # noqa: E402
+from render_radar import _default_title, build, main  # noqa: E402
 
 from job_hunter.config import CandidateProfile
 from job_hunter.models import HealthStatus, Job, LocationConfidence, SourceHealth
@@ -1103,3 +1105,14 @@ def test_no_collection_fallback_flag_disables_the_merge(tmp_path):
     assert "AV Perception Engineer" not in html
     assert "Timed out." in html
     assert "Failed to scrape" not in html  # no note appended at all when the flag disables this
+
+
+@pytest.mark.parametrize("option", ["--new-days", "--undated-new-days", "--undated-stale-days"])
+def test_negative_day_window_options_are_rejected(option, monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "input validation" finding -- argparse's own type= check
+    must reject a negative value before main() ever touches SQLite/the archive file."""
+    monkeypatch.setattr(sys, "argv", ["render_radar.py", option, "-1"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err

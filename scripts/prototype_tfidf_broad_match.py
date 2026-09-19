@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from job_hunter.config import load_profile, load_settings
+from job_hunter.rootutil import nonneg_int
 from job_hunter.storage import Storage
 
 _TAG = re.compile(r"<[^>]+>")
@@ -143,8 +144,11 @@ def _is_recent(posted_at: str | None, cutoff: datetime) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--keyword", required=True, help="comma-separated keyword(s), e.g. 'ADAS,Robotics'")
-    parser.add_argument("--top", type=int, default=20, help="how many ranked broad-pool rows to print")
-    parser.add_argument("--min-postings", type=int, default=5, help="min postings/source before boilerplate detection runs")
+    parser.add_argument("--top", type=nonneg_int, default=20, help="how many ranked broad-pool rows to print")
+    parser.add_argument(
+        "--min-postings", type=nonneg_int, default=5,
+        help="min postings/source before boilerplate detection runs",
+    )
     parser.add_argument("--boilerplate-threshold", type=float, default=0.5, help="fraction of a source's postings a chunk must appear in to count as boilerplate")
     parser.add_argument("--csv", type=Path, default=None, help="optional path to also write the ranked broad pool as CSV")
     args = parser.parse_args()

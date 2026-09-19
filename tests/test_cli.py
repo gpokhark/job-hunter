@@ -406,3 +406,40 @@ def test_pipeline_status_with_no_pid_start_time_falls_back_to_pid_only_liveness(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "running"
+
+
+# --- reject negative values on numeric CLI options (docs/agent-runtime-audit.md's "input
+# validation" finding) -- a bare `type=int` silently accepted a negative --limit/--max-candidates,
+# which then flowed into a downstream Python slice (`to_review[:args.limit]`) as a *valid* but
+# surprising "all but the last N" instead of a clear command-line error.
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["search", "--max-candidates", "-1"],
+        ["pipeline", "--limit", "-1"],
+        ["pipeline", "--max-candidates", "-1"],
+    ],
+)
+def test_negative_numeric_options_are_rejected_at_parse_time(argv, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        parser().parse_args(argv)
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["search", "--max-candidates", "0"],
+        ["pipeline", "--limit", "0"],
+        ["pipeline", "--max-candidates", "0"],
+    ],
+)
+def test_zero_is_still_accepted_for_numeric_options(argv):
+    """The fix rejects *negative* values specifically -- zero is a legitimate (if degenerate)
+    value for a cap/limit and must keep parsing cleanly."""
+    args = parser().parse_args(argv)
+    value = args.max_candidates if "--max-candidates" in argv else args.limit
+    assert value == 0

@@ -39,7 +39,7 @@ touch, tests to add, and how to verify.
 - [x] 3. Authoritative run identity/recovery (PID-reuse-safe abandoned detection, non-mtime latest-run selection)
 - [x] 4. Relocatable Hermes hook registration (survive a moved/copied checkout)
 - [x] 5. Claude hook coverage: debounce/serialize rapid edits; decide `PostToolUse` vs `FileChanged` scope
-- [ ] 6. Reject negative values on numeric CLI options
+- [x] 6. Reject negative values on numeric CLI options
 - [ ] 7. Remove or implement `--all-companies`
 - [ ] 8. SQLite schema-version table
 - [ ] 9. Documentation drift: README company count, `docs/SPEC.md` onboarding section, universal `--project` claims

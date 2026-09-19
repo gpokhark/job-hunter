@@ -61,7 +61,7 @@ from typing import Any
 from job_hunter.active_pool import source_jobs as _pool_source_jobs
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_profile, load_settings
-from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -701,13 +701,15 @@ def main() -> int:
             "is given"
         ),
     )
-    parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
     parser.add_argument(
-        "--undated-new-days", type=int, default=None,
+        "--new-days", type=nonneg_int, default=10, help="posting-age window for the [New] tag (default 10)"
+    )
+    parser.add_argument(
+        "--undated-new-days", type=nonneg_int, default=None,
         help="for jobs with no posted_at, first-seen-age window for the [New] tag (default: settings.yaml's search.undated_new_days)",
     )
     parser.add_argument(
-        "--undated-stale-days", type=int, default=None,
+        "--undated-stale-days", type=nonneg_int, default=None,
         help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
     )
     parser.add_argument(
