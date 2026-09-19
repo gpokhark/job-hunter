@@ -41,7 +41,7 @@ from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings, load_companies, load_profile
 from .models import PipelineManifest, PipelineStage, PipelineStatus
-from .runlock import LOCK_INHERITED_ENV, RunLockHeld, run_lock
+from .runlock import LOCK_INHERITED_ENV, RunLockHeld, current_lock_token, run_lock
 from .search_archive import archive_path, resolve_search_path
 
 RUNS_DIR = Path("data/runs")
@@ -102,12 +102,24 @@ def _run_stage_subprocess(
     internally, needed here since we're no longer using it.
 
     `lock_inherited=True` (refilter/review only — see their own call sites) sets
-    `LOCK_INHERITED_ENV` in the child's environment: `run_pipeline` already holds
-    `run_lock("job-hunter")` for the whole run before this subprocess is ever spawned, and both
-    of those scripts otherwise try to acquire that identically-named lock themselves, which would
-    deadlock against their own parent (confirmed live) — `run_lock_or_inherited` on their side is
-    what actually reads this env var and skips locking when it's set."""
-    env = {**os.environ, LOCK_INHERITED_ENV: "1"} if lock_inherited else None
+    `LOCK_INHERITED_ENV` in the child's environment to the *current* value of `run_pipeline`'s own
+    held `run_lock("job-hunter")` token (`current_lock_token` re-reads the live lock file rather
+    than this function needing the token threaded down as a parameter — see that helper's
+    docstring): `run_pipeline` already holds that lock for the whole run before this subprocess is
+    ever spawned, and both of those scripts otherwise try to acquire the identically-named lock
+    themselves, which would deadlock against their own parent (confirmed live) —
+    `run_lock_or_inherited` on their side is what actually reads this env var, checks it against
+    the lock file's own recorded token, and only then skips locking (docs/agent-runtime-audit.md's
+    "lock bypass is caller-controlled" finding — a bare boolean env var, trusted on its presence
+    alone, let any standalone caller skip the lock by setting it themselves). If no lock is
+    actually held right now (shouldn't happen given this function's own call sites, but fail safe
+    rather than crash on a `None` token), the env var is simply left unset, so the child falls
+    back to acquiring the lock itself."""
+    env = None
+    if lock_inherited:
+        token = current_lock_token("job-hunter")
+        if token:
+            env = {**os.environ, LOCK_INHERITED_ENV: token}
     proc = subprocess.Popen(
         cmd,
         cwd=project_root,

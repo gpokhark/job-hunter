@@ -252,6 +252,31 @@ confirmed passing directly (not just written). 345 tests passing (was 344 after 
 plan's stated 352-test baseline against the live tree — see the implementation session's own
 notes for that discrepancy), `ruff`/`compileall` clean.
 
+**Resolved (2026-09-18) — validated parent-run token replaces the boolean lock-inheritance
+bypass.** `LOCK_INHERITED_ENV` (`src/job_hunter/runlock.py`) now carries a per-acquisition
+`secrets.token_hex(16)` capability token, not a bare `"1"`. `run_lock()` generates a fresh token on
+every acquisition and writes it as a 4th line in the lock file's own content (extending
+`_read_holder`'s existing `(pid, command, started_at)` tuple with a 4th `token` field); a new
+`current_lock_token(name, lock_dir=...)` re-reads that live file. `run_lock_or_inherited()` now
+compares the env var's claimed token against `current_lock_token()`'s real, current value and
+only treats the lock as inherited on an exact match — any mismatch, missing lock file, or unset
+env var falls back to acquiring the lock normally (fails closed), so a standalone caller can no
+longer skip the lock just by copy-pasting `JOB_HUNTER_LOCK_INHERITED=1` into their own shell.
+`pipeline.py`'s `_run_stage_subprocess` no longer hardcodes `"1"` — it calls
+`current_lock_token("job-hunter")` at the moment it spawns a refilter/review stage subprocess
+(the parent's own `with run_lock("job-hunter"):` block is still open at that point, so the live
+lock file is readable) and only sets the env var when a real token comes back, avoiding a new
+parameter threaded through every intervening stage-sequencing function. Verified: `run_lock`'s
+yielded value is unchanged (still a bare `Path`), so every existing `with run_lock(...):`/
+`with run_lock_or_inherited(...):` call site needed no changes. New coverage in
+`tests/test_runlock.py` (token present/changes-per-acquisition, matching-token inheritance is a
+true no-op vs. a real second acquire seeing it held, mismatched/absent/unset-env each fall back to
+a real acquire) and a new `tests/test_pipeline.py` test
+(`test_lock_inherited_stages_receive_the_real_live_lock_token`) that reads the actual on-disk
+`data/locks/job-hunter.lock` file mid-run and asserts the refilter/review stages' `env` dict
+carries that exact token while the radar stage (never `lock_inherited`) gets no override at all.
+353 tests passing, `ruff`/`compileall` clean.
+
 ### P1 — next reliability increment
 
 - Replace the boolean inherited-lock environment variable with a validated parent-run token.

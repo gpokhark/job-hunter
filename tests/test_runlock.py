@@ -10,7 +10,13 @@ import time
 
 import pytest
 
-from job_hunter.runlock import RunLockHeld, run_lock
+from job_hunter.runlock import (
+    LOCK_INHERITED_ENV,
+    RunLockHeld,
+    current_lock_token,
+    run_lock,
+    run_lock_or_inherited,
+)
 
 
 def test_lock_file_contains_own_pid(tmp_path):
@@ -18,6 +24,24 @@ def test_lock_file_contains_own_pid(tmp_path):
         assert lock_path == tmp_path / "test.lock"
         lines = lock_path.read_text().splitlines()
         assert int(lines[0]) == os.getpid()
+
+
+def test_lock_file_records_a_token(tmp_path):
+    """The 4th line backs the `run_lock_or_inherited` capability-token check (see
+    LOCK_INHERITED_ENV's docstring) — must be present and non-empty on every fresh acquire."""
+    with run_lock("test", lock_dir=tmp_path) as lock_path:
+        lines = lock_path.read_text().splitlines()
+        assert len(lines) == 4
+        assert lines[3]
+        assert current_lock_token("test", lock_dir=tmp_path) == lines[3]
+
+
+def test_lock_token_changes_across_separate_acquisitions(tmp_path):
+    with run_lock("test", lock_dir=tmp_path) as lock_path:
+        first_token = lock_path.read_text().splitlines()[3]
+    with run_lock("test", lock_dir=tmp_path) as lock_path:
+        second_token = lock_path.read_text().splitlines()[3]
+    assert first_token != second_token
 
 
 def test_lock_released_on_clean_exit(tmp_path):
@@ -116,3 +140,62 @@ def test_concurrent_acquire_exactly_one_wins(tmp_path):
     denied = [r for r in results if r[0] == "denied"]
     assert len(held) == 1
     assert len(denied) == len(procs) - 1
+
+
+# --- run_lock_or_inherited's validated-token inheritance check (docs/agent-runtime-audit.md's
+# "lock bypass is caller-controlled" finding) ---
+
+
+def test_current_lock_token_is_none_when_nothing_is_held(tmp_path):
+    assert current_lock_token("test", lock_dir=tmp_path) is None
+
+
+def test_inherited_with_matching_token_is_a_true_no_op(tmp_path, monkeypatch):
+    """A genuine parent-held lock's own token, presented back via the env var, must be trusted —
+    the whole point of this mechanism is that a real parent pipeline's child stages don't
+    re-acquire the lock and deadlock against it."""
+    with run_lock("test", lock_dir=tmp_path) as parent_lock_path:
+        token = parent_lock_path.read_text().splitlines()[3]
+        monkeypatch.setenv(LOCK_INHERITED_ENV, token)
+        with run_lock_or_inherited("test", lock_dir=tmp_path) as inherited_path:
+            assert inherited_path == parent_lock_path
+            # Genuinely a no-op: the lock file is untouched, still owned by the outer run_lock,
+            # and a real second acquire attempt would still correctly see it as held.
+            with pytest.raises(RunLockHeld), run_lock("test", lock_dir=tmp_path):
+                pass
+
+
+def test_inherited_with_mismatched_token_falls_back_to_acquiring(tmp_path, monkeypatch):
+    """A stale/copy-pasted env var whose token doesn't match the lock file currently on disk must
+    never be trusted -- this is the exact bypass the plain boolean env var used to allow."""
+    with run_lock("test", lock_dir=tmp_path):
+        pass  # acquire and release once, just to produce *some* real token history
+    monkeypatch.setenv(LOCK_INHERITED_ENV, "not-the-real-token")
+    lock_path = tmp_path / "test.lock"
+    # A real lock was actually acquired here (and will be released once this whole `with` exits)
+    # -- confirmed by a concurrent acquire attempt seeing it as held, not merely by the file
+    # existing.
+    with run_lock_or_inherited("test", lock_dir=tmp_path), pytest.raises(RunLockHeld), run_lock(
+        "test", lock_dir=tmp_path
+    ):
+        pass
+    assert not lock_path.exists()
+
+
+def test_inherited_with_no_lock_file_falls_back_to_acquiring(tmp_path, monkeypatch):
+    """The env var can be set with no real lock ever having been taken at all (e.g. a stale
+    environment copied from an unrelated shell/run) -- must still fail closed."""
+    monkeypatch.setenv(LOCK_INHERITED_ENV, "some-token")
+    with run_lock_or_inherited("test", lock_dir=tmp_path) as lock_path:
+        assert lock_path.exists()
+    assert not lock_path.exists()
+
+
+def test_inherited_with_no_env_var_behaves_exactly_like_run_lock(tmp_path, monkeypatch):
+    """Regression coverage for the pre-token-mechanism default path: unset env var -> normal
+    acquire, unchanged."""
+    monkeypatch.delenv(LOCK_INHERITED_ENV, raising=False)
+    with run_lock_or_inherited("test", lock_dir=tmp_path) as lock_path:
+        assert lock_path.exists()
+        assert int(lock_path.read_text().splitlines()[0]) == os.getpid()
+    assert not lock_path.exists()

@@ -335,6 +335,55 @@ async def test_no_scrape_archive_resolution_failure_finalizes_manifest_instead_o
     assert manifest.completed_at is not None
 
 
+async def test_lock_inherited_stages_receive_the_real_live_lock_token(tmp_path, monkeypatch):
+    """docs/agent-runtime-audit.md's "lock bypass is caller-controlled" finding: LOCK_INHERITED_ENV
+    must carry the actual current run_lock("job-hunter") token, not a bare "1" -- verifies the env
+    dict `_run_stage_subprocess` builds for the refilter/review stages (lock_inherited=True)
+    against what's really on disk in data/locks/job-hunter.lock while `run_pipeline`'s own
+    `with run_lock("job-hunter"):` block is active, and that the radar stage (never
+    lock_inherited) gets no such env override at all."""
+    from job_hunter.runlock import LOCK_INHERITED_ENV
+
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    _write_archive(archive, prefilter_candidates=5)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+
+    seen_envs: dict[str, dict | None] = {}
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            seen_envs["refilter"] = kwargs.get("env")
+            live_lock = tmp_path / "data" / "locks" / "job-hunter.lock"
+            assert live_lock.exists(), "parent's run_lock must still be held during a stage call"
+            seen_envs["live_token_at_refilter_time"] = live_lock.read_text().splitlines()[3]
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            seen_envs["review"] = kwargs.get("env")
+            _write_result_json_for(cmd, {"reviewed": 1, "skipped_cached": 0, "failed": 0})
+            return _fake_proc()
+        if "scripts/render_radar.py" in cmd:
+            seen_envs["radar"] = kwargs.get("env")
+            _write_result_json_for(cmd, {"report_path": "data/radar/default_2026-09-17.html"})
+            return _fake_proc()
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
+
+    assert manifest.status == PipelineStatus.COMPLETE
+    real_token = seen_envs["live_token_at_refilter_time"]
+    assert real_token
+    assert seen_envs["refilter"][LOCK_INHERITED_ENV] == real_token
+    assert seen_envs["review"][LOCK_INHERITED_ENV] == real_token
+    assert seen_envs["radar"] is None
+
+
 async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatch):
     """The manifest's very first written stage in --no-scrape mode is REFILTER, replacing
     SEARCH as the live-search branch's first stage — read back before the run finishes to
