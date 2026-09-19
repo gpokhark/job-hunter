@@ -440,6 +440,31 @@ had — re-opening an already-migrated database with a spied `_MIGRATIONS[0]` th
 call confirms migration 1 is never invoked a second time. 401 tests passing, `ruff`/`compileall`
 clean.
 
+**Resolved (2026-09-18) — three documentation-drift items.** (1) README company counts corrected:
+`uv run job-hunter doctor`/`load_companies()` both confirm **65 total, 62 with implemented
+adapters, 3 unsupported** (still Tesla/Meta/MathWorks, re-checked, not assumed) — was stale at
+"60 implemented / 63 total". (2) `docs/SPEC.md`'s onboarding section (formerly ~line 804) no
+longer hardcodes a skill count that can drift again the same way — "separate from the four
+job-hunter skills in §11" is now "distinct from the end-user job-search skills described in §11"
+(referencing the section, not a number), and its path references were corrected from
+`.claude/skills/onboard-source` to the actual canonical `skills/onboard-source` (with a note that
+`.claude/skills/onboard-source` is a symlink to it), matching what line ~1124 already correctly
+said. (3) The "every `scripts/*.py` entry point accepts `--project`" overclaim in
+README/SPEC/CLAUDE.md: re-verified live via `grep -L add_project_argument scripts/*.py` rather
+than trusting the plan's own list, which turned out to be incomplete — beyond the three the plan
+named (`search_to_csv.py`, `endpoint_probe.py`, `prototype_tfidf_broad_match.py`), three more
+scripts don't take `--project` either: `claude_profile_hook.py`, `hermes_profile_hook.py`, and
+`install_hermes_hook.py`, all of which take the project/Hermes-home root as a *positional*
+argument by their own runtime/installer calling convention rather than a flag. Chose approach
+(b) from the plan (rephrase to name the operational set + exceptions, not add `--project` to
+scripts that structurally shouldn't have it) consistently across all three documents — adding
+`--project` to a hook script invoked with a fixed positional-argument contract by Claude
+Code/Hermes/`install_skill.sh` would conflict with that contract, not fix anything. All three
+docs now name the exact same seven operational scripts and six exceptions (with reasons), and
+SPEC.md's version includes the `grep -L add_project_argument scripts/*.py` command itself so a
+future drift-check doesn't have to re-derive it. No test changes — documentation-only, as the
+plan itself notes. 401 tests passing (unchanged), `ruff`/`compileall` clean.
+
 ## Definition of done for the next audit
 
 The next audit should be able to demonstrate all of the following from a clean temporary clone:

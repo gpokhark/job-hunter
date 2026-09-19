@@ -800,14 +800,16 @@ find the real card/pagination/description selectors; write the result as a stati
 source-test <key>`. From then on every future search runs the same deterministic code — no further
 discovery or LLM involvement needed unless the site's markup changes.
 
-This whole process is encoded as the **`onboard-source`** project skill
-(`.claude/skills/onboard-source` — separate from the four job-hunter skills in §11): given a
-company name, its careers listing URL, and one sample job URL, it discovers the real backing
-system, wires up (or writes) an adapter, tests it, verifies it live, and updates
+This whole process is encoded as the **`onboard-source`** project skill (`skills/onboard-source`
+— a repo-maintenance skill for extending job-hunter itself with a new employer source, distinct
+from the end-user job-search skills described in §11; `.claude/skills/onboard-source` is a
+symlink to the same location, installed for every `install_skill.sh` target including Hermes):
+given a company name, its careers listing URL, and one sample job URL, it discovers the real
+backing system, wires up (or writes) an adapter, tests it, verifies it live, and updates
 `README.md`/`CLAUDE.md`. See its discovery playbook
-(`.claude/skills/onboard-source/references/discovery-playbook.md`) for known ATS/platform
-signatures (Workday, Oracle HCM, Lever, Phenom, SuccessFactors, ADP RM, Next.js/Nuxt/React Router
-hydration data, JSON-LD, Liferay DDM) and probing techniques.
+(`skills/onboard-source/references/discovery-playbook.md`) for known ATS/platform signatures
+(Workday, Oracle HCM, Lever, Phenom, SuccessFactors, ADP RM, Next.js/Nuxt/React Router hydration
+data, JSON-LD, Liferay DDM) and probing techniques.
 
 ---
 
@@ -1038,15 +1040,25 @@ explicit, dry-run-by-default answer:
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
 `source-test` returns `1` if the healthcheck itself reports failed/unsupported.
 
-**`--project <path>` / `$JOB_HUNTER_ROOT`** — a global flag available on *every* subcommand
-(registered on both the root parser and each subparser, so it works whether given before or after
-the command token — `job-hunter pipeline --project X` and `job-hunter --project X pipeline` both
-work) — resolves and `chdir`s into the given project root once, before any relative config/data
-path is touched, the same convention `git -C <path>` uses. Falls back to `$JOB_HUNTER_ROOT`, then
-the current directory (unchanged behavior for anyone already running from the repo root). Every
-`scripts/*.py` entry point accepts the identical flag via `rootutil.add_project_argument()`. This
-is what makes every command in this section (and every skill's example invocation) safe to run
-without first `cd`-ing into the repo.
+**`--project <path>` / `$JOB_HUNTER_ROOT`** — a global flag available on *every* `job-hunter`
+subcommand (registered on both the root parser and each subparser, so it works whether given
+before or after the command token — `job-hunter pipeline --project X` and `job-hunter --project X
+pipeline` both work) — resolves and `chdir`s into the given project root once, before any relative
+config/data path is touched, the same convention `git -C <path>` uses. Falls back to
+`$JOB_HUNTER_ROOT`, then the current directory (unchanged behavior for anyone already running from
+the repo root). Every **operational** `scripts/*.py` entry point accepts the identical flag via
+`rootutil.add_project_argument()` — `apply_radar_feedback.py`, `assessments_to_csv.py`,
+`diff_profile.py`, `refilter_archive.py`, `render_radar.py`, `review_with_lm_studio.py`,
+`suggest_exclusions.py`. Confirmed exceptions, by design, not oversight: `endpoint_probe.py`
+(diagnostic probing tool), `prototype_tfidf_broad_match.py` (prototype, no operational contract),
+`search_to_csv.py` (a pure stdin/stdout-shaped converter with no project-relative path to
+resolve); and the hook/installer plumbing — `claude_profile_hook.py`, `hermes_profile_hook.py`,
+`install_hermes_hook.py` — which take the project root as a *positional* argument instead, since
+each runtime's own hook-invocation convention (or `install_skill.sh`'s own shell wrapper) already
+supplies it that way, not via a `--project` flag a human types. This is what makes every command
+in this section, and every operational script above, safe to run without first `cd`-ing into the
+repo; the exceptions above are the complete, current list — re-verify with `grep -L
+add_project_argument scripts/*.py` before trusting it, since new scripts get added over time.
 
 ---
 
