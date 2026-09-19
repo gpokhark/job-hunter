@@ -1,6 +1,8 @@
 import json
 import os
 import subprocess
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from job_hunter.models import PipelineManifest, PipelineStage, PipelineStatus
 from job_hunter.pipeline import (
     _decode_timeout_output,
     _fingerprint,
+    _run_stage_subprocess,
+    _StageTimedOut,
     latest_run_id,
     manifest_path,
     new_run_id,
@@ -96,6 +100,45 @@ def _fake_proc(stdout: str = "", stderr: str = "", returncode: int = 0) -> subpr
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _fake_popen(fake_run):
+    """Adapts a `subprocess.run`-style fake (`fake_run(cmd, **kwargs) -> CompletedProcess`,
+    raising `subprocess.TimeoutExpired` for a timeout scenario — every test below already defines
+    one of these) into a fake `Popen`, since `_run_stage_subprocess` now calls `Popen` directly
+    rather than `subprocess.run` (process-group cancellation needs the `Popen` object itself — see
+    its own docstring). This keeps every existing per-test `fake_run` closure and assertion
+    unchanged; only the monkeypatch target moves from `subprocess.run` to `subprocess.Popen`. The
+    real code's first `communicate(timeout=...)` call resolves `fake_run` directly; a raised
+    `TimeoutExpired` is re-raised so `_run_stage_subprocess` takes its kill-then-redrain path
+    (`os.killpg` on this fake's made-up pid harmlessly raises `ProcessLookupError`, caught there),
+    and the second, no-timeout `communicate()` call — the post-kill drain — returns whatever
+    stdout/stderr the test's own `TimeoutExpired` already carried, so no test needs to separately
+    describe "the process's output after being killed" from "the output that proves it was stuck"."""
+
+    class _FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self._cmd = cmd
+            self._kwargs = kwargs
+            self.pid = 999999999
+            self.returncode = 0
+            self._timeout_exc: subprocess.TimeoutExpired | None = None
+            self._resolved = False
+
+        def communicate(self, timeout=None):
+            if not self._resolved:
+                self._resolved = True
+                try:
+                    result = fake_run(self._cmd, **self._kwargs)
+                except subprocess.TimeoutExpired as exc:
+                    self._timeout_exc = exc
+                    raise
+                self.returncode = result.returncode
+                return result.stdout, result.stderr
+            exc = self._timeout_exc
+            return (exc.stdout or "", exc.stderr or "") if exc else ("", "")
+
+    return _FakeProc
+
+
 def _write_archive(path, prefilter_candidates: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -167,7 +210,7 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -204,7 +247,7 @@ async def test_no_scrape_with_review_runs_review_stage_too(tmp_path, monkeypatch
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -230,7 +273,7 @@ async def test_no_scrape_with_zero_candidates_stops_before_review_or_radar(tmp_p
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd} (review/radar must not run)")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -254,7 +297,7 @@ async def test_no_scrape_refilter_subprocess_failure_finalizes_manifest_as_faile
         proc.stderr = "Traceback...\nFileNotFoundError: no candidate_profile.yaml\n"
         return proc
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -317,7 +360,7 @@ async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatc
         _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
         return _fake_proc()
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -345,7 +388,7 @@ async def test_run_pipeline_records_its_own_pid(tmp_path, monkeypatch):
         _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
         return _fake_proc()
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -361,7 +404,7 @@ async def test_refilter_missing_result_json_is_treated_as_failure_not_zero(tmp_p
         assert "scripts/refilter_archive.py" in cmd
         return _fake_proc()  # exits 0, writes nothing to --result-json
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -380,7 +423,7 @@ async def test_review_missing_result_json_is_treated_as_failure_not_zero(tmp_pat
             return _fake_proc()  # exits 0, writes nothing to --result-json
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -400,7 +443,7 @@ async def test_radar_missing_result_json_is_treated_as_failure_not_zero(tmp_path
             return _fake_proc()  # exits 0, writes nothing to --result-json
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -420,7 +463,7 @@ async def test_review_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, mo
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="stuck calling LM Studio\n")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -446,7 +489,7 @@ async def test_radar_stage_timeout_sets_status_and_lets_caller_finalize(tmp_path
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -464,7 +507,7 @@ async def test_refilter_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, 
         assert "scripts/refilter_archive.py" in cmd
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="refilter hung\n")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -523,7 +566,7 @@ async def test_review_stage_timeout_with_real_bytes_output_does_not_crash_manife
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output=b"partial stdout", stderr=truncated_stderr)
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline.subprocess.Popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -536,3 +579,36 @@ async def test_review_stage_timeout_with_real_bytes_output_does_not_crash_manife
     # reading it back from disk, not just from the in-memory object.
     reread = read_manifest(manifest.run_id)
     assert reread.status == PipelineStatus.TIMED_OUT
+
+
+# --- real process-tree integration test (docs/agent-runtime-audit.md's "process-group
+# cancellation" finding) -- every test above mocks subprocess.Popen, which is the right tool for
+# manifest/status-transition coverage but structurally cannot prove a whole process *group* gets
+# killed, since the fake never has real descendant processes to check. This one runs a genuine
+# subprocess with a genuine grandchild and confirms the grandchild is actually gone afterward. ---
+
+
+def test_stage_timeout_kills_the_whole_process_group_including_grandchildren(tmp_path):
+    fixture = Path(__file__).parent / "fixtures" / "scripts" / "spawn_grandchild_and_hang.py"
+    pid_file = tmp_path / "grandchild.pid"
+
+    with pytest.raises(_StageTimedOut):
+        _run_stage_subprocess(
+            [sys.executable, str(fixture), str(pid_file)],
+            project_root=Path.cwd(),
+            timeout=1,
+        )
+
+    grandchild_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    # SIGKILL delivery/reaping is not instantaneous -- poll briefly instead of asserting the very
+    # instant _run_stage_subprocess returns, to avoid a rare false failure on a loaded machine.
+    deadline = time.monotonic() + 5
+    alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(0.1)
+    assert not alive, f"grandchild pid {grandchild_pid} was still alive after the stage timeout killed its group"

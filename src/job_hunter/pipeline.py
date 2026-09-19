@@ -26,9 +26,11 @@ about instead of pretending it's not there.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -85,6 +87,20 @@ def _run_stage_subprocess(
     behavior). Raises `_StageTimedOut` instead of the raw `subprocess.TimeoutExpired` so callers
     have a single type to catch regardless of which stage they're running.
 
+    Uses `Popen` directly (`start_new_session=True`) rather than the `subprocess.run(...,
+    timeout=...)` convenience wrapper, specifically so a timeout can kill the child's whole
+    *process group*, not just the direct child — `subprocess.run`'s own internal timeout handling
+    calls `process.kill()` on the single immediate process only, even with `start_new_session=True`
+    set, so any grandchild that child spawned (e.g. a future adapter/script shelling out to
+    something) would otherwise survive the kill, still holding files/sockets/model connections
+    (docs/agent-runtime-audit.md's "process-group cancellation" finding). On `TimeoutExpired`
+    from the first `communicate(timeout=...)`, `os.killpg` targets the whole group; the process
+    (or its group) may have already exited in the gap between the timeout firing and this call
+    (e.g. it finished right as it was being killed), so `OSError` here is expected and swallowed,
+    not a bug. A second, no-timeout `communicate()` call afterward drains whatever partial
+    stdout/stderr the child produced before being killed — mirrors what `subprocess.run` did
+    internally, needed here since we're no longer using it.
+
     `lock_inherited=True` (refilter/review only — see their own call sites) sets
     `LOCK_INHERITED_ENV` in the child's environment: `run_pipeline` already holds
     `run_lock("job-hunter")` for the whole run before this subprocess is ever spawned, and both
@@ -92,14 +108,25 @@ def _run_stage_subprocess(
     deadlock against their own parent (confirmed live) — `run_lock_or_inherited` on their side is
     what actually reads this env var and skips locking when it's set."""
     env = {**os.environ, LOCK_INHERITED_ENV: "1"} if lock_inherited else None
+    proc = subprocess.Popen(
+        cmd,
+        cwd=project_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
     try:
-        return subprocess.run(
-            cmd, cwd=project_root, capture_output=True, text=True, timeout=timeout, env=env
-        )
-    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        stdout, stderr = proc.communicate()
         raise _StageTimedOut(
-            _decode_timeout_output(exc.stdout), _decode_timeout_output(exc.stderr)
+            _decode_timeout_output(stdout), _decode_timeout_output(stderr)
         ) from None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _finalize_timed_out(manifest: PipelineManifest, exc: _StageTimedOut, *, timeout: int | None) -> None:
