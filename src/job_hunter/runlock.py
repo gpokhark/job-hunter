@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import os
 import secrets
+import subprocess
 import sys
 import time
 from collections.abc import Iterator
@@ -94,6 +95,31 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return True  # unknown platform behavior -- fail safe, assume alive
     return True
+
+
+def process_start_time(pid: int) -> str | None:
+    """`ps -o lstart= -p <pid>`'s raw output for one process -- a process-*identity* signal, not
+    just liveness, used to detect PID reuse (docs/agent-runtime-audit.md's "PID reuse can make an
+    abandoned manifest look live" finding): the OS can reassign a dead process's PID to a later,
+    completely unrelated process, and `pid_alive(pid)` alone can't tell the two apart. Works on
+    both macOS and Linux (though `ps`'s exact `lstart` format differs between them) -- there's no
+    portable stdlib equivalent to a Linux-only `/proc/<pid>/stat` read, and this project's actual
+    deployment context (single-operator machines) doesn't call for a cross-platform process-
+    identity library. The returned string is never parsed or interpreted, only ever compared for
+    exact equality against a value recorded earlier for the *same* pid, so the format difference
+    between platforms never matters. Returns `None` (never raises) whenever it can't get a
+    trustworthy answer -- `ps` missing, timing out, or the pid not existing right now -- and
+    callers must treat `None` as "can't verify," falling back to PID-only liveness, never as
+    "confirmed reused" or "confirmed the same process." """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _read_holder(lock_path: Path) -> tuple[int, str | None, str | None, str | None]:

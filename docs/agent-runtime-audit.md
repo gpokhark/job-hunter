@@ -277,6 +277,37 @@ a real acquire) and a new `tests/test_pipeline.py` test
 carries that exact token while the radar stage (never `lock_inherited`) gets no override at all.
 353 tests passing, `ruff`/`compileall` clean.
 
+**Resolved (2026-09-18) — authoritative run identity: started_at over mtime, process-identity over
+bare PID liveness.** `pipeline.py`'s `latest_run_id()` no longer sorts `data/runs/*/manifest.json`
+by filesystem mtime — it now parses each manifest and sorts by its own recorded `started_at`
+(mtime only breaks a tie between two identical `started_at` values), so an imported/copied run
+directory or a manifest written on a clock-drifted machine can no longer become "latest" purely by
+having a newer mtime; a manifest that fails to parse at all is never preferred over one that does,
+regardless of either timestamp. Separately, `PipelineManifest` gained `pid_start_time: str | None`,
+populated from a new `runlock.process_start_time(pid)` helper (`ps -o lstart= -p <pid>`, exact
+string only ever compared for equality, never parsed — no portable stdlib equivalent to Linux's
+`/proc/<pid>/stat`, and this project's actual deployment context is single-operator machines, not
+a scenario calling for a cross-platform process-identity library) at the moment `run_pipeline`
+writes its first manifest. `cli.py`'s `pipeline-status` abandoned-detection now also compares that
+recorded value against the pid's *current* start time (when both are available) — a mismatch means
+the OS reused the pid number for an unrelated process, and the run is reported `abandoned` even
+though `pid_alive()` alone would say "alive"; either value being unavailable (`None` — an older
+manifest, or `ps` unavailable) means "can't verify" and falls back to the original PID-only
+liveness check, never treated as evidence either way. One real bug caught fixing this: mocking
+`subprocess.Popen` at the shared `subprocess` module level (item 1's approach) turned out to
+globally break *any* other `subprocess.run`/`Popen` call made during the same test process, since
+there's only one `sys.modules["subprocess"]` — `runlock.process_start_time`'s own `ps` shell-out
+(now called from inside manifest construction) started raising `TypeError` under the existing
+mocked pipeline tests until `pipeline.py` was changed to call a module-level `_popen = subprocess.
+Popen` alias captured at import time instead, with tests patching that alias rather than the
+shared module attribute — confirmed via a full mocked-test run failing 14/353, then passing again
+after the fix. New coverage: `tests/test_pipeline.py` (`latest_run_id` prefers `started_at` over a
+reversed mtime; an unparseable manifest never wins regardless of mtime), `tests/test_runlock.py`
+(`process_start_time` stable across reads of the same live pid, `None` for a dead one), and
+`tests/test_cli.py` (`pipeline-status` reports `abandoned` for a live pid whose recorded
+`pid_start_time` doesn't match reality, and unchanged `running` behavior when no `pid_start_time`
+was ever recorded). 359 tests passing, `ruff`/`compileall` clean.
+
 ### P1 — next reliability increment
 
 - Replace the boolean inherited-lock environment variable with a validated parent-run token.

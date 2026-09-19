@@ -21,7 +21,7 @@ from .logging_config import configure_logging
 from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus
 from .pipeline import latest_run_id, read_manifest, run_pipeline
 from .rootutil import add_project_argument, chdir_to_project_root
-from .runlock import RunLockHeld, pid_alive
+from .runlock import RunLockHeld, pid_alive, process_start_time
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
@@ -389,11 +389,26 @@ def main(argv: list[str] | None = None) -> int:
             # (killed, crashed, machine restarted) — the manifest file itself never lies about
             # what it last wrote, so this is a read-time, presentation-only verdict computed here,
             # never persisted back to the manifest (see docs/agent-runtime-audit.md's "abandoned
-            # vs. running" finding).
-            abandoned = (
-                manifest.status == PipelineStatus.RUNNING
-                and manifest.pid is not None
-                and not pid_alive(manifest.pid)
+            # vs. running" finding). `pid_alive` alone isn't sufficient: the OS can reuse a dead
+            # process's pid for an unrelated later process, which would make a genuinely-abandoned
+            # manifest look live for the wrong reason ("PID reuse" finding). When the manifest
+            # recorded `pid_start_time` (process identity, not just a number) and the pid's
+            # *current* start time can be determined right now, a mismatch means this isn't the
+            # same process anymore — treated as abandoned even though `pid_alive` alone would say
+            # "alive". Either side being unavailable (`None`) means "can't verify" and falls back
+            # to the original PID-only liveness check, never treated as evidence of reuse.
+            current_start_time = (
+                process_start_time(manifest.pid)
+                if manifest.pid is not None and manifest.pid_start_time is not None
+                else None
+            )
+            pid_reused = (
+                manifest.pid_start_time is not None
+                and current_start_time is not None
+                and current_start_time != manifest.pid_start_time
+            )
+            abandoned = manifest.status == PipelineStatus.RUNNING and manifest.pid is not None and (
+                not pid_alive(manifest.pid) or pid_reused
             )
             payload = manifest.model_dump(mode="json")
             if abandoned:

@@ -301,3 +301,56 @@ def test_pipeline_status_reports_running_for_a_live_pid(tmp_path, monkeypatch, c
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "running"
     assert "last_written_status" not in payload
+
+
+def test_pipeline_status_reports_abandoned_when_pid_was_reused(tmp_path, monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "PID reuse" finding: a live pid alone isn't proof it's the
+    *same* process the manifest was written for -- the OS can hand a dead process's pid number to
+    an unrelated later process. A manifest whose recorded `pid_start_time` doesn't match the pid's
+    real current start time must be reported as abandoned even though `pid_alive()` alone would
+    say "alive" (this test process's own pid genuinely is alive)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+
+    manifest = PipelineManifest(
+        run_id="reused-pid-run",
+        project_root=str(tmp_path),
+        pid=os.getpid(),
+        pid_start_time="Thu Jan  1 00:00:00 1970",  # never this test process's real start time
+        status=PipelineStatus.RUNNING,
+    )
+    write_manifest(manifest)
+
+    exit_code = main(["pipeline-status", "--run", "reused-pid-run"])
+
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "abandoned"
+    assert payload["last_written_status"] == "running"
+
+
+def test_pipeline_status_with_no_pid_start_time_falls_back_to_pid_only_liveness(
+    tmp_path, monkeypatch, capsys
+):
+    """A manifest written before `pid_start_time` existed (or where `ps` wasn't available at
+    record time) must keep working exactly as before -- an absent recorded value is never treated
+    as evidence of anything, only a genuine mismatch is."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+
+    manifest = PipelineManifest(
+        run_id="no-start-time-run",
+        project_root=str(tmp_path),
+        pid=os.getpid(),
+        pid_start_time=None,
+        status=PipelineStatus.RUNNING,
+    )
+    write_manifest(manifest)
+
+    exit_code = main(["pipeline-status", "--run", "no-start-time-run"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "running"

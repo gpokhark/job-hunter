@@ -14,6 +14,7 @@ from job_hunter.runlock import (
     LOCK_INHERITED_ENV,
     RunLockHeld,
     current_lock_token,
+    process_start_time,
     run_lock,
     run_lock_or_inherited,
 )
@@ -189,6 +190,22 @@ def test_inherited_with_no_lock_file_falls_back_to_acquiring(tmp_path, monkeypat
     with run_lock_or_inherited("test", lock_dir=tmp_path) as lock_path:
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+def test_process_start_time_is_stable_for_the_same_pid(tmp_path):
+    """(docs/agent-runtime-audit.md's "PID reuse" finding.) Two reads for this test process's own
+    still-running pid must agree -- the whole mechanism depends on this being a stable identity
+    signal, not a value that drifts between reads of the same live process."""
+    first = process_start_time(os.getpid())
+    second = process_start_time(os.getpid())
+    assert first is not None
+    assert first == second
+
+
+def test_process_start_time_returns_none_for_a_dead_pid():
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert process_start_time(proc.pid) is None
 
 
 def test_inherited_with_no_env_var_behaves_exactly_like_run_lock(tmp_path, monkeypatch):

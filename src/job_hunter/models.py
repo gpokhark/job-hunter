@@ -241,6 +241,14 @@ class PipelineManifest(BaseModel):
     # (reported as `abandoned`; see cli.py's `pipeline-status` handling). `None` only for a
     # manifest written before this field existed.
     pid: int | None = None
+    # `runlock.process_start_time(pid)`'s raw `ps -o lstart=` output at the moment `pid` was
+    # recorded above -- a process-*identity* check, not just liveness, so `pipeline-status` can
+    # tell "this exact process is still running" from "the OS reused this pid number for a
+    # different, unrelated process after the original one died" (docs/agent-runtime-audit.md's
+    # "PID reuse" finding). `None` for a manifest written before this field existed, or one
+    # written where `ps` wasn't available -- `pipeline-status` falls back to PID-only liveness in
+    # either case, never treating a missing value as evidence of anything.
+    pid_start_time: str | None = None
     keyword: str | None = None
     stage: PipelineStage = PipelineStage.SEARCH
     status: PipelineStatus = PipelineStatus.RUNNING

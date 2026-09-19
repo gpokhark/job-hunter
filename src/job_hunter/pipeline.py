@@ -41,10 +41,27 @@ from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings, load_companies, load_profile
 from .models import PipelineManifest, PipelineStage, PipelineStatus
-from .runlock import LOCK_INHERITED_ENV, RunLockHeld, current_lock_token, run_lock
+from .runlock import (
+    LOCK_INHERITED_ENV,
+    RunLockHeld,
+    current_lock_token,
+    process_start_time,
+    run_lock,
+)
 from .search_archive import archive_path, resolve_search_path
 
 RUNS_DIR = Path("data/runs")
+
+# Captured at import time so `_run_stage_subprocess`'s own Popen usage can be mocked in tests
+# (`monkeypatch.setattr("job_hunter.pipeline._popen", ...)`) without mutating the process-wide
+# `subprocess` module -- `subprocess.Popen`/`subprocess.run` are the *same* module object
+# everywhere they're imported (there's only ever one `sys.modules["subprocess"]`), so patching
+# `job_hunter.pipeline.subprocess.Popen` directly would also silently break any other code this
+# process calls that itself shells out via `subprocess.run`/`Popen` during the same test --
+# confirmed live: `runlock.process_start_time`'s own `subprocess.run(["ps", ...])` call (used by
+# `run_pipeline` itself when writing a fresh manifest) started raising `TypeError` once tests
+# began mocking Popen this way, since it was hitting the same globally-patched fake.
+_popen = subprocess.Popen
 
 
 class _StageTimedOut(Exception):
@@ -120,7 +137,7 @@ def _run_stage_subprocess(
         token = current_lock_token("job-hunter")
         if token:
             env = {**os.environ, LOCK_INHERITED_ENV: token}
-    proc = subprocess.Popen(
+    proc = _popen(
         cmd,
         cwd=project_root,
         stdout=subprocess.PIPE,
@@ -190,12 +207,30 @@ def read_manifest(run_id: str, *, runs_dir: Path = RUNS_DIR) -> PipelineManifest
 
 
 def latest_run_id(*, runs_dir: Path = RUNS_DIR) -> str | None:
+    """The most recently *started* run, by each manifest's own `started_at` field — not
+    filesystem mtime (docs/agent-runtime-audit.md's "run identity is not authoritative" finding).
+    An imported/copied run directory (a backup, a copy between machines) or a partially-written
+    manifest could otherwise become "latest" purely by having a newer mtime than the real latest
+    run, even though its own recorded `started_at` is older. mtime is used only as a tiebreaker
+    between two manifests with an identical `started_at` (should be rare, given `new_run_id`'s own
+    uniqueness) — a manifest that fails to parse at all (corrupt content, or a foreign file that
+    happens to sit at that path) is never preferred over one that parses successfully, regardless
+    of either timestamp."""
     if not runs_dir.exists():
         return None
-    manifests = list(runs_dir.glob("*/manifest.json"))
-    if not manifests:
+    manifest_paths = list(runs_dir.glob("*/manifest.json"))
+    if not manifest_paths:
         return None
-    return max(manifests, key=lambda p: p.stat().st_mtime).parent.name
+
+    def sort_key(path: Path) -> tuple[int, datetime, float]:
+        try:
+            manifest = PipelineManifest.model_validate_json(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
+        except (OSError, ValueError):
+            return (0, datetime.min.replace(tzinfo=UTC), 0.0)
+        return (1, manifest.started_at, mtime)
+
+    return max(manifest_paths, key=sort_key).parent.name
 
 
 def _fingerprint(path: Path | None) -> str | None:
@@ -365,6 +400,7 @@ async def run_pipeline(
         run_id=new_run_id(),
         project_root=str(project_root),
         pid=os.getpid(),
+        pid_start_time=process_start_time(os.getpid()),
         keyword=keyword,
         stage=PipelineStage.REFILTER if no_scrape else PipelineStage.SEARCH,
         status=PipelineStatus.RUNNING,

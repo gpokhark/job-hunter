@@ -36,7 +36,7 @@ touch, tests to add, and how to verify.
 
 - [x] 1. Safe default pipeline stage timeout + process-group cancellation on timeout
 - [x] 2. Replace `JOB_HUNTER_LOCK_INHERITED` boolean env-var bypass with a validated parent-run token
-- [ ] 3. Authoritative run identity/recovery (PID-reuse-safe abandoned detection, non-mtime latest-run selection)
+- [x] 3. Authoritative run identity/recovery (PID-reuse-safe abandoned detection, non-mtime latest-run selection)
 - [ ] 4. Relocatable Hermes hook registration (survive a moved/copied checkout)
 - [ ] 5. Claude hook coverage: debounce/serialize rapid edits; decide `PostToolUse` vs `FileChanged` scope
 - [ ] 6. Reject negative values on numeric CLI options
