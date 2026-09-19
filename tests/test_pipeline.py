@@ -244,7 +244,12 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
         calls.append(cmd)
         if "scripts/refilter_archive.py" in cmd:
             _write_result_json_for(
-                cmd, {"gained": 2, "lost": 1, "diff_report": "data/profile-diff/archive-default_2026-09-17-x.html"}
+                cmd,
+                {
+                    "gained": 2, "lost": 1,
+                    "diff_report": "data/profile-diff/archive-default_2026-09-17-x.html",
+                    "refiltered_at": "2026-09-17T12:00:00+00:00",
+                },
             )
             return _fake_proc()
         if "scripts/render_radar.py" in cmd:
@@ -264,6 +269,9 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
     assert manifest.gained == 2
     assert manifest.lost == 1
     assert manifest.diff_report == "data/profile-diff/archive-default_2026-09-17-x.html"
+    # docs/agent-runtime-audit.md's "provenance fields" finding -- read straight through from
+    # refilter_archive.py's own --result-json, never derived/recomputed by pipeline.py itself.
+    assert manifest.refiltered_at == "2026-09-17T12:00:00+00:00"
     assert manifest.radar == "data/radar/default_2026-09-17.html"
     assert manifest.archive == str(archive)
 

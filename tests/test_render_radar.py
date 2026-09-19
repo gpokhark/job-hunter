@@ -109,6 +109,7 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
         "never_reviewed": 0,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert "Exceptional Role" in html
@@ -670,6 +671,7 @@ def test_never_reviewed_row_matches_scored_row_layout(tmp_path):
         "never_reviewed": 1,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert 'data-source-key="ford"' in html
@@ -930,6 +932,15 @@ def test_collection_fallback_merges_only_recency_passing_jobs_with_a_dated_note(
         f"Connection timed out. Failed to scrape today — showing 1 job(s) from the last "
         f"successful scrape on {expected_date}."
     ) in html
+    # docs/agent-runtime-audit.md's "provenance fields" finding: the same fallback info must
+    # also be available as structured data, not only folded into the HTML note's prose.
+    assert stats["stale_source_fallback"] == [
+        {
+            "source_key": "waymo",
+            "merged_count": 1,
+            "last_success_at": last_success.isoformat(),
+        }
+    ]
 
 
 def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
@@ -966,6 +977,9 @@ def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
     html = output_path.read_text()
     assert stats["never_reviewed"] == 0
     assert "DNS error. Failed to scrape — no prior successful data available for this source." in html
+    assert stats["stale_source_fallback"] == [
+        {"source_key": "waymo", "merged_count": 0, "last_success_at": None}
+    ]
 
 
 def test_collection_fallback_never_triggers_for_warning_or_unsupported_sources(tmp_path):

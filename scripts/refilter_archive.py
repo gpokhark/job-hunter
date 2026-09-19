@@ -522,10 +522,13 @@ def main() -> int:
     parser.add_argument(
         "--result-json", type=Path, default=None,
         help=(
-            "also write {\"gained\": N, \"lost\": N, \"diff_report\": \"...\"|null} to this path "
-            "on success — a structured result for a caller (job-hunter pipeline) to read instead "
-            "of parsing this script's own human-readable stdout. Purely additive: stdout is "
-            "unchanged."
+            "also write {\"gained\": N, \"lost\": N, \"diff_report\": \"...\"|null, "
+            "\"refiltered_at\": \"...\"} to this path on success — a structured result for a "
+            "caller (job-hunter pipeline) to read instead of parsing this script's own "
+            "human-readable stdout. \"refiltered_at\" is provenance only (when this refilter "
+            "ran, against whatever SQLite state existed at that instant) — never a cache key or "
+            "invalidation signal, same principle as profile_fingerprint/resume_fingerprint "
+            "elsewhere in this pipeline (see CLAUDE.md). Purely additive: stdout is unchanged."
         ),
     )
     add_project_argument(parser)
@@ -604,6 +607,7 @@ def main() -> int:
                             "gained": len(gained_keys),
                             "lost": len(lost_keys),
                             "diff_report": str(diff_report_path) if diff_report_path else None,
+                            "refiltered_at": now.isoformat(),
                         }
                     )
                     + "\n",

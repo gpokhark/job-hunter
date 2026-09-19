@@ -525,6 +525,7 @@ async def _run_pipeline_body(
         manifest.gained = refilter_result.get("gained")
         manifest.lost = refilter_result.get("lost")
         manifest.diff_report = refilter_result.get("diff_report")
+        manifest.refiltered_at = refilter_result.get("refiltered_at")
         # refilter_archive.py rewrites `archive` in place with its own recomputed
         # prefilter_candidates count — re-read it so manifest.candidates means the same thing
         # here it means for a live search below, rather than staying null just because this

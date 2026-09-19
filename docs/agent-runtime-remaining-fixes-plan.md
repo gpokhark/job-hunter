@@ -43,7 +43,7 @@ touch, tests to add, and how to verify.
 - [x] 7. Remove or implement `--all-companies`
 - [x] 8. SQLite schema-version table
 - [x] 9. Documentation drift: README company count, `docs/SPEC.md` onboarding section, universal `--project` claims
-- [ ] 10. Provenance fields on refiltered/stale-source-fallback output
+- [x] 10. Provenance fields on refiltered/stale-source-fallback output
 - [ ] 11. Bootstrap command + CI workflow (larger, do last)
 
 ---

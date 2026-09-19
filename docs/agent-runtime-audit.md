@@ -465,6 +465,39 @@ SPEC.md's version includes the `grep -L add_project_argument scripts/*.py` comma
 future drift-check doesn't have to re-derive it. No test changes — documentation-only, as the
 plan itself notes. 401 tests passing (unchanged), `ruff`/`compileall` clean.
 
+**Resolved (2026-09-18) — provenance fields for refiltered/stale-source-fallback output.**
+`scripts/refilter_archive.py`'s `--result-json` gains `refiltered_at` (the same `now` instant
+already used for the diff report's own filename/timestamp — no separate clock read), and
+`PipelineManifest` gains a matching `refiltered_at: str | None` (read straight through from that
+same `--result-json`, never recomputed by `pipeline.py`) — provenance only, explicitly never a
+cache key or invalidation signal, same principle already documented for
+`profile_fingerprint`/`resume_fingerprint`. `render_radar.py`'s stale-source-collection fallback
+note was already sourced from real data (`source_health.last_success_at`, confirmed by reading
+`_apply_collection_fallback` directly) but only ever existed as prose folded into the HTML
+report's `message` string — `_apply_collection_fallback` now also returns a structured
+`fallback_provenance` list (`{"source_key", "merged_count", "last_success_at"}` per `failed`
+source, including the "no prior data at all" case as `merged_count: 0`/`last_success_at: null`),
+threaded through `build()`'s return value as `stale_source_fallback` and now written into
+`--result-json` too — a caller (`job-hunter pipeline`, an agent) can now tell exactly which
+sources in a report came from the live run vs. this fallback, and when that fallback data was
+last actually collected, by reading JSON instead of parsing HTML prose. Also fixed a small, real,
+unrelated doc-drift bug found incidentally while touching this exact code: `models.py`'s
+`gained`/`lost`/`diff_report` comment referenced a `pipeline.py` function
+(`_parse_refilter_output`) that no longer exists — the structured-`--result-json` refactor from
+a prior session replaced stdout parsing, but this comment was never updated; corrected in the
+same edit. Verified live end-to-end (a temporary local profile/settings/empty archive, not just
+the test suite): `refilter_archive.py --result-json` produced a real `refiltered_at` ISO
+timestamp, and `render_radar.py --result-json` produced `"stale_source_fallback": []` for a
+no-failures run — all temporary artifacts cleaned up afterward (all gitignored paths; `git
+status` confirmed clean). New/extended coverage: `tests/test_refilter_archive.py` (new
+`--result-json`-producing test asserting `refiltered_at` is a real, bounded-in-time ISO
+timestamp), `tests/test_render_radar.py` (extended the existing fallback-with-data and
+fallback-with-no-prior-success `build()` tests with exact `stale_source_fallback` assertions, plus
+the two pre-existing exact-dict `stats ==` tests updated for the new key), and
+`tests/test_pipeline.py` (extended the existing no-scrape/PARTIAL-status test to assert
+`manifest.refiltered_at` is read straight through unmodified). 402 tests passing, `ruff`/
+`compileall` clean.
+
 ## Definition of done for the next audit
 
 The next audit should be able to demonstrate all of the following from a clean temporary clone:
