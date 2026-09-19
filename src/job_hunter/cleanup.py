@@ -38,13 +38,16 @@ CLEANUP_EXPORT_DIR = Path("data/cleanup-exports")
 # Two generated timestamp shapes coexist on disk: the current local-timezone-readable one
 # (diff_profile.py's `_report_timestamp`) and the earlier bare-UTC one it replaced. Both are
 # genuinely script-generated, neither is hand-named, so both are recognized here — see
-# docs/retention-cleanup-plan.md section 3.5/Q6.
+# docs/retention-cleanup-plan.md section 3.5/Q6. Each regex below also names the exact substring
+# it needs for *age* determination (`timestamp`/`date`) — see `classify_report`/`_parse_timestamp`/
+# `_parse_date` — so the one match already proving "this is a valid report of this shape" is also
+# what supplies its real generation time, with no separate re-scan of the filename needed.
 _TIMESTAMP = r"(?:\d{4}-\d{2}-\d{2}-T-\d{2}-\d{2}-\d{2}|\d{8}T\d{6})"
 _DATE = r"\d{4}-\d{2}-\d{2}"
 
-_PROFILE_DIFF_RE = re.compile(rf"^{_TIMESTAMP}\.html$")
-_ARCHIVE_DIFF_RE = re.compile(rf"^archive-(?P<slug>.+)_{_DATE}-{_TIMESTAMP}\.html$")
-_RADAR_RE = re.compile(rf"^(?P<slug>.+)_{_DATE}\.html$")
+_PROFILE_DIFF_RE = re.compile(rf"^(?P<timestamp>{_TIMESTAMP})\.html$")
+_ARCHIVE_DIFF_RE = re.compile(rf"^archive-(?P<slug>.+)_{_DATE}-(?P<timestamp>{_TIMESTAMP})\.html$")
+_RADAR_RE = re.compile(rf"^(?P<slug>.+)_(?P<date>{_DATE})\.html$")
 
 # The group key for a plain diff_profile.py report, which has no slug of its own (it diffs the
 # profile against a baseline, not any one archive) — confirmed in scope for the same "keep
@@ -57,7 +60,26 @@ class ReportFile:
     path: Path
     kind: str  # "profile_diff" | "archive_diff" | "radar"
     group: str  # a slug, or _NO_SLUG_GROUP for a plain profile_diff report
-    mtime: float
+    generated_at: float  # POSIX timestamp, parsed from the report's own filename — never mtime,
+    # see `classify_report`'s docstring for why.
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """Parses one of `_TIMESTAMP`'s two shapes into an aware instant. `YYYY-MM-DD-T-HH-MM-SS`
+    (`diff_profile.py`'s `_report_timestamp`) is the device's *local* time at generation — parsed
+    as naive, then localized via a bare `.astimezone()` (no argument), the exact inverse of how
+    it was produced (`_report_timestamp`'s own `_local()` helper). `YYYYMMDDTHHMMSS` is the
+    earlier bare-UTC shape it replaced, tagged UTC directly."""
+    if "-T-" in value:
+        return datetime.strptime(value, "%Y-%m-%d-T-%H-%M-%S").astimezone()
+    return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+
+
+def _parse_date(value: str) -> datetime:
+    """A radar report's filename carries only a bare `_DATE`, no separate timestamp — the same
+    local-calendar-date convention `search_archive.py`'s `archive_path()` uses for the archive it
+    was rendered from. Treated as local midnight on that date."""
+    return datetime.strptime(value, "%Y-%m-%d").astimezone()
 
 
 def classify_report(path: Path, *, role: str) -> ReportFile | None:
@@ -69,19 +91,33 @@ def classify_report(path: Path, *, role: str) -> ReportFile | None:
     (confirmed live: `data/profile-diff/soft_exclude_terms_removed_2026-09-05.html` predates
     this feature and must never be swept up by an age-based glob, see
     docs/retention-cleanup-plan.md section 3.5). Never guess a file's provenance from its age or
-    location alone."""
+    location alone.
+
+    `generated_at` comes from the filename's own embedded timestamp/date (via `_parse_timestamp`/
+    `_parse_date`), not `path.stat().st_mtime` — confirmed live as a real, user-facing bug: an
+    existing report's mtime reflects whenever the file was last *written to disk* (a checkout
+    restore, a repo copy, a filesystem migration, `cp` without `-p`), not when its content was
+    actually produced, so a whole `data/` tree materialized fresh on a machine makes every report
+    look equally "recent" regardless of real age — silently defeating `report_after_days`
+    entirely for every file affected, with no error or warning. The filename's own timestamp is
+    exactly what these three scripts already use to *name* the file in the first place, so it's
+    authoritative by construction, not a guess."""
     name = path.name
     if role == "profile-diff":
         archive_match = _ARCHIVE_DIFF_RE.match(name)
         if archive_match:
-            return ReportFile(path, "archive_diff", archive_match.group("slug"), path.stat().st_mtime)
-        if _PROFILE_DIFF_RE.match(name):
-            return ReportFile(path, "profile_diff", _NO_SLUG_GROUP, path.stat().st_mtime)
+            generated_at = _parse_timestamp(archive_match.group("timestamp")).timestamp()
+            return ReportFile(path, "archive_diff", archive_match.group("slug"), generated_at)
+        profile_match = _PROFILE_DIFF_RE.match(name)
+        if profile_match:
+            generated_at = _parse_timestamp(profile_match.group("timestamp")).timestamp()
+            return ReportFile(path, "profile_diff", _NO_SLUG_GROUP, generated_at)
         return None
     if role == "radar":
         radar_match = _RADAR_RE.match(name)
         if radar_match:
-            return ReportFile(path, "radar", radar_match.group("slug"), path.stat().st_mtime)
+            generated_at = _parse_date(radar_match.group("date")).timestamp()
+            return ReportFile(path, "radar", radar_match.group("slug"), generated_at)
         return None
     raise ValueError(f"unknown role: {role!r}")
 
@@ -107,19 +143,20 @@ def select_reports_to_delete(
 ) -> list[ReportFile]:
     """Groups by (kind, group) — a plain profile_diff report, an archive_diff slug, and a radar
     slug are each their own independent series (docs/retention-cleanup-plan.md section 3.4) —
-    sorts each newest-first by mtime, protects the first `keep_latest_per_group` unconditionally,
-    and only deletes the remainder if it's also older than `cutoff`. A file protected by the
-    keep-latest floor is never deleted regardless of age; a file within the age cutoff but
-    outside the floor's window is never deleted either — both conditions gate independently."""
+    sorts each newest-first by `generated_at` (the report's own embedded timestamp — see
+    `classify_report`), protects the first `keep_latest_per_group` unconditionally, and only
+    deletes the remainder if it's also older than `cutoff`. A file protected by the keep-latest
+    floor is never deleted regardless of age; a file within the age cutoff but outside the
+    floor's window is never deleted either — both conditions gate independently."""
     groups: dict[tuple[str, str], list[ReportFile]] = defaultdict(list)
     for report in files:
         groups[(report.kind, report.group)].append(report)
     cutoff_ts = cutoff.timestamp()
     to_delete: list[ReportFile] = []
     for group_files in groups.values():
-        group_files.sort(key=lambda r: r.mtime, reverse=True)
+        group_files.sort(key=lambda r: r.generated_at, reverse=True)
         candidates = group_files[keep_latest_per_group:]
-        to_delete.extend(r for r in candidates if r.mtime < cutoff_ts)
+        to_delete.extend(r for r in candidates if r.generated_at < cutoff_ts)
     return to_delete
 
 

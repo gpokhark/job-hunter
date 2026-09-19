@@ -403,7 +403,7 @@ before most commands will find a profile (falls back to the example file otherwi
   search → review → radar end to end (or, with `--no-scrape`, refilter → optional review → radar,
   entirely offline — see below), writing a durable `data/runs/<run_id>/manifest.json` at every
   stage (`PipelineManifest`/`PipelineStage`/`PipelineStatus` in `models.py`) so an agent or a human
-  can poll `job-hunter pipeline-status` instead of re-parsing three separate commands' stdout. The
+  can poll `job-hunter pipeline-status` instead of re-parsing three separate commands' output. The
   review/radar (and, in `--no-scrape` mode, refilter) stages are still driven via `subprocess`
   against the existing standalone scripts — this module supervises them, it does not reimplement
   their logic, matching the "scoring is delegated entirely to `review_with_lm_studio.py`"
@@ -412,15 +412,46 @@ before most commands will find a profile (falls back to the example file otherwi
   re-evaluates an archive's own already-attempted source scope, not a fresh company selection);
   its `--review` flag defaults review **off**, the opposite default from normal pipeline mode's
   `--skip-review` opt-out — a deliberate, disclosed asymmetry (see
-  `docs/pipeline-refilter-stale-source-plan.md` §4.2), not an oversight. `status` distinguishes
-  `complete`/`partial`/`failed`/`no_candidates`/`model_unavailable`, parsed from the review
-  script's own stdout/stderr rather than guessed. Records `profile_fingerprint`/
-  `resume_fingerprint`/`model` on the manifest for provenance only — explicitly never wired into
-  cache invalidation, respecting the content-hash-only assessment-cache principle above. The whole
-  function body runs inside one try/except that finalizes the manifest as `failed` with the real
-  exception message on any unhandled error before re-raising — without this, an archive-resolution
-  failure in `--no-scrape` mode (no archive matches the given keyword) left the manifest stuck at
-  `running` forever, confirmed live and fixed with a regression test in `test_pipeline.py`.
+  `docs/pipeline-refilter-stale-source-plan.md` §4.2), not an oversight. `--no-scrape` also takes
+  `--search PATH` to refilter an exact archive, bypassing `--keyword`/newest-mtime resolution
+  entirely (rejected without `--no-scrape`, same pattern as `--companies`) — added after a live,
+  confirmed incident where mtime-based "newest" resolution picked a narrow, recently-refiltered
+  archive over a much larger one actually *collected* more recently (every refilter re-stamps
+  whatever archive it targets, so a small archive touched more often can permanently outrank a
+  big one collected later); `keyword` still applies independently even with `search` given, since
+  it's the refilter's own positive-match-term override, not just an archive-selection hint.
+
+  Each stage's own subprocess (`refilter_archive.py`/`review_with_lm_studio.py`/
+  `render_radar.py`) is invoked with `--result-json PATH`, and the manifest's
+  `reviewed`/`skipped_cached`/`failed`/`gained`/`lost`/`diff_report`/`radar` fields are read back
+  from that structured file, **not** parsed from the child's human-readable stdout — a stage that
+  exits 0 but leaves no readable result file is treated as `FAILED`, never silently zero-defaulted.
+  `settings.pipeline.stage_timeout_seconds` (shipped as `28800`/8h by default in
+  `config/settings.yaml`, `None`/unlimited if unset in a config predating this) bounds each stage
+  subprocess, launched via `Popen(start_new_session=True)` specifically so a timeout kills the
+  *whole process group* (`os.killpg`), not just the direct child — a plain `subprocess.run(...,
+  timeout=...)` only ever kills the direct child, which would leave any grandchild process it
+  spawned still running. A killed stage's partial `stdout`/`stderr` is decoded defensively
+  (`_decode_timeout_output`, `errors="replace"`) before being written to the manifest — confirmed
+  live that `TimeoutExpired.stdout`/`.stderr` can come back as raw `bytes` even under `text=True`
+  on this project's own Python, and a kill landing mid-multi-byte-UTF-8-character used to crash
+  `write_manifest()`'s `model_dump_json()` call outright instead of cleanly recording `TIMED_OUT`.
+  `status` distinguishes `complete`/`partial`/`failed`/`no_candidates`/`model_unavailable`/
+  `lock_held`/`timed_out` (`PIPELINE_NON_SUCCESS_STATUSES` in `models.py` is the canonical
+  exit-code-2 set, shared between `pipeline` and `pipeline-status`'s CLI handlers so the contract
+  can't drift between "just ran" and "polled later"). The manifest also records `pid` and
+  `pid_start_time` (`runlock.process_start_time`, a `ps -o lstart=` shell-out) — `pipeline-status`
+  compares both, not just PID liveness, before reporting a stuck `RUNNING` manifest as `abandoned`,
+  since a dead process's PID can be reused by an unrelated later process. Records
+  `profile_fingerprint`/`resume_fingerprint`/`model` on the manifest for provenance only —
+  explicitly never wired into cache invalidation, respecting the content-hash-only
+  assessment-cache principle above. The whole function body runs inside one try/except that
+  finalizes the manifest as `failed` with the real exception message on any unhandled error before
+  re-raising — without this, an archive-resolution failure in `--no-scrape` mode (no archive
+  matches the given keyword) left the manifest stuck at `running` forever, confirmed live and
+  fixed with a regression test in `test_pipeline.py`. A `RunLockHeld` (see `runlock.py` below) is
+  caught as its own `lock_held` status rather than falling into the generic `failed` branch, since
+  a concurrent run is an expected, actionable outcome, not an error.
 
 - **`src/job_hunter/rootutil.py`, `atomic.py`, `runlock.py`** — agent-runtime portability
   infrastructure. `atomic.py`/`runlock.py` are genuinely universal — every writer of a
@@ -449,10 +480,33 @@ before most commands will find a profile (falls back to the example file otherwi
   `atomic_write_text()` (temp file + `os.replace()`) backs every load-bearing JSON/HTML write —
   `assessments.json`, search archives, radar/profile-diff reports, the profile baseline snapshots
   — so a killed/interrupted process or two writers racing the same path never leaves a truncated
-  file behind. `runlock.py`'s `run_lock()` is a per-project file lock (PID-based, stale-lock
-  reclaim on a dead PID) guarding `review_with_lm_studio.py`'s write-heavy loop specifically, so a
-  second overlapping review run gets an explicit "already running" error instead of silently
-  racing the first run's `assessments.json` writes and burning duplicate local-model time.
+  file behind. `runlock.py`'s `run_lock()` is a per-project file lock (PID-based) shared under one
+  name, `"job-hunter"`, across every operation that mutates SQLite, an archive file, or
+  `assessments.json` outside of a single already-serialized review call: `job-hunter pipeline`
+  (held for the *whole* run, not just its review stage), `job-hunter cleanup --apply`,
+  `scripts/review_with_lm_studio.py`, and `scripts/refilter_archive.py`'s in-place rewrite — one
+  lock name means none of them can ever race each other, confirmed live with a direct
+  concurrency repro (a second `pipeline`/`cleanup --apply`/standalone-review run against a held
+  lock is refused with a clear `RunLockHeld` naming the holder's PID/command/start time, not
+  silently raced). Stale-lock reclaim (dead-PID lock file) retries the unlink-then-recreate
+  sequence rather than assuming a single attempt always wins, and separately retries a *read* of a
+  freshly-created lock file for up to ~200ms before concluding it's stale — a lock file is briefly
+  empty between its holder's `O_CREAT|O_EXCL` create and the following write, and a reader landing
+  in that exact window used to misread "not written yet" as "abandoned" and wrongly reclaim a lock
+  someone else had just acquired, confirmed live via a real multi-process race that intermittently
+  produced multiple simultaneous "holders" of the same lock before this hardening. Because
+  `pipeline.py` already holds this lock for the whole run before spawning
+  `review_with_lm_studio.py`/`refilter_archive.py` as stage subprocesses, and both of those
+  scripts otherwise try to acquire the identically-named lock themselves, they would deadlock
+  against their own parent — confirmed live as an immediate, reproducible failure the first time
+  this sharing was wired up. Fixed via `run_lock_or_inherited()`: `pipeline.py` generates a
+  per-acquisition capability token (`secrets.token_hex(16)`, written as a line in the lock file
+  itself) and passes it to a spawned stage subprocess via the `JOB_HUNTER_LOCK_INHERITED` env var;
+  `run_lock_or_inherited()` only treats the lock as inherited when that env var's value matches
+  `current_lock_token()`'s live read of the lock file's *current* token, falling back to a real
+  acquire on any mismatch, missing lock file, or unset env var (fails closed) — a bare boolean
+  flag was tried first and rejected once the review found that any standalone caller could set the
+  same env var themselves and skip the lock entirely with no verification a real parent held it.
 
 - **`src/job_hunter/hook_adapter.py`** — the shared logic behind the Claude Code
   (`scripts/claude_profile_hook.py`) and Hermes (`scripts/hermes_profile_hook.py`)
@@ -463,10 +517,28 @@ before most commands will find a profile (falls back to the example file otherwi
   `tool_input.path`) and calls these two shared functions — no argparse/stdin concerns live here,
   which is what makes it directly unit-testable without spawning a subprocess or faking stdin.
   `run_diff()` discovers `uv` via `shutil.which` rather than assuming it's on `PATH`, and logs
-  every failure mode (`uv` missing, non-zero exit, timeout) to `logs/profile-hook.log` instead of
-  swallowing it silently the way the previous Hermes-only hook's bare `contextlib.suppress(...)`
-  did — a hook that fails invisibly is worse than one that's merely advisory, since nothing else
-  in this pipeline would ever hint an edit-triggered report quietly stopped updating.
+  every failure mode (`uv` missing, non-zero exit, timeout, or a skip — see below) to
+  `logs/profile-hook.log` instead of swallowing it silently the way the previous Hermes-only
+  hook's bare `contextlib.suppress(...)` did — a hook that fails invisibly is worse than one
+  that's merely advisory, since nothing else in this pipeline would ever hint an edit-triggered
+  report quietly stopped updating. `run_diff()` also guards against a burst of rapid edits
+  starting several overlapping `diff_profile.py` runs (whose final written report used to depend
+  on whichever process happened to finish last, not necessarily the most recent edit): a
+  non-blocking `run_lock("profile-hook", ...)` skips this run entirely if another hook invocation
+  for the project is already mid-run, and a 5-second debounce window (a small marker file,
+  `logs/.profile-hook-last-run`) skips a run that started too soon after the last one — both
+  best-effort and logged on every skip, never silent, matching this hook's own
+  "stale-but-visible beats silently lost" philosophy; `HOOK_LOCK_NAME` (`"profile-hook"`) is
+  deliberately its own lock, separate from `runlock.py`'s shared `"job-hunter"` pipeline lock
+  above, since this hook only ever reads SQLite and rewrites the profile-diff snapshot/report —
+  a disjoint concern from `pipeline`/`cleanup --apply` that shouldn't block or be blocked by
+  either. `.claude/settings.json`'s `PostToolUse` command now invokes `scripts/run_profile_hook.sh`
+  (a portable POSIX-`sh` launcher) rather than a bare `uv run python ...` — the direct form used
+  to fail at the shell level if `uv` wasn't resolvable on the *invoking* process's `PATH`, before
+  `hook_adapter.py`'s own `shutil.which("uv")` check (which exists to diagnose the *inner* `uv
+  run` call that runs `diff_profile.py`) ever got a chance to run; the launcher locates `uv`
+  itself, falls back to a bare `python3` with a clear stderr note if only that's available, and
+  always exits 0 either way, since a hook is advisory by design.
 
 - **`storage.py`** — SQLite (WAL mode) with five tables: `jobs` (one row per `(source_key,
   job_id)`, upserted with `is_new`/`is_changed` computed from prior content hash), `runs` (one row
@@ -516,7 +588,16 @@ before most commands will find a profile (falls back to the example file otherwi
   easy to forget when the whole point was reducing disk usage. Sets `PRAGMA busy_timeout = 5000`
   on every connection — two job-hunter/agent processes legitimately hitting the same file at once
   (a search run and a concurrent review run, say) now wait briefly on lock contention instead of
-  failing immediately with "database is locked."
+  failing immediately with "database is locked." Schema evolution is tracked via SQLite's own
+  built-in `PRAGMA user_version` integer against a numbered `_MIGRATIONS` list (each entry a
+  version `N-1`→`N` function) rather than the ad-hoc `PRAGMA table_info(jobs)`-plus-conditional-
+  `ALTER TABLE` checks this used to be — a mechanism refactor, not a behavior change: the two
+  pre-existing checks (adding `visa_sponsorship`/`sponsorship_evidence`/`salary_evidence`) became
+  the first migration entries, so an existing database's `user_version` starts accurately
+  reflecting which already-shipped schema changes it's actually seen, not just future ones.
+  `_migrate()` applies every entry the connection's own `user_version` hasn't seen yet, then
+  advances `user_version` to `len(_MIGRATIONS)` — idempotent by construction, re-running it against
+  an already-current database is a no-op.
 
 - **`health.py`** — `detect_count_anomaly` flags (but does not fail) a source whose job count drops
   more than 70% from its last known count, guarding against adapters that "succeed" against a
@@ -565,6 +646,22 @@ before most commands will find a profile (falls back to the example file otherwi
   `scripts/install_skill.sh`, which also now supports `--update` (replace a stale symlink/copy,
   e.g. after a moved repo), `--uninstall`, `--dry-run`, and an explicit `--link` (named alongside
   the pre-existing `--copy`, rather than being only "the default when `--copy` isn't given").
+  `--uninstall`/`--update` both used to `rm -rf` any pre-existing destination unconditionally, with
+  no check that this installer actually put it there — a manually-placed directory, or someone
+  else's content at the same conventional path, would be silently deleted. Both are now gated on
+  an ownership check: a plain-text marker, `<destination's parent dir>/.job-hunter-installed`
+  (one installed basename per line — no JSON/parser dependency, matching this script's POSIX-`sh`-
+  only toolset), written after every real install/update; a destination with no marker yet (an
+  install made before this existed) is still recognized as owned via the same up-to-date/
+  stale-symlink-by-basename signal the function already computes for its own `OK`/`STALE`
+  reporting, so an already-live pre-marker install — this repo's own real `.claude/skills/*`
+  symlinks, concretely — keeps working without needing to be "reclaimed." A destination matching
+  neither signal is refused (`REFUSED ... (not installed by this tool; re-run with --force to
+  remove/replace anyway)`) unless the new `--force` flag is passed. Caught a real bug in this
+  fix itself before it shipped: the up-to-date branch's marker backfill was originally
+  unconditional, so a plain `--dry-run` against this repo's own real `.claude/skills/` actually
+  wrote the marker file despite `--dry-run` promising to touch nothing — fixed by gating the
+  backfill on `! dry_run`, covered by a dedicated regression test.
 
   `job-hunter search --archive` writes each run's candidate bundle to
   `data/searches/{slug}_{date}.json` (`search_archive.py`'s `archive_path()`) instead of one fixed
@@ -581,6 +678,26 @@ before most commands will find a profile (falls back to the example file otherwi
   and its radar report, since the filename previously encoded only `keyword`, never `--companies`.
   Omitting `--companies` (the overwhelming majority of real runs) leaves the filename exactly as
   before.
+
+  `resolve_search_path()`'s "newest" fallback (neither `--search` nor `--keyword` given) is raw
+  filesystem mtime — and every refilter re-stamps whatever archive it targets, so a narrow archive
+  refiltered more recently can permanently outrank a much larger one actually *collected* more
+  recently. Confirmed live as a real, user-facing gap: `job-hunter pipeline --no-scrape` (no
+  `--keyword`) silently resolved a 1-company archive over a genuine 43-company sweep collected two
+  days earlier, purely because the small one had been refiltered (and thus mtime-touched) more
+  recently. Rather than redesign mtime-based "newest" semantics itself (a larger, separate
+  decision), `pipeline --no-scrape` gained its own `--search PATH` — see the `pipeline.py` entry
+  above — as an escape hatch for a caller who already knows the exact archive;
+  `refilter_archive.py`/`render_radar.py` already had this, only the orchestrator's CLI surface
+  was missing it. For a caller who *doesn't* already know, `job-hunter resolve-search` now also
+  prints a stderr-only scope summary after resolving — `scope: N sources attempted (top 5 by job
+  count, ... +M more)`, read from the resolved archive's own `source_health` — so a mismatch like
+  the one above is visible at resolution time instead of only discoverable by opening the
+  archive's raw JSON by hand; stdout's bare-resolved-path contract (relied on by any scripted
+  `$(job-hunter resolve-search ...)` caller) is unchanged. Mtime-based resolution itself remains a
+  known, deliberately out-of-scope gap for a default no-args/no-keyword invocation that doesn't
+  already know which archive it wants.
+
   `data/assessments.json` / the SQLite `assessments` table stay deliberately **global**, never
   split per keyword or per run: a job's fitness verdict is a property of *(job, resume)*, not of
   whichever search happened to surface it, and splitting it would mean re-reviewing the same job

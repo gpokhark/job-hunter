@@ -71,6 +71,7 @@ to match your server's address.
 uv run job-hunter pipeline                              # search -> review -> radar, one command
 uv run job-hunter pipeline --keyword "ADAS,Robotics"
 uv run job-hunter pipeline --no-scrape [--review]        # re-filter + re-render, no new scrape
+uv run job-hunter pipeline --no-scrape --search <path>   # ...this exact archive, not a resolved one
 uv run job-hunter pipeline-status [--run <run-id>]       # poll/inspect a pipeline run's manifest
 
 uv run job-hunter search
@@ -103,6 +104,15 @@ section for the exact list) also takes `--project <path>`, falling back to `$JOB
 then the current directory — run job-hunter from any directory, including from inside an agent
 whose working directory isn't this checkout, without `cd`-ing in first (works whether the flag
 comes before or after the subcommand).
+
+`job-hunter pipeline` bounds each stage (search/review/refilter/radar) to
+`pipeline.stage_timeout_seconds` in `config/settings.yaml` (8 hours by default, sized to comfortably
+exceed a large sequential local-model review, not as a tight SLA) — a stage that hangs is killed
+(its whole process tree, not just the immediate subprocess) and the run finalizes as `timed_out`
+rather than hanging indefinitely; set it to `null`/comment it out for no timeout. Two overlapping
+pipeline runs (or a `pipeline` run and a `cleanup --apply`/standalone review/refilter) never race
+each other's writes to SQLite/the archive/`assessments.json` — the second one gets a clear
+`lock_held` status naming the first run's PID and command instead of corrupting shared state.
 
 Searches attempt every enabled source by default; one source's failure doesn't stop the others.
 `--new-only` limits output only — collection always observes and persists every job returned.
@@ -153,6 +163,8 @@ To refresh the HTML report from what's already in `data/searches/`/SQLite — e.
 ```bash
 uv run job-hunter pipeline --no-scrape                 # refilter + re-render, review stays cached
 uv run job-hunter pipeline --no-scrape --review         # also score whatever's newly surfaced
+uv run job-hunter pipeline --no-scrape --search data/searches/default_2026-09-15.json
+                                                         # ...this exact archive, skip resolution entirely
 ```
 
 This resolves the same archive-selection rule as everything else (`--keyword`, or the newest
@@ -160,6 +172,16 @@ archive overall if omitted), rebuilds its candidates from SQLite against the cur
 writes both the updated radar report and a gained/lost diff report, and — unlike plain
 `pipeline` mode — leaves review **off** by default, since a profile edit alone doesn't necessarily
 warrant spending local-model time; pass `--review` when it does.
+
+"Newest archive overall" is resolved by file modification time, not collection date — and every
+refilter touches (re-stamps) whatever archive it targets, so a small archive you've been
+iterating on can end up looking "newer" than a much larger one collected more recently. If you
+already know exactly which archive you want, skip resolution with `--search <path>` instead of
+relying on `--keyword`/no-args resolution. If you're not sure what a resolution will pick,
+`job-hunter resolve-search [--keyword "..."]` prints the resolved path on stdout and a one-line
+scope summary on stderr (`scope: N sources attempted (...)`) so you can sanity-check it — e.g. a
+"default" (profile-driven) archive that only ever queried one company is a sign something's off —
+before committing to it.
 
 The equivalent manual three-step version (what `pipeline --no-scrape` runs under the hood, useful
 if you want to inspect or skip a step individually) still works the same way it always has:
@@ -236,6 +258,14 @@ instead of symlinks (`--link` names the default explicitly, if you want to say s
 remove one; `--dry-run` shows what any of the above would do without touching anything. Run
 `sh scripts/install_skill.sh --help` for the full flag list.
 
+`--update`/`--uninstall` only ever touch a destination this installer can prove it owns — a
+plain-text marker (`.job-hunter-installed`, next to each install) recorded on every real install,
+falling back to "does this destination still look like what we'd install" for one made before the
+marker existed, so an already-live install keeps working without extra steps. A destination that
+matches neither (someone else's directory sitting at the same path) is refused with a clear
+message instead of being silently deleted; pass `--force` if you're sure and want to remove/replace
+it anyway.
+
 For Hermes, `sh scripts/install_skill.sh --hermes` also installs the candidate-profile
 diff hook under `~/.hermes/agent-hooks/` and registers it in `~/.hermes/config.yaml`
 (`HERMES_HOME` overrides this location for both hooks and skills). Installation needs
@@ -253,10 +283,23 @@ and Claude Code's (`.claude/settings.json`) now delegate to the same shared adap
 calls it. Edits to this checkout's `config/candidate_profile.yaml` run the same best-effort
 `diff_profile.py` check either way, generating reports in `data/profile-diff/`. `uv` is located
 via `shutil.which` rather than assumed on `PATH`, and every failure (uv missing, a non-zero exit,
-a timeout) is logged to `logs/profile-hook.log` instead of failing silently. Relative paths are
-resolved against the event's `cwd`; other profiles are ignored. Terminal-based edits are not
-covered. Restart Hermes after installing; its normal first-use hook approval still applies.
-Inspect registration with `hermes hooks list`.
+a timeout, or a skip — see below) is logged to `logs/profile-hook.log` instead of failing
+silently. Relative paths are resolved against the event's `cwd`; other profiles are ignored.
+Terminal-based edits are not covered. Restart Hermes after installing; its normal first-use hook
+approval still applies. Inspect registration with `hermes hooks list`.
+
+A burst of rapid edits touching `candidate_profile.yaml` won't start several overlapping diff
+runs — a short lock plus a 5-second debounce window collapse them into one report reflecting the
+final state, logged (never silent) whenever a run is skipped for this reason. Claude Code's own
+`PostToolUse` command now runs through `scripts/run_profile_hook.sh`, a small portable launcher
+that locates `uv` itself (falling back to a bare `python3` with a clear message if that's all
+that's available) instead of failing outright if `uv` isn't on the invoking process's `PATH`.
+Hermes's own registration in `~/.hermes/config.yaml` is now identified by the hook script's
+stable, repo-independent path rather than the full command string (which used to embed this
+checkout's absolute path) — re-running the installer after moving/re-cloning the repo replaces
+the existing registration instead of appending a second, stale one alongside it, and
+`--uninstall --hermes` can find and remove it from the new location too. `job-hunter doctor`
+reports if a Hermes registration exists but points at a hook script that no longer exists.
 
 ## Development
 
