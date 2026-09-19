@@ -153,6 +153,52 @@ def test_resolve_search_path_missing_companies_scope_raises_with_scope_in_messag
         resolve_search_path(keyword="adas", companies="honda")
 
 
+def _write_archive_with_source_health(path: Path, source_health: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"candidates": [], "source_health": source_health}))
+
+
+def test_resolve_search_cli_prints_only_the_path_on_stdout_and_scope_on_stderr(tmp_path, monkeypatch, capsys):
+    """Regression test for docs/agent-runtime-audit.md's "archive scope is invisible" gap: the
+    scope summary must never leak into stdout, since scripted callers ($(job-hunter resolve-search
+    ...)) treat stdout as the bare resolved path and nothing else."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    _write_archive_with_source_health(
+        archive, [{"source_key": "openai", "company": "OpenAI", "status": "ok", "job_count": 20}]
+    )
+
+    exit_code = main(["resolve-search", "--keyword", "default"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "data/searches/default_2026-09-17.json"
+    assert "scope: 1 source attempted (openai)" in captured.err
+
+
+def test_resolve_search_cli_scope_summary_orders_by_job_count_and_truncates(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+    archive = tmp_path / "data" / "searches" / "default_2026-09-15.json"
+    source_health = [
+        {"source_key": f"source-{n}", "company": f"Source {n}", "status": "ok", "job_count": n}
+        for n in [5, 40, 1, 82, 20, 10, 3]
+    ]
+    _write_archive_with_source_health(archive, source_health)
+
+    exit_code = main(["resolve-search", "--keyword", "default"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "data/searches/default_2026-09-15.json"
+    # Descending by job_count: source-82(82), source-40(40), source-20(20), source-10(10), source-5(5),
+    # then "+2 more" (source-3, source-1).
+    assert "scope: 7 sources attempted (source-82, source-40, source-20, source-10, source-5, ... +2 more)" in captured.err
+
+
 def _company(key: str, adapter: str, *, enabled: bool = True) -> CompanyConfig:
     return CompanyConfig(
         key=key,
@@ -307,6 +353,45 @@ def test_pipeline_no_scrape_with_companies_is_rejected_before_run_pipeline_is_ev
     exit_code = cli_module.main(["pipeline", "--no-scrape", "--companies", "honda"])
     assert exit_code == 2
     assert "--no-scrape" in capsys.readouterr().err
+
+
+def test_pipeline_search_without_no_scrape_is_rejected_before_run_pipeline_is_ever_called(
+    monkeypatch, capsys
+):
+    """--search only makes sense with --no-scrape (a live search always writes a fresh archive
+    rather than resolving an existing one) — same short-circuit-before-run_pipeline discipline as
+    the --companies+--no-scrape guard just above."""
+    import job_hunter.cli as cli_module
+
+    def _unexpected_run_pipeline(*args, **kwargs):
+        raise AssertionError("run_pipeline must not be called when --search without --no-scrape is rejected")
+
+    monkeypatch.setattr(cli_module, "run_pipeline", _unexpected_run_pipeline)
+
+    exit_code = cli_module.main(["pipeline", "--search", "data/searches/default_2026-09-15.json"])
+    assert exit_code == 2
+    assert "--search" in capsys.readouterr().err
+
+
+def test_pipeline_no_scrape_search_reaches_run_pipeline_with_the_exact_path(monkeypatch):
+    """The plumbing half of the --search fix: once past cli.py's own guard, run_pipeline must
+    receive the exact path given, not None (which would fall back to keyword/mtime resolution —
+    the whole thing this flag exists to bypass)."""
+    import job_hunter.cli as cli_module
+
+    captured = {}
+
+    async def _fake_run_pipeline(settings, project_root, **kwargs):
+        captured.update(kwargs)
+        return PipelineManifest(run_id="x", project_root=str(project_root), status=PipelineStatus.PARTIAL)
+
+    monkeypatch.setattr(cli_module, "run_pipeline", _fake_run_pipeline)
+
+    exit_code = cli_module.main(
+        ["pipeline", "--no-scrape", "--search", "data/searches/default_2026-09-15.json"]
+    )
+    assert exit_code == 0
+    assert captured["search"] == Path("data/searches/default_2026-09-15.json")
 
 
 def test_pipeline_status_reports_abandoned_for_a_dead_pid(tmp_path, monkeypatch, capsys):

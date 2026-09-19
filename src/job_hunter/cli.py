@@ -161,6 +161,17 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     pipeline.add_argument("--keyword", help="same as job-hunter search --keyword")
+    pipeline.add_argument(
+        "--search", type=Path,
+        help=(
+            "with --no-scrape only: refilter this exact archive instead of resolving one by "
+            "--keyword/newest-mtime — use when you already know which archive you want "
+            "(mtime-based resolution can pick an unexpected one, e.g. a narrow archive "
+            "refiltered more recently than a broader one actually collected later; confirmed "
+            "live, see docs/agent-runtime-audit.md). --keyword still applies independently as "
+            "the refilter's own positive-match-term override, not just an archive-selection hint."
+        ),
+    )
     pipeline.add_argument("--companies", help="same as job-hunter search --companies")
     pipeline.add_argument(
         "--limit", type=nonneg_int, help="cap on NEW reviews this run (passed through to the review stage)"
@@ -222,6 +233,32 @@ def parser() -> argparse.ArgumentParser:
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+def _archive_scope_summary(archive_path: Path) -> str:
+    """One-line, stderr-only scope summary for `resolve-search` -- how many sources an archive's
+    own `source_health` recorded as attempted, and the top few by job count -- so a caller can
+    sanity-check what a resolution actually landed on before committing to it (e.g. a --no-scrape
+    refilter) instead of discovering a mismatch only by reading the archive's raw JSON by hand.
+    Confirmed live as a real gap: mtime-based "newest" resolution picked a 1-company archive over
+    a 43-company one collected two days earlier, silently, with nothing short of opening the file
+    to reveal it (see docs/agent-runtime-audit.md). Never printed to stdout -- resolve-search's
+    stdout contract (the bare resolved path, nothing else) is relied on by scripted callers."""
+    try:
+        data = json.loads(archive_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "scope: unknown (could not read archive)"
+    source_health = data.get("source_health") or []
+    if not source_health:
+        return "scope: unknown (no source_health recorded)"
+    by_count = sorted(source_health, key=lambda h: h.get("job_count") or 0, reverse=True)
+    top = [h.get("source_key", "?") for h in by_count[:5]]
+    total = len(source_health)
+    names = ", ".join(top)
+    if total > len(top):
+        names += f", ... +{total - len(top)} more"
+    plural = "source" if total == 1 else "sources"
+    return f"scope: {total} {plural} attempted ({names})"
 
 
 def _print_cleanup_result(result: CleanupResult) -> None:
@@ -420,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "resolve-search":
             resolved = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
             print(resolved)
+            print(_archive_scope_summary(resolved), file=sys.stderr)
             return 0
         if args.command == "pipeline-status":
             run_id = args.run or latest_run_id()
@@ -469,11 +507,20 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
+            if args.search and not args.no_scrape:
+                print(
+                    "job-hunter: --search only applies to --no-scrape (a live search always "
+                    "writes a fresh archive rather than resolving an existing one) — add "
+                    "--no-scrape or drop --search",
+                    file=sys.stderr,
+                )
+                return 2
             manifest = asyncio.run(
                 run_pipeline(
                     settings,
                     Path.cwd(),
                     keyword=args.keyword,
+                    search=args.search,
                     companies_filter=args.companies,
                     limit=args.limit,
                     new_only=args.new_only,

@@ -366,6 +366,7 @@ async def run_pipeline(
     project_root: Path,
     *,
     keyword: str | None = None,
+    search: Path | str | None = None,
     companies_filter: str | None = None,
     limit: int | None = None,
     new_only: bool = False,
@@ -384,7 +385,17 @@ async def run_pipeline(
     called (refiltering re-evaluates an archive's own already-attempted source scope, not a fresh
     company selection), but the check is repeated here too as a `ValueError` so a direct caller
     (a test, or any future non-CLI embedder of this function) can't silently get a
-    `companies_filter` that quietly does nothing."""
+    `companies_filter` that quietly does nothing.
+
+    `search`, `no_scrape`-only like `review`, pins the exact archive to refilter instead of
+    resolving one by `keyword`/newest-mtime — passed straight through to `resolve_search_path()`,
+    which already treats an explicit `search` as an override that wins over `keyword` entirely
+    (see its own docstring). Added because mtime-based "newest" resolution can pick an unexpected
+    archive: a narrow archive refiltered more recently can outrank a broader one actually
+    *collected* more recently, confirmed live (see docs/agent-runtime-audit.md's dated note on
+    this). `keyword` is still independently meaningful even when `search` is given — it's the
+    refilter's own positive-match-term override, not just an archive-selection hint — so passing
+    both together is valid, not redundant."""
     if no_scrape and companies_filter:
         raise ValueError(
             "--companies has no effect with --no-scrape — refiltering re-evaluates an "
@@ -423,6 +434,7 @@ async def run_pipeline(
                 settings=settings,
                 project_root=project_root,
                 keyword=keyword,
+                search=search,
                 keywords=keywords,
                 profile=profile,
                 companies_filter=companies_filter,
@@ -465,6 +477,7 @@ async def _run_pipeline_body(
     settings: Settings,
     project_root: Path,
     keyword: str | None,
+    search: Path | str | None,
     keywords: list[str] | None,
     profile: CandidateProfile,
     companies_filter: str | None,
@@ -485,7 +498,7 @@ async def _run_pipeline_body(
         # No fresh `archive_path()` here — --no-scrape's whole point is re-evaluating an
         # archive that already exists, resolved the identical way review/radar already resolve
         # one (`--search`/`--keyword`, "newest overall" with neither given).
-        archive = resolve_search_path(search=None, keyword=keyword)
+        archive = resolve_search_path(search=search, keyword=keyword)
         manifest.archive = str(archive)
         write_manifest(manifest)
 

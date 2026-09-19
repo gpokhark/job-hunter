@@ -466,6 +466,38 @@ async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatc
     assert seen_stages[0] == PipelineStage.REFILTER
 
 
+async def test_no_scrape_search_is_passed_through_to_resolve_search_path(tmp_path, monkeypatch):
+    """Regression test for docs/agent-runtime-audit.md's "pipeline --no-scrape can't target an
+    exact archive" gap: run_pipeline(search=...) must reach resolve_search_path's own `search`
+    kwarg unchanged, not silently stay None (which would fall back to keyword/mtime resolution --
+    the exact thing --search exists to bypass, confirmed live to pick the wrong archive)."""
+    archive = tmp_path / "data" / "searches" / "default_2026-09-15.json"
+    _write_archive(archive, prefilter_candidates=0)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+
+    seen_resolve_kwargs: dict = {}
+
+    def spy_resolve_search_path(*, search=None, keyword=None):
+        seen_resolve_kwargs["search"] = search
+        seen_resolve_kwargs["keyword"] = keyword
+        return archive
+
+    monkeypatch.setattr("job_hunter.pipeline.resolve_search_path", spy_resolve_search_path)
+
+    def fake_run(cmd, **kwargs):
+        _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+        return _fake_proc()
+
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
+
+    pinned_path = tmp_path / "data" / "searches" / "default_2026-09-15.json"
+    await run_pipeline(Settings(), tmp_path, no_scrape=True, search=pinned_path, keyword="ADAS")
+
+    assert seen_resolve_kwargs["search"] == pinned_path
+    assert seen_resolve_kwargs["keyword"] == "ADAS"
+
+
 # --- structured stage results / timeouts (docs/agent-runtime-audit.md) ---
 
 

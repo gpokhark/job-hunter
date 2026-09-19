@@ -130,6 +130,46 @@ Make a bounded, documented default part of the shipped configuration. Allow an e
 
 The manifest records PID and status, but PID reuse and filesystem mtime can make an old manifest appear current. Store a run UUID, monotonic/UTC start and end timestamps, parent run UUID, lock token, and process start identity where available. Select “latest” by recorded start time, not directory mtime, and distinguish “process exists” from “this exact run still owns the process.”
 
+### P1: the same mtime-authority problem recurs for search archives, not just run manifests
+
+Found live, same session: `job-hunter --no-scrape` (no `--keyword`) was asked to refilter "the
+data collected for all companies" and silently resolved to a 1-company archive whose own
+`source_health` showed only one source ever attempted, instead of a genuine 43-company sweep
+collected two days earlier — because `resolve_search_path()`'s "newest" fallback is raw
+filesystem mtime, and *every refilter re-stamps whatever archive it targets*, so a narrow archive
+refiltered more recently can permanently outrank a broader one actually collected more recently.
+This is the identical failure mode the "run identity" finding above already names for pipeline run
+manifests, recurring in a second, independent place (search archives) that finding didn't cover.
+
+**Resolved (2026-09-18) — narrowly, not by fixing mtime-based resolution itself.** Rather than
+redesign `resolve_search_path()`'s "newest" semantics (a larger, separate decision — what should
+"newest" mean for an archive: collection date embedded in the filename? a recorded `collected_at`
+independent of refilter time?), added an escape hatch so a caller who already knows the exact
+archive never has to rely on resolution at all: `job-hunter pipeline --no-scrape` gained `--search
+PATH` (`src/job_hunter/cli.py`, `src/job_hunter/pipeline.py`'s `run_pipeline()`/
+`_run_pipeline_body()`), threaded straight through to `resolve_search_path()`'s own already-correct
+"explicit search always wins, no resolution" behavior — no changes needed there.
+`refilter_archive.py`/`render_radar.py` already had this; only the orchestrator's own CLI surface
+was missing it. Rejected together with a live search (no `--no-scrape`) the same way `--companies`
+is already rejected with `--no-scrape`, for the same reason (nothing to target). Also added
+`resolve-search`'s missing half of the picture: a stderr-only (stdout's bare-path contract for
+scripted callers is unchanged) one-line scope summary — `scope: N sources attempted (...)` — read
+from the resolved archive's own `source_health`, so a mismatch like this one is visible at
+resolution time instead of only discoverable by opening the archive's raw JSON by hand. Verified
+live against the exact archive this session needed
+(`data/searches/default_2026-09-15.json`, whose `source_health` attempted 64 sources — a larger
+number than the 43 companies represented in its surviving, post-prefilter candidates, a distinct
+count computed earlier in the same session; the scope summary intentionally reports the former,
+since "how many sources did this archive actually search" is what disambiguates it from a narrow
+archive, not "how many happened to pass the current profile's filter") resolving and refiltering
+correctly via `--search`, and `resolve-search`'s new stderr line correctly reporting scope for
+both the narrow and broad archives. Tests in `tests/test_cli.py`/`tests/test_pipeline.py`
+cover the CLI rejection, the plumbing through to `resolve_search_path()`, and the scope-summary
+formatting (ordering by job count, truncation at 5). **Still open:** mtime-based resolution itself,
+for a caller (or default no-args invocation) that doesn't already know which archive it wants —
+`--search` only helps once you know the answer, it doesn't make "newest" mean the right thing by
+default.
+
 ### P2: input validation and semantics
 
 - Numeric options such as limits, maximum candidates, ages, and timeouts should reject negative values centrally.
