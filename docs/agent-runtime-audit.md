@@ -335,6 +335,39 @@ old entry; `_is_job_hunter_hook_entry`'s own matching logic) and `tests/test_cli
 (`_hermes_hook_check`'s four OK/FAIL branches, including an unparseable `config.yaml`). 367 tests
 passing, `ruff`/`compileall` clean.
 
+**Resolved (2026-09-18) — Claude hook debounce/serialization, explicit `FileChanged` scope
+decision, and a portable launcher.** `src/job_hunter/hook_adapter.py`'s `run_diff()` now guards
+against overlapping/redundant runs from a burst of rapid profile edits two ways: a non-blocking
+`run_lock("profile-hook", ...)` (a dedicated lock name, separate from the `"job-hunter"` pipeline
+lock) skips this run outright if another hook invocation for the project is already mid-run
+(logged, not queued — the in-progress run's own report already reflects the state when *it*
+started, and the next qualifying edit triggers a fresh run once the lock is free); and a
+`DEBOUNCE_SECONDS` (5s) window skips a run if another one *started* within that window, collapsing
+several edits in the same short burst into a single report. Both verified against a real
+concurrent-lock-holder scenario and a real elapsed-time comparison, not mocked away. Explicit
+scope decision (documented in `hook_adapter.py`'s own module docstring, not left implicit): Claude
+Code's hooks reference does document a genuine `FileChanged` filesystem-watch event, independent
+of which tool touched the file — confirmed live via a doc fetch — but it was **not** wired up this
+round, because its exact stdin payload shape couldn't be confirmed against a real firing event in
+this session, and this codebase's own established discipline (every other piece of this hook
+infrastructure cites a "confirmed live" verification) treats shipping a parser for an unverified
+wire format as exactly the class of bug a mock can't catch. Coverage stays scoped to "profile
+changes made via a tool call" (`PostToolUse`/Hermes's `post_tool_call`) — an out-of-band edit
+(hand-edited in another program, a `git checkout`) won't trigger a fresh report until the next
+agent-driven edit or a manual `job-hunter pipeline --no-scrape`, an accepted, disclosed gap, not an
+oversight; the docstring names the concrete follow-up (register a temporary debug hook, trigger a
+real edit, read back the actual payload) rather than guessing at the shape. Separately, the
+`uv`-launcher problem is fixed: `.claude/settings.json` now invokes a new
+`scripts/run_profile_hook.sh` (POSIX `sh`, matching `install_skill.sh`'s existing style) instead
+of a bare `uv run python ...` — it locates `uv` itself and falls back to a clear stderr diagnostic
+(then, best-effort, bare `python3`) instead of the shell failing outright with "command not found"
+before `claude_profile_hook.py`/`hook_adapter.run_diff`'s own `uv`-missing check (which only ever
+covered the *second*, inner `uv run` call) gets a chance to run. All three of the wrapper's paths
+— real `uv` present, `uv` missing with `python3` present, neither present — were verified live via
+direct shell invocation with a manipulated `PATH` during development, not just exercised through
+mocks; `tests/test_claude_hook.py` now also covers all three as real subprocess tests. 373 tests
+passing, `ruff`/`compileall` clean.
+
 ### P1 — next reliability increment
 
 - Replace the boolean inherited-lock environment variable with a validated parent-run token.
