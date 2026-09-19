@@ -443,3 +443,11 @@ def test_zero_is_still_accepted_for_numeric_options(argv):
     args = parser().parse_args(argv)
     value = args.max_candidates if "--max-candidates" in argv else args.limit
     assert value == 0
+
+
+def test_all_companies_flag_was_removed():
+    """docs/agent-runtime-audit.md's "--all-companies is dead" finding: it parsed but did
+    nothing -- omitting --companies already means every enabled company, `search`'s unconditional
+    default. Regression test for the removal, not the flag itself."""
+    with pytest.raises(SystemExit):
+        parser().parse_args(["search", "--all-companies"])

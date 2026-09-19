@@ -1020,7 +1020,7 @@ explicit, dry-run-by-default answer:
 
 | Command | Key flags | Purpose |
 |---|---|---|
-| `search` | `--companies`, `--all-companies`, `--include-seen`/`--new-only` (mutually exclusive), `--refresh-details`, `--max-candidates`, `--keyword`, `--json`, `--output`/`--archive` (mutually exclusive), `--verbose`, `--debug` | run the collector; `--archive` writes the deterministic `data/searches/{slug}_{date}.json` path (`search_archive.py`'s `archive_path()`) |
+| `search` | `--companies` (omit for every enabled company — there is no separate `--all-companies` flag; that was a parsed-but-dead no-op, removed 2026-09-18), `--include-seen`/`--new-only` (mutually exclusive), `--refresh-details`, `--max-candidates`, `--keyword`, `--json`, `--output`/`--archive` (mutually exclusive), `--verbose`, `--debug` | run the collector; `--archive` writes the deterministic `data/searches/{slug}_{date}.json` path (`search_archive.py`'s `archive_path()`) |
 | `doctor` | — | environment sanity check (Python version, venv, config load, DB open, resume presence, required packages, DNS, headless-browser note) |
 | `source-status` | — | prints `source_health` rows |
 | `source-test` | `company` (key) | live healthcheck of one adapter |

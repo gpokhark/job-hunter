@@ -32,7 +32,6 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     search = sub.add_parser("search")
     search.add_argument("--companies")
-    search.add_argument("--all-companies", action="store_true")
     seen = search.add_mutually_exclusive_group()
     seen.add_argument("--include-seen", action="store_true")
     seen.add_argument("--new-only", action="store_true")

@@ -399,6 +399,20 @@ all). Verified live via the real CLI (`uv run job-hunter search --max-candidates
 exact error message and exit code 2, not just the test suite. 397 tests passing, `ruff`/
 `compileall` clean.
 
+**Resolved (2026-09-18) — removed the dead `--all-companies` flag.** No evidence of real demand
+for distinct semantics turned up (it was never referenced by any test, and `search`'s own
+unconditional default already covers "every enabled company" whenever `--companies` is omitted),
+so per the plan's own recommended default, it's gone from `src/job_hunter/cli.py`'s `search`
+subparser rather than given invented behavior. Also removed its two remaining doc mentions:
+`docs/SPEC.md`'s command-flag table (replaced with an explanatory note that it was a parsed-but-
+dead no-op, removed this date, so a future drift-check has the "why" on hand) and
+`skills/job-scout/SKILL.md`'s Contract section (version bumped 1.1.0 → 1.1.1, a patch bump per
+`CLAUDE.md`'s versioning rule — wording/citation trim, no behavior change to the skill's own
+procedure). New regression test in `tests/test_cli.py` confirms `parser().parse_args(["search",
+"--all-companies"])` now raises `SystemExit` (the flag is genuinely gone, not merely undocumented);
+verified live too via `uv run job-hunter search --help`, confirming it no longer appears. 398
+tests passing, `ruff`/`compileall` clean.
+
 ### P2 — maintainability and reproducibility
 
 - Centralize numeric argument validation.

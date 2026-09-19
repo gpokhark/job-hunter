@@ -40,7 +40,7 @@ touch, tests to add, and how to verify.
 - [x] 4. Relocatable Hermes hook registration (survive a moved/copied checkout)
 - [x] 5. Claude hook coverage: debounce/serialize rapid edits; decide `PostToolUse` vs `FileChanged` scope
 - [x] 6. Reject negative values on numeric CLI options
-- [ ] 7. Remove or implement `--all-companies`
+- [x] 7. Remove or implement `--all-companies`
 - [ ] 8. SQLite schema-version table
 - [ ] 9. Documentation drift: README company count, `docs/SPEC.md` onboarding section, universal `--project` claims
 - [ ] 10. Provenance fields on refiltered/stale-source-fallback output
