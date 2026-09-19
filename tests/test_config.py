@@ -18,6 +18,10 @@ def test_project_configs_validate():
     assert settings.retention.keep_latest_reports_per_slug == 2
     assert settings.search.undated_new_days == 15
     assert settings.search.undated_stale_days == 45
+    # A fresh clone must ship a safe pipeline stage-timeout default (docs/agent-runtime-audit.md's
+    # "timeout is still opt-in" finding) — the Python-level PipelineConfig default stays None/no
+    # timeout (see its own docstring), but this file's shipped value must not be commented out.
+    assert settings.pipeline.stage_timeout_seconds == 28800
 
 
 def test_search_config_undated_defaults_when_key_absent():

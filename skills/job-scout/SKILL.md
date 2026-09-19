@@ -1,6 +1,6 @@
 ---
 name: job-scout
-version: 1.1.0
+version: 1.1.1
 description: Search configured employer career sites for current U.S.-eligible jobs matching a keyword/title or the candidate profile, and archive the results for review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — this stage only searches and archives, it never scores anything.
 metadata:
@@ -28,7 +28,7 @@ Input:
 - project path (`--project`, defaults to `$JOB_HUNTER_ROOT`/cwd)
 - keyword(s) (optional, comma-joined `--keyword`; defaults to the profile's
   `target_title_terms`/`target_domains`)
-- optional `--companies`/`--all-companies` (scope to specific sources instead of every enabled one)
+- optional `--companies` (scope to specific sources instead of every enabled one)
 
 Output:
 - an archived candidate bundle at `data/searches/{slug}_{date}.json` (printed as `Archived to:

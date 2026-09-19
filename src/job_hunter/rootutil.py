@@ -43,6 +43,21 @@ def chdir_to_project_root(explicit: str | os.PathLike[str] | None = None) -> Pat
     return root
 
 
+def nonneg_int(value: str) -> int:
+    """`argparse`'s `type=` for any numeric option that's conceptually a count/limit/window
+    (`--limit`, `--max-candidates`, `--new-days`, `--min-support`, ... — docs/agent-runtime-
+    audit.md's "input validation" finding). Plain `type=int` accepts a negative value with no
+    complaint, which then flows into downstream Python — e.g. `to_review[:args.limit]` — where a
+    negative slice bound is silently *valid* Python (it means "all but the last N"), producing
+    surprising, hard-to-debug behavior instead of a clear error at the command line. Shared here,
+    not duplicated per-script, since every `scripts/*.py` entry point that defines one of these
+    options already imports from this module for `--project`/root resolution."""
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be a non-negative integer, got {value!r}")
+    return parsed
+
+
 def add_project_argument(parser: argparse.ArgumentParser, *, suppress_default: bool = False) -> None:
     """Register `--project` on `parser`. `suppress_default=True` is for a *subparser* that already
     shares this flag with its root parser: argparse re-applies a subparser's own default over

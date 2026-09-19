@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python \"${CLAUDE_PROJECT_DIR}/scripts/claude_profile_hook.py\" \"${CLAUDE_PROJECT_DIR}\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/scripts/run_profile_hook.sh\" \"${CLAUDE_PROJECT_DIR}\"",
             "statusMessage": "Regenerating candidate_profile.yaml diff report"
           }
         ]

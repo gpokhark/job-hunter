@@ -61,7 +61,7 @@ from typing import Any
 from job_hunter.active_pool import source_jobs as _pool_source_jobs
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_profile, load_settings
-from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -391,7 +391,7 @@ def _apply_collection_fallback(
     max_age_days: int,
     keywords: list[str] | None,
     now: datetime,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Ability 3 from docs/pipeline-refilter-stale-source-plan.md section 4.3: a source whose
     live collection genuinely `failed` this run still has its last-known-good jobs sitting in
     SQLite, completely untouched by that failure — this is what actually surfaces them in the
@@ -405,13 +405,19 @@ def _apply_collection_fallback(
     rather than clarify it; `unsupported` is a permanent, already-disclosed config.py state that
     never fetches jobs at all, so it never has cached data to fall back to regardless.
 
-    Returns a new list of source_issues dicts — every `failed` entry's own `message` extended
-    with the fallback note, everything else passed through unchanged — and merges any
-    qualifying, not-already-present job straight into the `candidates` dict *in place*, so the
-    caller's own scoring/tiering loop over `candidates` picks them up exactly as if they were
-    part of this run's live search output. The archive file on disk is never touched by this —
-    only the in-memory `candidates` dict this one render pass builds its HTML from, which is
-    what keeps re-running this script against the same archive idempotent.
+    Returns `(updated_source_issues, fallback_provenance)`: `updated_source_issues` is the same
+    shape as before — every `failed` entry's own `message` extended with the fallback note,
+    everything else passed through unchanged — and merges any qualifying, not-already-present job
+    straight into the `candidates` dict *in place*, so the caller's own scoring/tiering loop over
+    `candidates` picks them up exactly as if they were part of this run's live search output. The
+    archive file on disk is never touched by this — only the in-memory `candidates` dict this one
+    render pass builds its HTML from, which is what keeps re-running this script against the same
+    archive idempotent. `fallback_provenance` is new (docs/agent-runtime-audit.md's "provenance
+    fields for stale-source fallback" finding): one `{"source_key", "merged_count",
+    "last_success_at"}` record per `failed` source, structured rather than folded only into the
+    human-readable `message` prose — a caller reading `--result-json` (`job-hunter pipeline`,
+    an agent) can tell which sources in a given report came from the live run vs. this fallback,
+    and exactly when that fallback data was last actually collected, without parsing HTML.
 
     Opens exactly one `Storage` connection for the whole call (not one per failed source) and
     reads `health_rows()` once into a dict keyed by `source_key` — `source_health` is a small,
@@ -421,6 +427,7 @@ def _apply_collection_fallback(
     astemo/google failing together as a real, recurring case) should reopen the connection and
     re-scan that table once per failure either."""
     updated: list[dict[str, Any]] = []
+    fallback_provenance: list[dict[str, Any]] = []
     failed_keys = [h.get("source_key") for h in source_issues if h.get("status") == "failed"]
     last_success_by_key: dict[str, str | None] = {}
     if failed_keys:
@@ -438,13 +445,13 @@ def _apply_collection_fallback(
         source_key = health.get("source_key")
         last_success_at = last_success_by_key.get(source_key)
         base_message = health.get("message") or "No error message recorded."
+        merged = 0
         if not last_success_at:
             note = "Failed to scrape — no prior successful data available for this source."
         else:
             fallback_jobs = _pool_source_jobs(
                 database_path, source_key, profile, max_age_days, keywords=keywords, now=now
             )
-            merged = 0
             for job in fallback_jobs:
                 key = (job.source_key, job.job_id)
                 if key in candidates:
@@ -457,7 +464,14 @@ def _apply_collection_fallback(
             )
         health["message"] = f"{base_message} {note}"
         updated.append(health)
-    return updated
+        fallback_provenance.append(
+            {
+                "source_key": source_key,
+                "merged_count": merged,
+                "last_success_at": last_success_at,
+            }
+        )
+    return updated, fallback_provenance
 
 
 def build(
@@ -476,7 +490,7 @@ def build(
     max_age_days: int | None = None,
     keywords: list[str] | None = None,
     collection_fallback: bool = True,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     search = json.loads(search_path.read_text(encoding="utf-8"))
     candidates = {(c["source_key"], c["job_id"]): c for c in search["candidates"]}
     assessments = json.loads(assessments_path.read_text(encoding="utf-8"))
@@ -496,8 +510,9 @@ def build(
     # function) get exactly today's behavior — this whole block is a no-op without it, by
     # design, not merely by accident of argument defaults.
     source_issues_raw = [h for h in search.get("source_health", []) if h.get("status") != "ok"]
+    fallback_provenance: list[dict[str, Any]] = []
     if collection_fallback and database_path is not None and profile is not None and max_age_days is not None:
-        source_issues_raw = _apply_collection_fallback(
+        source_issues_raw, fallback_provenance = _apply_collection_fallback(
             source_issues=source_issues_raw, candidates=candidates, database_path=database_path,
             profile=profile, max_age_days=max_age_days, keywords=keywords, now=now,
         )
@@ -653,6 +668,11 @@ def build(
         "never_reviewed": never_reviewed,
         "source_issues": len(source_issues),
         "failed": failed_count,
+        # Structured stale-source-fallback provenance (docs/agent-runtime-audit.md's "provenance
+        # fields" finding) -- one entry per `failed` source, machine-readable rather than only
+        # ever folded into the HTML report's prose note. Empty whenever collection_fallback=False
+        # or no source failed this run.
+        "stale_source_fallback": fallback_provenance,
     }
 
 
@@ -701,13 +721,15 @@ def main() -> int:
             "is given"
         ),
     )
-    parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
     parser.add_argument(
-        "--undated-new-days", type=int, default=None,
+        "--new-days", type=nonneg_int, default=10, help="posting-age window for the [New] tag (default 10)"
+    )
+    parser.add_argument(
+        "--undated-new-days", type=nonneg_int, default=None,
         help="for jobs with no posted_at, first-seen-age window for the [New] tag (default: settings.yaml's search.undated_new_days)",
     )
     parser.add_argument(
-        "--undated-stale-days", type=int, default=None,
+        "--undated-stale-days", type=nonneg_int, default=None,
         help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
     )
     parser.add_argument(
@@ -721,9 +743,12 @@ def main() -> int:
     parser.add_argument(
         "--result-json", type=Path, default=None,
         help=(
-            "also write {\"report_path\": \"...\"} to this path on success — a structured "
-            "result for a caller (job-hunter pipeline) to read instead of parsing this "
-            "script's own human-readable stdout. Purely additive: stdout is unchanged."
+            "also write {\"report_path\": \"...\", \"stale_source_fallback\": "
+            "[{\"source_key\", \"merged_count\", \"last_success_at\"}, ...]} to this path on "
+            "success — a structured result for a caller (job-hunter pipeline) to read instead "
+            "of parsing this script's own human-readable stdout, and to know which sources in "
+            "this report came from the live run vs. the stale-source fallback (empty list when "
+            "--no-collection-fallback or no source failed). Purely additive: stdout is unchanged."
         ),
     )
     add_project_argument(parser)
@@ -762,7 +787,16 @@ def main() -> int:
         f"source_issues={stats['source_issues']} (failed={stats['failed']})"
     )
     if args.result_json is not None:
-        atomic_write_text(args.result_json, json.dumps({"report_path": str(output_path)}) + "\n")
+        atomic_write_text(
+            args.result_json,
+            json.dumps(
+                {
+                    "report_path": str(output_path),
+                    "stale_source_fallback": stats["stale_source_fallback"],
+                }
+            )
+            + "\n",
+        )
     return 0
 
 

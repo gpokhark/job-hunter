@@ -96,3 +96,69 @@ def test_missing_project_root_argv_does_not_crash_the_hook():
         input="{}", capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0
+
+
+# --- scripts/run_profile_hook.sh -- the portable launcher .claude/settings.json actually invokes
+# (docs/agent-runtime-audit.md's "Claude hook coverage" finding: the previous bare `uv run
+# python ...` command in settings.json failed at the shell level, before claude_profile_hook.py
+# or hook_adapter.py's own uv-missing diagnostic ever got a chance to run, if `uv` wasn't on the
+# invoking process's PATH). Real subprocess tests, not mocks -- this is shell script behavior
+# under different PATH contents, exactly the kind of thing a mock can't meaningfully stand in for.
+
+
+def test_wrapper_delegates_through_a_real_uv_on_path(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "candidate_profile.yaml").write_text("x: 1\n")
+    marker = tmp_path / "diff_ran.marker"
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "diff_profile.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    _install_fake_uv(tmp_path / "bin")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+
+    payload = {
+        "hook_event_name": "PostToolUse", "tool_name": "Edit",
+        "tool_input": {"file_path": "config/candidate_profile.yaml"}, "cwd": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [str(SCRIPTS / "run_profile_hook.sh"), str(tmp_path)],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert proc.returncode == 0
+    assert marker.exists()
+
+
+def test_wrapper_falls_back_to_python3_and_exits_zero_when_uv_is_missing(tmp_path):
+    """No `uv` anywhere on PATH -- the wrapper must fall back to bare `python3` (a best-effort
+    path: `job_hunter` genuinely may not be importable outside `uv run`, which is fine -- the
+    wrapper's whole job is to never let this failure mode propagate as a shell-level crash) and
+    still exit 0, matching every other failure mode in this hook chain being advisory-only."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    real_python3 = sys.executable
+    fake_python3 = bin_dir / "python3"
+    fake_python3.write_text(f"#!/bin/sh\nexec {real_python3} \"$@\"\n")
+    fake_python3.chmod(fake_python3.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    # Also need dirname/cd/pwd/echo/command for the wrapper's own script_dir resolution --
+    # exercising "no uv" specifically, not "no shell utilities at all" (a scenario already
+    # confirmed live, manually, during this fix's own development).
+    env = {"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"}
+
+    proc = subprocess.run(
+        [str(SCRIPTS / "run_profile_hook.sh"), str(tmp_path)],
+        input="{}", capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert proc.returncode == 0
+    assert "uv not found on PATH, falling back to bare python3" in proc.stderr
+
+
+def test_wrapper_exits_zero_when_neither_uv_nor_python3_is_on_path(tmp_path):
+    env = {"PATH": "/dev/null"}  # a directory-less PATH entry -- resolves nothing at all
+
+    proc = subprocess.run(
+        [str(SCRIPTS / "run_profile_hook.sh"), str(tmp_path)],
+        input="{}", capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert proc.returncode == 0
+    assert "neither uv nor python3 found on PATH" in proc.stderr

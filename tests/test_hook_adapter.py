@@ -5,10 +5,12 @@ entry point — that real stdin-payload coverage lives in `tests/test_claude_hoo
 `tests/test_hermes_hook.py` instead, per docs/skill-frontmatter-and-hook-plan.md section 5."""
 
 import subprocess
+import time
 
 import pytest
 
 from job_hunter import hook_adapter
+from job_hunter.runlock import run_lock
 
 # --- should_run_diff --------------------------------------------------------------------------
 
@@ -146,3 +148,61 @@ def test_run_diff_creates_the_logs_directory_on_first_write(tmp_path, monkeypatc
     assert not (tmp_path / "logs").exists()
     hook_adapter.run_diff(tmp_path)
     assert (tmp_path / "logs" / "profile-hook.log").exists()
+
+
+# --- debounce / serialization (docs/agent-runtime-audit.md's "no debounce/serialization" finding)
+
+
+def _fake_run_counting_calls(monkeypatch, calls: list):
+    monkeypatch.setattr(hook_adapter.shutil, "which", lambda _name: "/usr/bin/uv")
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hook_adapter.subprocess, "run", _fake_run)
+
+
+def test_second_run_within_the_debounce_window_is_skipped(tmp_path, monkeypatch):
+    calls: list = []
+    _fake_run_counting_calls(monkeypatch, calls)
+
+    assert hook_adapter.run_diff(tmp_path) is True
+    assert hook_adapter.run_diff(tmp_path) is False
+
+    assert len(calls) == 1
+    assert "debounce" in _log_text(tmp_path)
+
+
+def test_run_after_the_debounce_window_elapses_is_not_skipped(tmp_path, monkeypatch):
+    calls: list = []
+    _fake_run_counting_calls(monkeypatch, calls)
+
+    assert hook_adapter.run_diff(tmp_path) is True
+    # Backdate the debounce marker instead of a real sleep -- exercises the same comparison
+    # _recently_run makes without slowing the test suite down by DEBOUNCE_SECONDS.
+    marker = tmp_path / hook_adapter.DEBOUNCE_MARKER_RELATIVE_PATH
+    marker.write_text(str(time.time() - hook_adapter.DEBOUNCE_SECONDS - 1))
+
+    assert hook_adapter.run_diff(tmp_path) is True
+    assert len(calls) == 2
+
+
+def test_run_skipped_while_another_hook_run_holds_the_lock(tmp_path, monkeypatch):
+    """Simulates a genuinely concurrent second hook invocation (e.g. PostToolUse and FileChanged
+    both firing for the same edit) rather than a rapid-succession one -- the lock, not the
+    debounce window, is what must catch this, since both events fire at effectively the same
+    instant."""
+    calls: list = []
+    _fake_run_counting_calls(monkeypatch, calls)
+
+    lock_dir = tmp_path / hook_adapter.HOOK_LOCK_DIR_RELATIVE_PATH
+    with run_lock(hook_adapter.HOOK_LOCK_NAME, lock_dir=lock_dir):
+        assert hook_adapter.run_diff(tmp_path) is False
+
+    assert len(calls) == 0
+    assert "already in progress" in _log_text(tmp_path)
+
+    # Once the concurrent run releases the lock, a fresh call must go through normally.
+    assert hook_adapter.run_diff(tmp_path) is True
+    assert len(calls) == 1

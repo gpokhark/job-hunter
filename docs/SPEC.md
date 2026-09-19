@@ -800,14 +800,16 @@ find the real card/pagination/description selectors; write the result as a stati
 source-test <key>`. From then on every future search runs the same deterministic code — no further
 discovery or LLM involvement needed unless the site's markup changes.
 
-This whole process is encoded as the **`onboard-source`** project skill
-(`.claude/skills/onboard-source` — separate from the four job-hunter skills in §11): given a
-company name, its careers listing URL, and one sample job URL, it discovers the real backing
-system, wires up (or writes) an adapter, tests it, verifies it live, and updates
+This whole process is encoded as the **`onboard-source`** project skill (`skills/onboard-source`
+— a repo-maintenance skill for extending job-hunter itself with a new employer source, distinct
+from the end-user job-search skills described in §11; `.claude/skills/onboard-source` is a
+symlink to the same location, installed for every `install_skill.sh` target including Hermes):
+given a company name, its careers listing URL, and one sample job URL, it discovers the real
+backing system, wires up (or writes) an adapter, tests it, verifies it live, and updates
 `README.md`/`CLAUDE.md`. See its discovery playbook
-(`.claude/skills/onboard-source/references/discovery-playbook.md`) for known ATS/platform
-signatures (Workday, Oracle HCM, Lever, Phenom, SuccessFactors, ADP RM, Next.js/Nuxt/React Router
-hydration data, JSON-LD, Liferay DDM) and probing techniques.
+(`skills/onboard-source/references/discovery-playbook.md`) for known ATS/platform signatures
+(Workday, Oracle HCM, Lever, Phenom, SuccessFactors, ADP RM, Next.js/Nuxt/React Router hydration
+data, JSON-LD, Liferay DDM) and probing techniques.
 
 ---
 
@@ -1020,7 +1022,7 @@ explicit, dry-run-by-default answer:
 
 | Command | Key flags | Purpose |
 |---|---|---|
-| `search` | `--companies`, `--all-companies`, `--include-seen`/`--new-only` (mutually exclusive), `--refresh-details`, `--max-candidates`, `--keyword`, `--json`, `--output`/`--archive` (mutually exclusive), `--verbose`, `--debug` | run the collector; `--archive` writes the deterministic `data/searches/{slug}_{date}.json` path (`search_archive.py`'s `archive_path()`) |
+| `search` | `--companies` (omit for every enabled company — there is no separate `--all-companies` flag; that was a parsed-but-dead no-op, removed 2026-09-18), `--include-seen`/`--new-only` (mutually exclusive), `--refresh-details`, `--max-candidates`, `--keyword`, `--json`, `--output`/`--archive` (mutually exclusive), `--verbose`, `--debug` | run the collector; `--archive` writes the deterministic `data/searches/{slug}_{date}.json` path (`search_archive.py`'s `archive_path()`) |
 | `doctor` | — | environment sanity check (Python version, venv, config load, DB open, resume presence, required packages, DNS, headless-browser note) |
 | `source-status` | — | prints `source_health` rows |
 | `source-test` | `company` (key) | live healthcheck of one adapter |
@@ -1038,15 +1040,25 @@ explicit, dry-run-by-default answer:
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
 `source-test` returns `1` if the healthcheck itself reports failed/unsupported.
 
-**`--project <path>` / `$JOB_HUNTER_ROOT`** — a global flag available on *every* subcommand
-(registered on both the root parser and each subparser, so it works whether given before or after
-the command token — `job-hunter pipeline --project X` and `job-hunter --project X pipeline` both
-work) — resolves and `chdir`s into the given project root once, before any relative config/data
-path is touched, the same convention `git -C <path>` uses. Falls back to `$JOB_HUNTER_ROOT`, then
-the current directory (unchanged behavior for anyone already running from the repo root). Every
-`scripts/*.py` entry point accepts the identical flag via `rootutil.add_project_argument()`. This
-is what makes every command in this section (and every skill's example invocation) safe to run
-without first `cd`-ing into the repo.
+**`--project <path>` / `$JOB_HUNTER_ROOT`** — a global flag available on *every* `job-hunter`
+subcommand (registered on both the root parser and each subparser, so it works whether given
+before or after the command token — `job-hunter pipeline --project X` and `job-hunter --project X
+pipeline` both work) — resolves and `chdir`s into the given project root once, before any relative
+config/data path is touched, the same convention `git -C <path>` uses. Falls back to
+`$JOB_HUNTER_ROOT`, then the current directory (unchanged behavior for anyone already running from
+the repo root). Every **operational** `scripts/*.py` entry point accepts the identical flag via
+`rootutil.add_project_argument()` — `apply_radar_feedback.py`, `assessments_to_csv.py`,
+`diff_profile.py`, `refilter_archive.py`, `render_radar.py`, `review_with_lm_studio.py`,
+`suggest_exclusions.py`. Confirmed exceptions, by design, not oversight: `endpoint_probe.py`
+(diagnostic probing tool), `prototype_tfidf_broad_match.py` (prototype, no operational contract),
+`search_to_csv.py` (a pure stdin/stdout-shaped converter with no project-relative path to
+resolve); and the hook/installer plumbing — `claude_profile_hook.py`, `hermes_profile_hook.py`,
+`install_hermes_hook.py` — which take the project root as a *positional* argument instead, since
+each runtime's own hook-invocation convention (or `install_skill.sh`'s own shell wrapper) already
+supplies it that way, not via a `--project` flag a human types. This is what makes every command
+in this section, and every operational script above, safe to run without first `cd`-ing into the
+repo; the exceptions above are the complete, current list — re-verify with `grep -L
+add_project_argument scripts/*.py` before trusting it, since new scripts get added over time.
 
 ---
 
@@ -1060,7 +1072,7 @@ without first `cd`-ing into the repo.
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |
 | `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all six skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
-| `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` as `uv run python "${CLAUDE_PROJECT_DIR}/scripts/claude_profile_hook.py" "${CLAUDE_PROJECT_DIR}"`. |
+| `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` via `scripts/run_profile_hook.sh "${CLAUDE_PROJECT_DIR}"` — a portable POSIX-`sh` launcher (docs/agent-runtime-audit.md's "Claude hook coverage" finding) that finds `uv` itself and falls back to a clear stderr diagnostic (then, best-effort, bare `python3`) instead of the shell failing outright with "command not found" when `uv` isn't on the invoking process's `PATH` — before this script (or `hook_adapter.run_diff`'s own `shutil.which("uv")` check, which only covers the *second*, inner `uv run` call that runs `diff_profile.py`) ever gets a chance to run at all. |
 | `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
 | `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` (required). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
 | `suggest_exclusions.py` | Suggests safe `soft_exclude_terms` candidates from `job_feedback`'s `irrelevant`-tagged titles — n-gram frequency (`--min-support`, default 2) filtered against a protected set (every `assessments` row scoring ≥50, plus explicit `relevant`/`okay` labels; an `irrelevant` label always overrides that job's own stale score for this check). Prints a per-term diff preview against a real archive (default newest, or `--search`/`--keyword`) showing exactly what it would exclude and what `strong_relevance_terms` would rescue. Below-`--min-support` (single-occurrence) candidates are shown separately, not silently omitted. **Never writes to `candidate_profile.yaml`** — suggestions only. |

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from job_hunter.cli import _stealth_browser_check, archive_path, main, parser
+from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_path, main, parser
 from job_hunter.config import CompanyConfig
 from job_hunter.models import PipelineManifest, PipelineStatus
 from job_hunter.pipeline import write_manifest
@@ -206,6 +206,58 @@ def test_stealth_browser_check_ok_when_needed_and_installed(monkeypatch):
     assert "astemo" in detail and "google" in detail
 
 
+def test_hermes_hook_check_ok_when_no_hermes_home_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "no-such-hermes-home"))
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert "not configured" in detail
+
+
+def test_hermes_hook_check_ok_when_hermes_configured_but_hook_not_registered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("model: example\n")
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert "not registered" in detail
+
+
+def test_hermes_hook_check_ok_when_registered_and_script_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    hook_script = tmp_path / "agent-hooks" / "job-hunter-profile.py"
+    hook_script.parent.mkdir(parents=True)
+    hook_script.write_text("# hook\n")
+    (tmp_path / "config.yaml").write_text(
+        "hooks:\n  post_tool_call:\n"
+        f"    - command: python3 {hook_script} /some/repo\n      matcher: x\n"
+    )
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert str(hook_script) in detail
+
+
+def test_hermes_hook_check_fails_when_registered_but_script_missing(tmp_path, monkeypatch):
+    """docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding, point 4:
+    a checkout moved/deleted without ever re-running the installer from its new location leaves a
+    registration pointing at nothing -- must be a diagnosable warning, not silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    missing_hook_script = tmp_path / "agent-hooks" / "job-hunter-profile.py"
+    (tmp_path / "config.yaml").write_text(
+        "hooks:\n  post_tool_call:\n"
+        f"    - command: python3 {missing_hook_script} /some/repo\n      matcher: x\n"
+    )
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", False)
+    assert "does not exist" in detail
+
+
+def test_hermes_hook_check_fails_on_unparseable_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(":\n  - not: [valid\n")
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", False)
+    assert "did not parse" in detail
+
+
 def test_cleanup_defaults_to_dry_run():
     """--apply is required to actually delete anything — the default must be safe."""
     args = parser().parse_args(["cleanup"])
@@ -301,3 +353,101 @@ def test_pipeline_status_reports_running_for_a_live_pid(tmp_path, monkeypatch, c
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "running"
     assert "last_written_status" not in payload
+
+
+def test_pipeline_status_reports_abandoned_when_pid_was_reused(tmp_path, monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "PID reuse" finding: a live pid alone isn't proof it's the
+    *same* process the manifest was written for -- the OS can hand a dead process's pid number to
+    an unrelated later process. A manifest whose recorded `pid_start_time` doesn't match the pid's
+    real current start time must be reported as abandoned even though `pid_alive()` alone would
+    say "alive" (this test process's own pid genuinely is alive)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+
+    manifest = PipelineManifest(
+        run_id="reused-pid-run",
+        project_root=str(tmp_path),
+        pid=os.getpid(),
+        pid_start_time="Thu Jan  1 00:00:00 1970",  # never this test process's real start time
+        status=PipelineStatus.RUNNING,
+    )
+    write_manifest(manifest)
+
+    exit_code = main(["pipeline-status", "--run", "reused-pid-run"])
+
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "abandoned"
+    assert payload["last_written_status"] == "running"
+
+
+def test_pipeline_status_with_no_pid_start_time_falls_back_to_pid_only_liveness(
+    tmp_path, monkeypatch, capsys
+):
+    """A manifest written before `pid_start_time` existed (or where `ps` wasn't available at
+    record time) must keep working exactly as before -- an absent recorded value is never treated
+    as evidence of anything, only a genuine mismatch is."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+
+    manifest = PipelineManifest(
+        run_id="no-start-time-run",
+        project_root=str(tmp_path),
+        pid=os.getpid(),
+        pid_start_time=None,
+        status=PipelineStatus.RUNNING,
+    )
+    write_manifest(manifest)
+
+    exit_code = main(["pipeline-status", "--run", "no-start-time-run"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "running"
+
+
+# --- reject negative values on numeric CLI options (docs/agent-runtime-audit.md's "input
+# validation" finding) -- a bare `type=int` silently accepted a negative --limit/--max-candidates,
+# which then flowed into a downstream Python slice (`to_review[:args.limit]`) as a *valid* but
+# surprising "all but the last N" instead of a clear command-line error.
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["search", "--max-candidates", "-1"],
+        ["pipeline", "--limit", "-1"],
+        ["pipeline", "--max-candidates", "-1"],
+    ],
+)
+def test_negative_numeric_options_are_rejected_at_parse_time(argv, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        parser().parse_args(argv)
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["search", "--max-candidates", "0"],
+        ["pipeline", "--limit", "0"],
+        ["pipeline", "--max-candidates", "0"],
+    ],
+)
+def test_zero_is_still_accepted_for_numeric_options(argv):
+    """The fix rejects *negative* values specifically -- zero is a legitimate (if degenerate)
+    value for a cap/limit and must keep parsing cleanly."""
+    args = parser().parse_args(argv)
+    value = args.max_candidates if "--max-candidates" in argv else args.limit
+    assert value == 0
+
+
+def test_all_companies_flag_was_removed():
+    """docs/agent-runtime-audit.md's "--all-companies is dead" finding: it parsed but did
+    nothing -- omitting --companies already means every enabled company, `search`'s unconditional
+    default. Regression test for the removal, not the flag itself."""
+    with pytest.raises(SystemExit):
+        parser().parse_args(["search", "--all-companies"])

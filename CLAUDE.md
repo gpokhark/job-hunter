@@ -423,8 +423,21 @@ before most commands will find a profile (falls back to the example file otherwi
   `running` forever, confirmed live and fixed with a regression test in `test_pipeline.py`.
 
 - **`src/job_hunter/rootutil.py`, `atomic.py`, `runlock.py`** — agent-runtime portability
-  infrastructure, all three used by the CLI and every `scripts/*.py` entry point.
-  `rootutil.py`'s `--project`/`JOB_HUNTER_ROOT` resolve and `chdir` into the real project root
+  infrastructure. `atomic.py`/`runlock.py` are genuinely universal — every writer of a
+  load-bearing file and every lock-holder in this codebase goes through them, hook scripts
+  included. `rootutil.py`'s `--project`/`add_project_argument()` is used by the CLI and every
+  **operational** `scripts/*.py` entry point (`apply_radar_feedback.py`, `assessments_to_csv.py`,
+  `diff_profile.py`, `refilter_archive.py`, `render_radar.py`, `review_with_lm_studio.py`,
+  `suggest_exclusions.py`) — not literally every script in the directory: `endpoint_probe.py`
+  (diagnostic), `prototype_tfidf_broad_match.py` (prototype), and `search_to_csv.py` (a pure
+  stdin/stdout converter) have no operational `--project` contract, and
+  `claude_profile_hook.py`/`hermes_profile_hook.py`/`install_hermes_hook.py` take the project root
+  as a positional argument instead, via each runtime's own hook-invocation convention (or
+  `install_skill.sh`'s shell wrapper) rather than a `--project` flag — see `docs/SPEC.md`'s
+  `--project` section for the authoritative, re-verifiable list (`grep -L add_project_argument
+  scripts/*.py`).
+
+  `--project`/`$JOB_HUNTER_ROOT` resolve and `chdir` into the real project root
   once, early, before any relative config/data path is touched (`git -C <path>` semantics) — every
   config/data default in this codebase is a bare relative `Path`, resolved against whatever the
   process's CWD happens to be, so this is the single choke point that makes a command

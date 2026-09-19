@@ -4,7 +4,7 @@
 Job Hunter turns employer career pages into a focused shortlist using deterministic filters
 and local AI resume scoring. Run it with **Hermes Agent** or directly from the CLI.
 
-- **Collect:** 60 companies with implemented adapters. Add, disable, or remove sources.
+- **Collect:** 62 companies with implemented adapters. Add, disable, or remove sources.
 - **Filter:** Your profile sets repeatable rules for U.S. eligibility, relevance, and exclusions.
 - **Evaluate:** Python filters first; a local LLM scores the shortlist, saving model tokens.
 - **Reuse:** Stored jobs and cached assessments avoid repeated detail fetching and AI reviews.
@@ -36,7 +36,7 @@ to fetch stored descriptions again.
 
 ## Company coverage
 
-The [registry](config/companies.yaml) contains **63 companies: 60 with implemented adapters
+The [registry](config/companies.yaml) contains **65 companies: 62 with implemented adapters
 and 3 explicitly unsupported** (Tesla, Meta, and MathWorks). Sources include Toyota, Honda,
 Ford, NVIDIA, Apple, Google, Microsoft, Rivian, and Waymo. Check current source health with
 `source-status` or `source-test`.
@@ -96,10 +96,13 @@ uv run python scripts/diff_profile.py --remove target_domains:"some term"
 uv run python scripts/refilter_archive.py [--keyword "..."] [--search <path>] [--output <path>]
 ```
 
-Every command above (and every `scripts/*.py` entry point) also takes `--project <path>`, falling
-back to `$JOB_HUNTER_ROOT`, then the current directory — run job-hunter from any directory,
-including from inside an agent whose working directory isn't this checkout, without `cd`-ing in
-first (works whether the flag comes before or after the subcommand).
+Every command above (and every *operational* `scripts/*.py` entry point — not the diagnostic/
+prototype/converter utilities or the hook/installer scripts, which take the project root
+positionally via their own runtime's calling convention instead; see `docs/SPEC.md`'s `--project`
+section for the exact list) also takes `--project <path>`, falling back to `$JOB_HUNTER_ROOT`,
+then the current directory — run job-hunter from any directory, including from inside an agent
+whose working directory isn't this checkout, without `cd`-ing in first (works whether the flag
+comes before or after the subcommand).
 
 Searches attempt every enabled source by default; one source's failure doesn't stop the others.
 `--new-only` limits output only — collection always observes and persists every job returned.

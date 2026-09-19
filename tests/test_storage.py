@@ -1,5 +1,7 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from job_hunter import storage as storage_module
 from job_hunter.models import Assessment, Job, JobFeedback, LocationConfidence
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
@@ -250,3 +252,68 @@ def test_vacuum_runs_without_error_after_delete(tmp_path):
         storage.delete_closed_jobs(now - timedelta(days=10))
         storage.vacuum()  # must not raise
         assert storage.stats()["closed"] == 0
+
+
+# --- schema-version tracking (docs/agent-runtime-audit.md's "no explicit schema-version marker"
+# finding) -- PRAGMA user_version, not a separate table.
+
+
+def test_fresh_database_ends_up_at_the_current_schema_version(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(storage_module._MIGRATIONS)
+
+
+def test_migrate_adds_missing_columns_to_a_pre_migration_database(tmp_path):
+    """A database created before visa_sponsorship/sponsorship_evidence/salary_evidence existed
+    (no PRAGMA user_version ever set -- the SQLite default is 0) must still end up with those
+    columns and the current schema version after Storage opens it, exactly as the pre-refactor
+    ad-hoc column-presence checks already guaranteed -- this confirms the refactor preserved that
+    behavior, not just the new version-tracking mechanism."""
+    db_path = tmp_path / "jobs.sqlite3"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE jobs (
+            source_key TEXT NOT NULL, company TEXT NOT NULL, job_id TEXT NOT NULL,
+            source_platform TEXT NOT NULL, title TEXT NOT NULL, canonical_url TEXT NOT NULL,
+            us_eligible INTEGER NOT NULL,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active', missing_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(source_key, job_id)
+        );
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    with Storage(db_path) as storage:
+        columns = {row["name"] for row in storage.connection.execute("PRAGMA table_info(jobs)")}
+        assert {"visa_sponsorship", "sponsorship_evidence", "salary_evidence"} <= columns
+        version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(storage_module._MIGRATIONS)
+
+
+def test_migrate_skips_already_applied_migrations_on_a_second_open(tmp_path, monkeypatch):
+    """The whole point of tracking PRAGMA user_version: a migration a database has already been
+    upgraded past must not run again on a later open -- confirmed here by making the first
+    migration blow up if it's ever invoked more than once, rather than only checking the end
+    state looks right (which the old, purely column-presence-guarded checks would already satisfy
+    even with no real version tracking behind them)."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path):
+        pass  # first open: runs every migration, advances user_version
+
+    calls: list[int] = []
+
+    def _spy(connection):
+        calls.append(1)
+
+    monkeypatch.setattr(
+        storage_module, "_MIGRATIONS", [_spy, storage_module._migrate_v2_add_salary_evidence_column]
+    )
+
+    with Storage(db_path):
+        pass  # second open: must not re-run migration 1
+
+    assert calls == [], "migration 1 ran again on an already-migrated database"

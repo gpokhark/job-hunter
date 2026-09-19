@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, ValidationError
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Assessment
-from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
@@ -249,7 +249,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--limit",
-        type=int,
+        type=nonneg_int,
         default=None,
         help=(
             "max NEW reviews this run (default: no cap — review every eligible candidate; "

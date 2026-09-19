@@ -1,6 +1,8 @@
 import json
 import os
 import subprocess
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from job_hunter.models import PipelineManifest, PipelineStage, PipelineStatus
 from job_hunter.pipeline import (
     _decode_timeout_output,
     _fingerprint,
+    _run_stage_subprocess,
+    _StageTimedOut,
     latest_run_id,
     manifest_path,
     new_run_id,
@@ -75,6 +79,43 @@ def test_latest_run_id_with_no_runs_returns_none(tmp_path):
     assert latest_run_id(runs_dir=tmp_path / "empty") is None
 
 
+def test_latest_run_id_picks_by_started_at_not_mtime(tmp_path):
+    """docs/agent-runtime-audit.md's "run identity is not authoritative" finding: an
+    imported/copied run directory (a backup, a copy between machines) can have a newer filesystem
+    mtime than the real latest run despite its own recorded started_at being older -- mtime must
+    never be allowed to override the manifest's own timestamp."""
+    really_older = PipelineManifest(
+        run_id="really-older", project_root=str(tmp_path),
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    really_newer = PipelineManifest(
+        run_id="really-newer", project_root=str(tmp_path),
+        started_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    write_manifest(really_older, runs_dir=tmp_path)
+    write_manifest(really_newer, runs_dir=tmp_path)
+    # Reverse the mtime ordering relative to started_at -- the "really-older" manifest's file is
+    # touched to look newest on disk, exactly the "imported/copied run directory" scenario.
+    newer_mtime = manifest_path("really-newer", runs_dir=tmp_path).stat().st_mtime
+    os.utime(manifest_path("really-older", runs_dir=tmp_path), (newer_mtime + 10, newer_mtime + 10))
+
+    assert latest_run_id(runs_dir=tmp_path) == "really-newer"
+
+
+def test_latest_run_id_skips_unparseable_manifests_regardless_of_mtime(tmp_path):
+    valid = PipelineManifest(run_id="valid", project_root=str(tmp_path))
+    write_manifest(valid, runs_dir=tmp_path)
+    corrupt_dir = tmp_path / "corrupt"
+    corrupt_dir.mkdir()
+    corrupt_path = corrupt_dir / "manifest.json"
+    corrupt_path.write_text("{not valid json")
+    # Make the corrupt one look newest by mtime -- must still lose to the manifest that parses.
+    valid_mtime = manifest_path("valid", runs_dir=tmp_path).stat().st_mtime
+    os.utime(corrupt_path, (valid_mtime + 10, valid_mtime + 10))
+
+    assert latest_run_id(runs_dir=tmp_path) == "valid"
+
+
 def test_fingerprint_of_missing_path_is_none(tmp_path):
     assert _fingerprint(None) is None
     assert _fingerprint(tmp_path / "does-not-exist.yaml") is None
@@ -94,6 +135,50 @@ def test_fingerprint_changes_when_content_changes(tmp_path):
 
 def _fake_proc(stdout: str = "", stderr: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _fake_popen(fake_run):
+    """Adapts a `subprocess.run`-style fake (`fake_run(cmd, **kwargs) -> CompletedProcess`,
+    raising `subprocess.TimeoutExpired` for a timeout scenario — every test below already defines
+    one of these) into a fake `Popen`, since `_run_stage_subprocess` now calls `Popen` directly
+    rather than `subprocess.run` (process-group cancellation needs the `Popen` object itself — see
+    its own docstring). This keeps every existing per-test `fake_run` closure and assertion
+    unchanged; only the monkeypatch target moves from `subprocess.run` to `pipeline._popen` (a
+    module-level alias `_run_stage_subprocess` calls instead of `subprocess.Popen` directly —
+    patching the real `subprocess.Popen` attribute would mutate the one shared `subprocess`
+    module every other code in the process also uses, including `runlock.process_start_time`'s
+    own real `subprocess.run(["ps", ...])` call — confirmed live, see `_popen`'s docstring in
+    pipeline.py). The
+    real code's first `communicate(timeout=...)` call resolves `fake_run` directly; a raised
+    `TimeoutExpired` is re-raised so `_run_stage_subprocess` takes its kill-then-redrain path
+    (`os.killpg` on this fake's made-up pid harmlessly raises `ProcessLookupError`, caught there),
+    and the second, no-timeout `communicate()` call — the post-kill drain — returns whatever
+    stdout/stderr the test's own `TimeoutExpired` already carried, so no test needs to separately
+    describe "the process's output after being killed" from "the output that proves it was stuck"."""
+
+    class _FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self._cmd = cmd
+            self._kwargs = kwargs
+            self.pid = 999999999
+            self.returncode = 0
+            self._timeout_exc: subprocess.TimeoutExpired | None = None
+            self._resolved = False
+
+        def communicate(self, timeout=None):
+            if not self._resolved:
+                self._resolved = True
+                try:
+                    result = fake_run(self._cmd, **self._kwargs)
+                except subprocess.TimeoutExpired as exc:
+                    self._timeout_exc = exc
+                    raise
+                self.returncode = result.returncode
+                return result.stdout, result.stderr
+            exc = self._timeout_exc
+            return (exc.stdout or "", exc.stderr or "") if exc else ("", "")
+
+    return _FakeProc
 
 
 def _write_archive(path, prefilter_candidates: int) -> None:
@@ -159,7 +244,12 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
         calls.append(cmd)
         if "scripts/refilter_archive.py" in cmd:
             _write_result_json_for(
-                cmd, {"gained": 2, "lost": 1, "diff_report": "data/profile-diff/archive-default_2026-09-17-x.html"}
+                cmd,
+                {
+                    "gained": 2, "lost": 1,
+                    "diff_report": "data/profile-diff/archive-default_2026-09-17-x.html",
+                    "refiltered_at": "2026-09-17T12:00:00+00:00",
+                },
             )
             return _fake_proc()
         if "scripts/render_radar.py" in cmd:
@@ -167,7 +257,7 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -179,6 +269,9 @@ async def test_no_scrape_defaults_review_off_and_reaches_radar(tmp_path, monkeyp
     assert manifest.gained == 2
     assert manifest.lost == 1
     assert manifest.diff_report == "data/profile-diff/archive-default_2026-09-17-x.html"
+    # docs/agent-runtime-audit.md's "provenance fields" finding -- read straight through from
+    # refilter_archive.py's own --result-json, never derived/recomputed by pipeline.py itself.
+    assert manifest.refiltered_at == "2026-09-17T12:00:00+00:00"
     assert manifest.radar == "data/radar/default_2026-09-17.html"
     assert manifest.archive == str(archive)
 
@@ -204,7 +297,7 @@ async def test_no_scrape_with_review_runs_review_stage_too(tmp_path, monkeypatch
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -230,7 +323,7 @@ async def test_no_scrape_with_zero_candidates_stops_before_review_or_radar(tmp_p
             return _fake_proc()
         raise AssertionError(f"unexpected subprocess call: {cmd} (review/radar must not run)")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -254,7 +347,7 @@ async def test_no_scrape_refilter_subprocess_failure_finalizes_manifest_as_faile
         proc.stderr = "Traceback...\nFileNotFoundError: no candidate_profile.yaml\n"
         return proc
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -292,6 +385,55 @@ async def test_no_scrape_archive_resolution_failure_finalizes_manifest_instead_o
     assert manifest.completed_at is not None
 
 
+async def test_lock_inherited_stages_receive_the_real_live_lock_token(tmp_path, monkeypatch):
+    """docs/agent-runtime-audit.md's "lock bypass is caller-controlled" finding: LOCK_INHERITED_ENV
+    must carry the actual current run_lock("job-hunter") token, not a bare "1" -- verifies the env
+    dict `_run_stage_subprocess` builds for the refilter/review stages (lock_inherited=True)
+    against what's really on disk in data/locks/job-hunter.lock while `run_pipeline`'s own
+    `with run_lock("job-hunter"):` block is active, and that the radar stage (never
+    lock_inherited) gets no such env override at all."""
+    from job_hunter.runlock import LOCK_INHERITED_ENV
+
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    _write_archive(archive, prefilter_candidates=5)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+
+    seen_envs: dict[str, dict | None] = {}
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            seen_envs["refilter"] = kwargs.get("env")
+            live_lock = tmp_path / "data" / "locks" / "job-hunter.lock"
+            assert live_lock.exists(), "parent's run_lock must still be held during a stage call"
+            seen_envs["live_token_at_refilter_time"] = live_lock.read_text().splitlines()[3]
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            seen_envs["review"] = kwargs.get("env")
+            _write_result_json_for(cmd, {"reviewed": 1, "skipped_cached": 0, "failed": 0})
+            return _fake_proc()
+        if "scripts/render_radar.py" in cmd:
+            seen_envs["radar"] = kwargs.get("env")
+            _write_result_json_for(cmd, {"report_path": "data/radar/default_2026-09-17.html"})
+            return _fake_proc()
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
+
+    manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
+
+    assert manifest.status == PipelineStatus.COMPLETE
+    real_token = seen_envs["live_token_at_refilter_time"]
+    assert real_token
+    assert seen_envs["refilter"][LOCK_INHERITED_ENV] == real_token
+    assert seen_envs["review"][LOCK_INHERITED_ENV] == real_token
+    assert seen_envs["radar"] is None
+
+
 async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatch):
     """The manifest's very first written stage in --no-scrape mode is REFILTER, replacing
     SEARCH as the live-search branch's first stage — read back before the run finishes to
@@ -317,7 +459,7 @@ async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatc
         _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
         return _fake_proc()
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -345,7 +487,7 @@ async def test_run_pipeline_records_its_own_pid(tmp_path, monkeypatch):
         _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
         return _fake_proc()
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -361,7 +503,7 @@ async def test_refilter_missing_result_json_is_treated_as_failure_not_zero(tmp_p
         assert "scripts/refilter_archive.py" in cmd
         return _fake_proc()  # exits 0, writes nothing to --result-json
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -380,7 +522,7 @@ async def test_review_missing_result_json_is_treated_as_failure_not_zero(tmp_pat
             return _fake_proc()  # exits 0, writes nothing to --result-json
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
 
@@ -400,7 +542,7 @@ async def test_radar_missing_result_json_is_treated_as_failure_not_zero(tmp_path
             return _fake_proc()  # exits 0, writes nothing to --result-json
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     manifest = await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
@@ -420,7 +562,7 @@ async def test_review_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, mo
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="stuck calling LM Studio\n")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -446,7 +588,7 @@ async def test_radar_stage_timeout_sets_status_and_lets_caller_finalize(tmp_path
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -464,7 +606,7 @@ async def test_refilter_stage_timeout_finalizes_manifest_as_timed_out(tmp_path, 
         assert "scripts/refilter_archive.py" in cmd
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output="", stderr="refilter hung\n")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -523,7 +665,7 @@ async def test_review_stage_timeout_with_real_bytes_output_does_not_crash_manife
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=1, output=b"partial stdout", stderr=truncated_stderr)
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr("job_hunter.pipeline.subprocess.run", fake_run)
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
 
     settings = Settings()
     settings.pipeline.stage_timeout_seconds = 1
@@ -536,3 +678,36 @@ async def test_review_stage_timeout_with_real_bytes_output_does_not_crash_manife
     # reading it back from disk, not just from the in-memory object.
     reread = read_manifest(manifest.run_id)
     assert reread.status == PipelineStatus.TIMED_OUT
+
+
+# --- real process-tree integration test (docs/agent-runtime-audit.md's "process-group
+# cancellation" finding) -- every test above mocks subprocess.Popen, which is the right tool for
+# manifest/status-transition coverage but structurally cannot prove a whole process *group* gets
+# killed, since the fake never has real descendant processes to check. This one runs a genuine
+# subprocess with a genuine grandchild and confirms the grandchild is actually gone afterward. ---
+
+
+def test_stage_timeout_kills_the_whole_process_group_including_grandchildren(tmp_path):
+    fixture = Path(__file__).parent / "fixtures" / "scripts" / "spawn_grandchild_and_hang.py"
+    pid_file = tmp_path / "grandchild.pid"
+
+    with pytest.raises(_StageTimedOut):
+        _run_stage_subprocess(
+            [sys.executable, str(fixture), str(pid_file)],
+            project_root=Path.cwd(),
+            timeout=1,
+        )
+
+    grandchild_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    # SIGKILL delivery/reaping is not instantaneous -- poll briefly instead of asserting the very
+    # instant _run_stage_subprocess returns, to avoid a rare false failure on a loaded machine.
+    deadline = time.monotonic() + 5
+    alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(0.1)
+    assert not alive, f"grandchild pid {grandchild_pid} was still alive after the stage timeout killed its group"

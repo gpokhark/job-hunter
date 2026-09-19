@@ -3,8 +3,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from render_radar import _default_title, build  # noqa: E402
+from render_radar import _default_title, build, main  # noqa: E402
 
 from job_hunter.config import CandidateProfile
 from job_hunter.models import HealthStatus, Job, LocationConfidence, SourceHealth
@@ -107,6 +109,7 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
         "never_reviewed": 0,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert "Exceptional Role" in html
@@ -668,6 +671,7 @@ def test_never_reviewed_row_matches_scored_row_layout(tmp_path):
         "never_reviewed": 1,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert 'data-source-key="ford"' in html
@@ -928,6 +932,15 @@ def test_collection_fallback_merges_only_recency_passing_jobs_with_a_dated_note(
         f"Connection timed out. Failed to scrape today — showing 1 job(s) from the last "
         f"successful scrape on {expected_date}."
     ) in html
+    # docs/agent-runtime-audit.md's "provenance fields" finding: the same fallback info must
+    # also be available as structured data, not only folded into the HTML note's prose.
+    assert stats["stale_source_fallback"] == [
+        {
+            "source_key": "waymo",
+            "merged_count": 1,
+            "last_success_at": last_success.isoformat(),
+        }
+    ]
 
 
 def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
@@ -964,6 +977,9 @@ def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
     html = output_path.read_text()
     assert stats["never_reviewed"] == 0
     assert "DNS error. Failed to scrape — no prior successful data available for this source." in html
+    assert stats["stale_source_fallback"] == [
+        {"source_key": "waymo", "merged_count": 0, "last_success_at": None}
+    ]
 
 
 def test_collection_fallback_never_triggers_for_warning_or_unsupported_sources(tmp_path):
@@ -1103,3 +1119,14 @@ def test_no_collection_fallback_flag_disables_the_merge(tmp_path):
     assert "AV Perception Engineer" not in html
     assert "Timed out." in html
     assert "Failed to scrape" not in html  # no note appended at all when the flag disables this
+
+
+@pytest.mark.parametrize("option", ["--new-days", "--undated-new-days", "--undated-stale-days"])
+def test_negative_day_window_options_are_rejected(option, monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "input validation" finding -- argparse's own type= check
+    must reject a negative value before main() ever touches SQLite/the archive file."""
+    monkeypatch.setattr(sys, "argv", ["render_radar.py", option, "-1"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err

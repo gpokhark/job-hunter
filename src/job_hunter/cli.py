@@ -20,8 +20,8 @@ from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
 from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus
 from .pipeline import latest_run_id, read_manifest, run_pipeline
-from .rootutil import add_project_argument, chdir_to_project_root
-from .runlock import RunLockHeld, pid_alive
+from .rootutil import add_project_argument, chdir_to_project_root, nonneg_int
+from .runlock import RunLockHeld, pid_alive, process_start_time
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
@@ -32,14 +32,13 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     search = sub.add_parser("search")
     search.add_argument("--companies")
-    search.add_argument("--all-companies", action="store_true")
     seen = search.add_mutually_exclusive_group()
     seen.add_argument("--include-seen", action="store_true")
     seen.add_argument("--new-only", action="store_true")
     search.add_argument("--refresh-details", action="store_true")
     search.add_argument(
         "--max-candidates",
-        type=int,
+        type=nonneg_int,
         help="optional cap on candidates returned; none by default — every prefilter match is kept",
     )
     search.add_argument(
@@ -163,10 +162,14 @@ def parser() -> argparse.ArgumentParser:
     )
     pipeline.add_argument("--keyword", help="same as job-hunter search --keyword")
     pipeline.add_argument("--companies", help="same as job-hunter search --companies")
-    pipeline.add_argument("--limit", type=int, help="cap on NEW reviews this run (passed through to the review stage)")
+    pipeline.add_argument(
+        "--limit", type=nonneg_int, help="cap on NEW reviews this run (passed through to the review stage)"
+    )
     pipeline.add_argument("--new-only", action="store_true", help="same as job-hunter search --new-only")
     pipeline.add_argument("--refresh-details", action="store_true", help="same as job-hunter search --refresh-details")
-    pipeline.add_argument("--max-candidates", type=int, help="same as job-hunter search --max-candidates")
+    pipeline.add_argument(
+        "--max-candidates", type=nonneg_int, help="same as job-hunter search --max-candidates"
+    )
     pipeline.add_argument("--skip-review", action="store_true", help="search only; leave review/radar for later")
     pipeline.add_argument(
         "--skip-radar", action="store_true", help="search + review only; skip rendering the HTML report"
@@ -299,6 +302,44 @@ def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
     return "stealth browser", installed, detail
 
 
+def _hermes_hook_check() -> tuple[str, bool, str]:
+    """Confirms a registered Hermes profile-diff hook's own script still exists on disk —
+    catches a stale registration left pointing at a moved/deleted checkout (the relocatable-
+    registration fix in `scripts/install_hermes_hook.py` stops a *reinstall* from leaving a stale
+    entry behind, but a checkout that's moved without ever re-running `install_skill.sh --hermes`
+    from the new location is still silently broken until something surfaces it —
+    docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding, point 4). A
+    machine with no Hermes install at all (the common case) is reported OK/not-applicable, not a
+    failure — same shape as `_stealth_browser_check`'s "not needed" branch."""
+    import yaml
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    config_path = hermes_home / "config.yaml"
+    if not config_path.exists():
+        return "hermes hook", True, "not configured — no Hermes config.yaml found"
+    try:
+        config = yaml.safe_load(config_path.read_text())
+    except yaml.YAMLError as exc:
+        return "hermes hook", False, f"{config_path} did not parse: {exc}"
+    hooks = config.get("hooks") if isinstance(config, dict) else None
+    entries = hooks.get("post_tool_call") if isinstance(hooks, dict) else None
+    hook_script = hermes_home / "agent-hooks" / "job-hunter-profile.py"
+    registered = isinstance(entries, list) and any(
+        isinstance(e, dict) and isinstance(e.get("command"), str) and str(hook_script) in e["command"]
+        for e in entries
+    )
+    if not registered:
+        return "hermes hook", True, "not registered"
+    if hook_script.exists():
+        return "hermes hook", True, str(hook_script)
+    return (
+        "hermes hook",
+        False,
+        f"registered in {config_path} but {hook_script} does not exist — re-run "
+        "`scripts/install_skill.sh --hermes --update` from the current checkout",
+    )
+
+
 def doctor() -> int:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("python", sys.version_info >= (3, 11), sys.version.split()[0]))
@@ -332,6 +373,7 @@ def doctor() -> int:
     except OSError as exc:
         checks.append(("DNS", False, str(exc)))
     checks.append(_stealth_browser_check(companies))
+    checks.append(_hermes_hook_check())
     for name, ok, detail in checks:
         print(f"{'OK' if ok else 'FAIL':4} {name}: {detail}")
     return 0 if all(ok for _, ok, _ in checks) else 1
@@ -389,11 +431,26 @@ def main(argv: list[str] | None = None) -> int:
             # (killed, crashed, machine restarted) — the manifest file itself never lies about
             # what it last wrote, so this is a read-time, presentation-only verdict computed here,
             # never persisted back to the manifest (see docs/agent-runtime-audit.md's "abandoned
-            # vs. running" finding).
-            abandoned = (
-                manifest.status == PipelineStatus.RUNNING
-                and manifest.pid is not None
-                and not pid_alive(manifest.pid)
+            # vs. running" finding). `pid_alive` alone isn't sufficient: the OS can reuse a dead
+            # process's pid for an unrelated later process, which would make a genuinely-abandoned
+            # manifest look live for the wrong reason ("PID reuse" finding). When the manifest
+            # recorded `pid_start_time` (process identity, not just a number) and the pid's
+            # *current* start time can be determined right now, a mismatch means this isn't the
+            # same process anymore — treated as abandoned even though `pid_alive` alone would say
+            # "alive". Either side being unavailable (`None`) means "can't verify" and falls back
+            # to the original PID-only liveness check, never treated as evidence of reuse.
+            current_start_time = (
+                process_start_time(manifest.pid)
+                if manifest.pid is not None and manifest.pid_start_time is not None
+                else None
+            )
+            pid_reused = (
+                manifest.pid_start_time is not None
+                and current_start_time is not None
+                and current_start_time != manifest.pid_start_time
+            )
+            abandoned = manifest.status == PipelineStatus.RUNNING and manifest.pid is not None and (
+                not pid_alive(manifest.pid) or pid_reused
             )
             payload = manifest.model_dump(mode="json")
             if abandoned:

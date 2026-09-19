@@ -26,9 +26,11 @@ about instead of pretending it's not there.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -39,10 +41,27 @@ from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings, load_companies, load_profile
 from .models import PipelineManifest, PipelineStage, PipelineStatus
-from .runlock import LOCK_INHERITED_ENV, RunLockHeld, run_lock
+from .runlock import (
+    LOCK_INHERITED_ENV,
+    RunLockHeld,
+    current_lock_token,
+    process_start_time,
+    run_lock,
+)
 from .search_archive import archive_path, resolve_search_path
 
 RUNS_DIR = Path("data/runs")
+
+# Captured at import time so `_run_stage_subprocess`'s own Popen usage can be mocked in tests
+# (`monkeypatch.setattr("job_hunter.pipeline._popen", ...)`) without mutating the process-wide
+# `subprocess` module -- `subprocess.Popen`/`subprocess.run` are the *same* module object
+# everywhere they're imported (there's only ever one `sys.modules["subprocess"]`), so patching
+# `job_hunter.pipeline.subprocess.Popen` directly would also silently break any other code this
+# process calls that itself shells out via `subprocess.run`/`Popen` during the same test --
+# confirmed live: `runlock.process_start_time`'s own `subprocess.run(["ps", ...])` call (used by
+# `run_pipeline` itself when writing a fresh manifest) started raising `TypeError` once tests
+# began mocking Popen this way, since it was hitting the same globally-patched fake.
+_popen = subprocess.Popen
 
 
 class _StageTimedOut(Exception):
@@ -85,21 +104,58 @@ def _run_stage_subprocess(
     behavior). Raises `_StageTimedOut` instead of the raw `subprocess.TimeoutExpired` so callers
     have a single type to catch regardless of which stage they're running.
 
+    Uses `Popen` directly (`start_new_session=True`) rather than the `subprocess.run(...,
+    timeout=...)` convenience wrapper, specifically so a timeout can kill the child's whole
+    *process group*, not just the direct child — `subprocess.run`'s own internal timeout handling
+    calls `process.kill()` on the single immediate process only, even with `start_new_session=True`
+    set, so any grandchild that child spawned (e.g. a future adapter/script shelling out to
+    something) would otherwise survive the kill, still holding files/sockets/model connections
+    (docs/agent-runtime-audit.md's "process-group cancellation" finding). On `TimeoutExpired`
+    from the first `communicate(timeout=...)`, `os.killpg` targets the whole group; the process
+    (or its group) may have already exited in the gap between the timeout firing and this call
+    (e.g. it finished right as it was being killed), so `OSError` here is expected and swallowed,
+    not a bug. A second, no-timeout `communicate()` call afterward drains whatever partial
+    stdout/stderr the child produced before being killed — mirrors what `subprocess.run` did
+    internally, needed here since we're no longer using it.
+
     `lock_inherited=True` (refilter/review only — see their own call sites) sets
-    `LOCK_INHERITED_ENV` in the child's environment: `run_pipeline` already holds
-    `run_lock("job-hunter")` for the whole run before this subprocess is ever spawned, and both
-    of those scripts otherwise try to acquire that identically-named lock themselves, which would
-    deadlock against their own parent (confirmed live) — `run_lock_or_inherited` on their side is
-    what actually reads this env var and skips locking when it's set."""
-    env = {**os.environ, LOCK_INHERITED_ENV: "1"} if lock_inherited else None
+    `LOCK_INHERITED_ENV` in the child's environment to the *current* value of `run_pipeline`'s own
+    held `run_lock("job-hunter")` token (`current_lock_token` re-reads the live lock file rather
+    than this function needing the token threaded down as a parameter — see that helper's
+    docstring): `run_pipeline` already holds that lock for the whole run before this subprocess is
+    ever spawned, and both of those scripts otherwise try to acquire the identically-named lock
+    themselves, which would deadlock against their own parent (confirmed live) —
+    `run_lock_or_inherited` on their side is what actually reads this env var, checks it against
+    the lock file's own recorded token, and only then skips locking (docs/agent-runtime-audit.md's
+    "lock bypass is caller-controlled" finding — a bare boolean env var, trusted on its presence
+    alone, let any standalone caller skip the lock by setting it themselves). If no lock is
+    actually held right now (shouldn't happen given this function's own call sites, but fail safe
+    rather than crash on a `None` token), the env var is simply left unset, so the child falls
+    back to acquiring the lock itself."""
+    env = None
+    if lock_inherited:
+        token = current_lock_token("job-hunter")
+        if token:
+            env = {**os.environ, LOCK_INHERITED_ENV: token}
+    proc = _popen(
+        cmd,
+        cwd=project_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
     try:
-        return subprocess.run(
-            cmd, cwd=project_root, capture_output=True, text=True, timeout=timeout, env=env
-        )
-    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        stdout, stderr = proc.communicate()
         raise _StageTimedOut(
-            _decode_timeout_output(exc.stdout), _decode_timeout_output(exc.stderr)
+            _decode_timeout_output(stdout), _decode_timeout_output(stderr)
         ) from None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _finalize_timed_out(manifest: PipelineManifest, exc: _StageTimedOut, *, timeout: int | None) -> None:
@@ -151,12 +207,30 @@ def read_manifest(run_id: str, *, runs_dir: Path = RUNS_DIR) -> PipelineManifest
 
 
 def latest_run_id(*, runs_dir: Path = RUNS_DIR) -> str | None:
+    """The most recently *started* run, by each manifest's own `started_at` field — not
+    filesystem mtime (docs/agent-runtime-audit.md's "run identity is not authoritative" finding).
+    An imported/copied run directory (a backup, a copy between machines) or a partially-written
+    manifest could otherwise become "latest" purely by having a newer mtime than the real latest
+    run, even though its own recorded `started_at` is older. mtime is used only as a tiebreaker
+    between two manifests with an identical `started_at` (should be rare, given `new_run_id`'s own
+    uniqueness) — a manifest that fails to parse at all (corrupt content, or a foreign file that
+    happens to sit at that path) is never preferred over one that parses successfully, regardless
+    of either timestamp."""
     if not runs_dir.exists():
         return None
-    manifests = list(runs_dir.glob("*/manifest.json"))
-    if not manifests:
+    manifest_paths = list(runs_dir.glob("*/manifest.json"))
+    if not manifest_paths:
         return None
-    return max(manifests, key=lambda p: p.stat().st_mtime).parent.name
+
+    def sort_key(path: Path) -> tuple[int, datetime, float]:
+        try:
+            manifest = PipelineManifest.model_validate_json(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
+        except (OSError, ValueError):
+            return (0, datetime.min.replace(tzinfo=UTC), 0.0)
+        return (1, manifest.started_at, mtime)
+
+    return max(manifest_paths, key=sort_key).parent.name
 
 
 def _fingerprint(path: Path | None) -> str | None:
@@ -326,6 +400,7 @@ async def run_pipeline(
         run_id=new_run_id(),
         project_root=str(project_root),
         pid=os.getpid(),
+        pid_start_time=process_start_time(os.getpid()),
         keyword=keyword,
         stage=PipelineStage.REFILTER if no_scrape else PipelineStage.SEARCH,
         status=PipelineStatus.RUNNING,
@@ -450,6 +525,7 @@ async def _run_pipeline_body(
         manifest.gained = refilter_result.get("gained")
         manifest.lost = refilter_result.get("lost")
         manifest.diff_report = refilter_result.get("diff_report")
+        manifest.refiltered_at = refilter_result.get("refiltered_at")
         # refilter_archive.py rewrites `archive` in place with its own recomputed
         # prefilter_candidates count — re-read it so manifest.candidates means the same thing
         # here it means for a live search below, rather than staying null just because this

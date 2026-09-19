@@ -7,7 +7,7 @@ import pytest
 import respx
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from review_with_lm_studio import _extract_json, review_one  # noqa: E402
+from review_with_lm_studio import _extract_json, main, review_one  # noqa: E402
 
 _CONFIG = {"base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "timeout_seconds": 30}
 
@@ -53,3 +53,14 @@ def test_review_one_posts_expected_payload_and_parses_verdict():
             description="Build ADAS features.",
         )
     assert result == verdict
+
+
+def test_negative_limit_is_rejected(monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "input validation" finding -- a bare type=int previously let
+    --limit -1 flow into a downstream `to_review[:args.limit]` slice as a silently-valid but
+    surprising "all but the last one" instead of a clear command-line error."""
+    monkeypatch.setattr(sys, "argv", ["review_with_lm_studio.py", "--limit", "-1"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err

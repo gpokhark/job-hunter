@@ -241,23 +241,36 @@ class PipelineManifest(BaseModel):
     # (reported as `abandoned`; see cli.py's `pipeline-status` handling). `None` only for a
     # manifest written before this field existed.
     pid: int | None = None
+    # `runlock.process_start_time(pid)`'s raw `ps -o lstart=` output at the moment `pid` was
+    # recorded above -- a process-*identity* check, not just liveness, so `pipeline-status` can
+    # tell "this exact process is still running" from "the OS reused this pid number for a
+    # different, unrelated process after the original one died" (docs/agent-runtime-audit.md's
+    # "PID reuse" finding). `None` for a manifest written before this field existed, or one
+    # written where `ps` wasn't available -- `pipeline-status` falls back to PID-only liveness in
+    # either case, never treating a missing value as evidence of anything.
+    pid_start_time: str | None = None
     keyword: str | None = None
     stage: PipelineStage = PipelineStage.SEARCH
     status: PipelineStatus = PipelineStatus.RUNNING
     archive: str | None = None
     radar: str | None = None
     candidates: int | None = None
-    # Populated only by --no-scrape mode's REFILTER stage, parsed from scripts/
-    # refilter_archive.py's own stdout summary line the same way `reviewed`/`skipped_cached`
-    # below are parsed from review_with_lm_studio.py's — see pipeline.py's
-    # `_parse_refilter_output`. `gained`/`lost` name the exact vocabulary refilter_archive.py's
-    # own HTML diff report already uses (not "added"/"removed" or some other synonym), so a
-    # human reading a manifest and that report side by side sees the same two words for the
-    # same two counts. All three stay None for a live-search (non-`--no-scrape`) run, since
-    # nothing was refiltered — there was nothing to diff against.
+    # Populated only by --no-scrape mode's REFILTER stage, read from
+    # scripts/refilter_archive.py's own structured `--result-json` output (not stdout parsing —
+    # see pipeline.py's `_run_pipeline_body`). `gained`/`lost` name the exact vocabulary
+    # refilter_archive.py's own HTML diff report already uses (not "added"/"removed" or some
+    # other synonym), so a human reading a manifest and that report side by side sees the same
+    # two words for the same two counts. All four stay None for a live-search (non-`--no-scrape`)
+    # run, since nothing was refiltered — there was nothing to diff against.
     diff_report: str | None = None
     gained: int | None = None
     lost: int | None = None
+    # When this refilter actually ran (refilter_archive.py's own `now`, ISO-8601) — provenance
+    # only, same as profile_fingerprint/resume_fingerprint below: a refiltered report's contents
+    # depend on *when* it ran and against what live SQLite state, which the archive file on disk
+    # alone can't reveal (docs/agent-runtime-audit.md's "provenance fields" finding). Never used
+    # for cache invalidation or any other logic — read-only, human/agent-facing context.
+    refiltered_at: str | None = None
     reviewed: int | None = None
     skipped_cached: int | None = None
     failed: int = 0

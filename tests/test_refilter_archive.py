@@ -339,3 +339,37 @@ def test_main_writes_archive_diff_report_excluding_a_failed_sources_stale_job(mo
     gained_section = report_html.split("<h2>Gained</h2>")[1].split("<h2>Lost</h2>")[0]
     assert "Verification Lead" not in gained_section  # the failed-source job stays excluded
     assert "Nothing gained." in gained_section
+
+
+def test_result_json_includes_refiltered_at_provenance(monkeypatch, tmp_path):
+    """docs/agent-runtime-audit.md's "provenance fields" finding: --result-json must record
+    when this refilter actually ran, not just gained/lost/diff_report -- a refiltered report's
+    contents depend on *when* it ran against whatever live SQLite state existed at that instant,
+    which the archive file on disk alone can't reveal."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path):
+        pass
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings(database_path=db_path))
+    monkeypatch.chdir(tmp_path)
+
+    search_path = tmp_path / "data" / "searches" / "default_2026-09-06.json"
+    search_path.parent.mkdir(parents=True)
+    search_path.write_text(json.dumps(_archive([])))
+
+    import refilter_archive
+
+    result_json_path = tmp_path / "result.json"
+    before = datetime.now(UTC)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["refilter_archive.py", "--search", str(search_path), "--no-report", "--result-json", str(result_json_path)],
+    )
+    refilter_archive.main()
+    after = datetime.now(UTC)
+
+    result = json.loads(result_json_path.read_text())
+    assert set(result.keys()) == {"gained", "lost", "diff_report", "refiltered_at"}
+    refiltered_at = datetime.fromisoformat(result["refiltered_at"])
+    assert before <= refiltered_at <= after
