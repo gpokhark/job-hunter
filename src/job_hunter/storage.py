@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +10,47 @@ from typing import Any
 from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth
 from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
+
+
+def _migrate_v1_add_sponsorship_columns(connection: sqlite3.Connection) -> None:
+    """`jobs.visa_sponsorship`/`sponsorship_evidence`, added when `sponsorship.py` shipped —
+    `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already exists, so a
+    database created before these columns existed needs them added explicitly. Column-presence-
+    guarded (safe to run against a database that already has them, from `CREATE TABLE`'s own
+    current definition or a prior un-versioned run of this same check) — existing rows backfill
+    the next time each job is successfully re-fetched, same as any other collected field."""
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    if "visa_sponsorship" not in existing:
+        connection.execute(
+            "ALTER TABLE jobs ADD COLUMN visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned'"
+        )
+    if "sponsorship_evidence" not in existing:
+        connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
+
+
+def _migrate_v2_add_salary_evidence_column(connection: sqlite3.Connection) -> None:
+    """`jobs.salary_evidence`, added when `salary.py` shipped — same column-presence-guarded
+    shape as migration 1, for the same reason."""
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    if "salary_evidence" not in existing:
+        connection.execute("ALTER TABLE jobs ADD COLUMN salary_evidence TEXT")
+
+
+#: Ordered, 1-indexed migration steps — entry `N` (1-based) upgrades a database from schema
+#: version `N-1` to version `N`. Tracked via SQLite's own built-in `PRAGMA user_version` integer
+#: (docs/agent-runtime-audit.md's "no explicit schema-version marker" finding) rather than a
+#: separate table — `_migrate()` applies only the entries a given database's current
+#: `user_version` hasn't seen yet, then advances `user_version` to `len(_MIGRATIONS)`. These first
+#: two entries are a *refactor* of the mechanism, not a behavior change: they're the exact same
+#: column-presence checks `_migrate()` already ran unconditionally on every call before this —
+#: wrapping them in numbered, skippable steps is what lets a *future* migration (a rename, a type
+#: change, a data backfill with side effects — something that can't just be re-run harmlessly)
+#: rely on an accurate "has this database already seen this specific change" instead of
+#: re-deriving it from scratch each time.
+_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migrate_v1_add_sponsorship_columns,
+    _migrate_v2_add_salary_evidence_column,
+]
 
 
 class Storage:
@@ -82,19 +123,22 @@ class Storage:
         self.connection.commit()
 
     def _migrate(self) -> None:
-        """CREATE TABLE IF NOT EXISTS never adds a column to a table that already exists —
-        an existing database predates visa_sponsorship/sponsorship_evidence, so add them
-        explicitly if missing. Existing rows backfill the next time each job is
-        successfully re-fetched, same as any other collected field."""
-        existing = {row["name"] for row in self.connection.execute("PRAGMA table_info(jobs)")}
-        if "visa_sponsorship" not in existing:
-            self.connection.execute(
-                "ALTER TABLE jobs ADD COLUMN visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned'"
-            )
-        if "sponsorship_evidence" not in existing:
-            self.connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
-        if "salary_evidence" not in existing:
-            self.connection.execute("ALTER TABLE jobs ADD COLUMN salary_evidence TEXT")
+        """Applies every `_MIGRATIONS` entry a database's own `PRAGMA user_version` (SQLite's
+        built-in integer schema-version pragma, defaulting to `0` for a database that's never
+        set it) hasn't seen yet, then advances `user_version` to `len(_MIGRATIONS)` — see
+        `_MIGRATIONS`' own docstring for why this is a mechanism refactor, not a behavior change,
+        for the two migrations that exist today. Idempotent by construction: a database already
+        at the current version runs zero migrations on a second call (confirmed in
+        `tests/test_storage.py`)."""
+        current_version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        for version, migration in enumerate(_MIGRATIONS, start=1):
+            if version <= current_version:
+                continue
+            migration(self.connection)
+        if current_version < len(_MIGRATIONS):
+            # PRAGMA doesn't accept bound parameters for its value -- safe here since
+            # len(_MIGRATIONS) is a fixed, program-controlled integer, never user input.
+            self.connection.execute(f"PRAGMA user_version = {len(_MIGRATIONS)}")
 
     def begin_run(self, run_id: str, started_at: datetime) -> None:
         self.connection.execute(

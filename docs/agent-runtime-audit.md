@@ -421,6 +421,25 @@ tests passing, `ruff`/`compileall` clean.
 - Add an automated documentation/skill example consistency check.
 - Add license, supported-platform, and generated-file ownership documentation.
 
+**Resolved (2026-09-18) — SQLite schema-version tracking via `PRAGMA user_version`.**
+`src/job_hunter/storage.py`'s `_migrate()` no longer unconditionally re-runs every ad-hoc
+column-presence check on every `Storage` open — it's now a numbered, ordered `_MIGRATIONS` list
+(`_migrate_v1_add_sponsorship_columns`, `_migrate_v2_add_salary_evidence_column`, the exact same
+checks as before, refactored not rewritten), applied only past whatever `PRAGMA user_version`
+(SQLite's own built-in integer pragma — no separate table needed) the database already records,
+then advances `user_version` to `len(_MIGRATIONS)`. A database that's never set the pragma
+defaults to `0`, so both a brand-new database and a pre-existing one created before this refactor
+shipped get every migration applied once, then a correct version recorded going forward. Verified
+live against this worktree's own real `data/jobs.sqlite3` (`PRAGMA user_version` reads back `2`
+after opening it through `Storage`). New coverage in `tests/test_storage.py`: a fresh database
+ends up at the current version; a hand-constructed pre-migration database (a `jobs` table missing
+`visa_sponsorship`/`sponsorship_evidence`/`salary_evidence`, `user_version` at its `0` default)
+gets those columns and the current version after `Storage` opens it; and — the test that actually
+exercises the *version-gating* itself, not just column-presence idempotency the old code already
+had — re-opening an already-migrated database with a spied `_MIGRATIONS[0]` that records every
+call confirms migration 1 is never invoked a second time. 401 tests passing, `ruff`/`compileall`
+clean.
+
 ## Definition of done for the next audit
 
 The next audit should be able to demonstrate all of the following from a clean temporary clone:
