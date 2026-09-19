@@ -177,6 +177,139 @@ def test_copy_mode_reports_stale_when_source_changes(tmp_path):
     assert "<!-- drifted -->" not in (dest / "SKILL.md").read_text()
 
 
+def test_manifest_is_written_on_fresh_install(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = _run(["--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    manifest = home / ".claude" / "skills" / ".job-hunter-installed"
+    assert manifest.exists()
+    lines = manifest.read_text().splitlines()
+    assert set(lines) == SIX_SKILLS
+
+
+def test_uninstall_refuses_a_destination_this_tool_never_installed(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    dest = home / ".claude" / "skills" / "job-hunter"
+    dest.mkdir(parents=True)
+    (dest / "notes.txt").write_text("someone's own content, not ours")
+
+    proc = _run(["--uninstall", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"REFUSED {dest} (not installed by this tool; re-run with --force to remove anyway)" in proc.stdout
+    assert dest.is_dir()
+    assert (dest / "notes.txt").exists()
+
+
+def test_uninstall_force_removes_an_unowned_destination_anyway(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    dest = home / ".claude" / "skills" / "job-hunter"
+    dest.mkdir(parents=True)
+    (dest / "notes.txt").write_text("someone's own content, not ours")
+
+    proc = _run(["--uninstall", "--force", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"REMOVED {dest}" in proc.stdout
+    assert not dest.exists()
+
+
+def test_update_refuses_an_unowned_destination(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    dest = home / ".claude" / "skills" / "job-hunter"
+    dest.mkdir(parents=True)
+    (dest / "notes.txt").write_text("someone's own content, not ours")
+
+    proc = _run(["--update", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"REFUSED {dest} (not installed by this tool; re-run with --force to replace anyway)" in proc.stdout
+    assert (dest / "notes.txt").exists()
+
+
+def test_uninstall_removes_manifest_entry_too(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _run(["--claude-global"], home=home)
+    manifest = home / ".claude" / "skills" / ".job-hunter-installed"
+    assert manifest.exists()
+
+    proc = _run(["--uninstall", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    # All six skills were the manifest's only entries -- removing all of them leaves it empty,
+    # not stale with names for skills that no longer exist at their destinations.
+    assert manifest.read_text().strip() == ""
+
+
+def test_pre_existing_symlink_install_without_a_manifest_is_still_updatable_and_uninstallable(tmp_path):
+    """The key backward-compatibility case: an install made by a version of this script before
+    the ownership marker existed (simulated here by hand-symlinking, deliberately bypassing the
+    part of the script that would normally write the marker) must not suddenly require --force."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dest_dir = home / ".claude" / "skills"
+    dest_dir.mkdir(parents=True)
+    correct_source = REPO_ROOT / "skills" / "job-hunter"
+    dest = dest_dir / "job-hunter"
+    dest.symlink_to(correct_source)
+    assert not (dest_dir / ".job-hunter-installed").exists()
+
+    # A plain re-run recognizes it as already up to date (no marker needed) and backfills the
+    # marker for next time.
+    proc = _run(["--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"OK {dest} (already up to date)" in proc.stdout
+    manifest = dest_dir / ".job-hunter-installed"
+    assert manifest.exists()
+    assert "job-hunter" in manifest.read_text().splitlines()
+
+    # And --uninstall succeeds on it without --force.
+    uninstall = _run(["--uninstall", "--claude-global"], home=home)
+    assert f"REMOVED {dest}" in uninstall.stdout
+    assert not dest.exists()
+
+
+def test_dry_run_against_an_already_up_to_date_legacy_install_writes_nothing(tmp_path):
+    """Regression test: an earlier version of the up-to-date branch called manifest_add()
+    unconditionally, so a plain --dry-run re-run against a pre-marker install that's already
+    correct (this repo's own real .claude/skills/* symlinks, concretely) silently created the
+    marker file despite --dry-run promising to touch nothing. --dry-run must stay a true no-op
+    even on the backfill path."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dest_dir = home / ".claude" / "skills"
+    dest_dir.mkdir(parents=True)
+    correct_source = REPO_ROOT / "skills" / "job-hunter"
+    dest = dest_dir / "job-hunter"
+    dest.symlink_to(correct_source)
+
+    proc = _run(["--dry-run", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"OK {dest} (already up to date)" in proc.stdout
+    assert not (dest_dir / ".job-hunter-installed").exists()
+
+
+def test_pre_existing_stale_symlink_by_basename_is_still_owned_without_force(tmp_path):
+    """A stale symlink (e.g. from a moved repo) with no manifest entry is still recognized as
+    ours by basename shape, so --update can fix it without requiring --force."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _run(["--claude-global"], home=home)
+    dest = home / ".claude" / "skills" / "job-hunter"
+    manifest = home / ".claude" / "skills" / ".job-hunter-installed"
+    manifest.unlink()  # simulate a pre-marker install: no record at all
+    stale_target = tmp_path / "moved-repo" / "skills" / "job-hunter"
+    dest.unlink()
+    dest.symlink_to(stale_target)
+
+    proc = _run(["--update", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert "REFUSED" not in proc.stdout
+    correct_source = str(REPO_ROOT / "skills" / "job-hunter")
+    assert os.readlink(dest) == correct_source
+
+
 def test_hermes_install_and_uninstall_round_trip(tmp_path):
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -191,6 +324,13 @@ def test_hermes_install_and_uninstall_round_trip(tmp_path):
     config = hermes_home / "config.yaml"
     assert config.exists()
     assert "job-hunter-profile.py" in config.read_text()
+
+    # The hook script symlink routes through the same install_one() as every skill, so it gets
+    # the identical ownership-marker protection with no separate code path.
+    skills_manifest = hermes_home / "skills" / ".job-hunter-installed"
+    assert set(skills_manifest.read_text().splitlines()) == SIX_SKILLS
+    hooks_manifest = hermes_home / "agent-hooks" / ".job-hunter-installed"
+    assert hooks_manifest.read_text().splitlines() == ["job-hunter-profile.py"]
 
     uninstall = _run(["--uninstall", "--hermes"], home=home, hermes_home=hermes_home, timeout=180)
     assert uninstall.returncode == 0, uninstall.stderr
