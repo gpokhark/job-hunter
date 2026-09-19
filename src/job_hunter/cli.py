@@ -299,6 +299,44 @@ def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
     return "stealth browser", installed, detail
 
 
+def _hermes_hook_check() -> tuple[str, bool, str]:
+    """Confirms a registered Hermes profile-diff hook's own script still exists on disk —
+    catches a stale registration left pointing at a moved/deleted checkout (the relocatable-
+    registration fix in `scripts/install_hermes_hook.py` stops a *reinstall* from leaving a stale
+    entry behind, but a checkout that's moved without ever re-running `install_skill.sh --hermes`
+    from the new location is still silently broken until something surfaces it —
+    docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding, point 4). A
+    machine with no Hermes install at all (the common case) is reported OK/not-applicable, not a
+    failure — same shape as `_stealth_browser_check`'s "not needed" branch."""
+    import yaml
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    config_path = hermes_home / "config.yaml"
+    if not config_path.exists():
+        return "hermes hook", True, "not configured — no Hermes config.yaml found"
+    try:
+        config = yaml.safe_load(config_path.read_text())
+    except yaml.YAMLError as exc:
+        return "hermes hook", False, f"{config_path} did not parse: {exc}"
+    hooks = config.get("hooks") if isinstance(config, dict) else None
+    entries = hooks.get("post_tool_call") if isinstance(hooks, dict) else None
+    hook_script = hermes_home / "agent-hooks" / "job-hunter-profile.py"
+    registered = isinstance(entries, list) and any(
+        isinstance(e, dict) and isinstance(e.get("command"), str) and str(hook_script) in e["command"]
+        for e in entries
+    )
+    if not registered:
+        return "hermes hook", True, "not registered"
+    if hook_script.exists():
+        return "hermes hook", True, str(hook_script)
+    return (
+        "hermes hook",
+        False,
+        f"registered in {config_path} but {hook_script} does not exist — re-run "
+        "`scripts/install_skill.sh --hermes --update` from the current checkout",
+    )
+
+
 def doctor() -> int:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("python", sys.version_info >= (3, 11), sys.version.split()[0]))
@@ -332,6 +370,7 @@ def doctor() -> int:
     except OSError as exc:
         checks.append(("DNS", False, str(exc)))
     checks.append(_stealth_browser_check(companies))
+    checks.append(_hermes_hook_check())
     for name, ok, detail in checks:
         print(f"{'OK' if ok else 'FAIL':4} {name}: {detail}")
     return 0 if all(ok for _, ok, _ in checks) else 1

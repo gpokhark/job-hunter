@@ -308,6 +308,33 @@ reversed mtime; an unparseable manifest never wins regardless of mtime), `tests/
 `pid_start_time` doesn't match reality, and unchanged `running` behavior when no `pid_start_time`
 was ever recorded). 359 tests passing, `ruff`/`compileall` clean.
 
+**Resolved (2026-09-18) — relocatable Hermes hook registration.** `scripts/install_hermes_hook.py`
+no longer identifies a job-hunter registration by its *entire* command string (which embedded the
+absolute `repo_root`) — a new `_is_job_hunter_hook_entry()` matches on the stable, repo-independent
+hook-script path (`hermes_home/agent-hooks/job-hunter-profile.py`, exact-arg match via
+`shlex.split`, not a bare substring check) instead. `install()` now removes every existing entry
+matching that marker before appending the fresh one (printing how many stale registrations it
+replaced), so re-running `install_skill.sh --hermes` after the checkout moved replaces the old
+entry instead of accumulating a second one pointing at a path that no longer has the repo;
+`uninstall()` uses the same marker, so it can now find and remove a registration that was
+originally written with a *different* `repo_root` than the one it's invoked with. Left the
+bare-`python3` interpreter naming untouched, deliberately — the plan calls that out as a smaller,
+separate concern from path relocation, and `hermes_profile_hook.py` does `from job_hunter import
+hook_adapter` at module scope, so switching to invoking the script directly (relying on its own
+`#!/usr/bin/env python3` shebang) wouldn't actually fix any real interpreter-mismatch risk without
+also solving how `job_hunter` becomes importable outside `uv run` — a separate, untested change
+better left for its own follow-up. Also added `job-hunter doctor`'s new `_hermes_hook_check()`:
+reports `OK`/"not configured" when there's no Hermes install at all (the common case — never a
+failure), `OK`/"not registered" when Hermes exists but this hook isn't in it, `OK` with the script
+path when registered and the script is actually present, and `FAIL` — "registered ... but
+`<path>` does not exist" — for exactly the stale-registration case this whole fix is about, so a
+moved checkout that never re-ran the installer from its new location is now diagnosable instead of
+silently inert. New coverage: `tests/test_hermes_hook.py` (reinstall-from-a-different-repo-root
+replaces rather than duplicates; uninstall-from-a-different-repo-root still finds and removes the
+old entry; `_is_job_hunter_hook_entry`'s own matching logic) and `tests/test_cli.py`
+(`_hermes_hook_check`'s four OK/FAIL branches, including an unparseable `config.yaml`). 367 tests
+passing, `ruff`/`compileall` clean.
+
 ### P1 — next reliability increment
 
 - Replace the boolean inherited-lock environment variable with a validated parent-run token.

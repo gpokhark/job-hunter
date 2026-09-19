@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from job_hunter.cli import _stealth_browser_check, archive_path, main, parser
+from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_path, main, parser
 from job_hunter.config import CompanyConfig
 from job_hunter.models import PipelineManifest, PipelineStatus
 from job_hunter.pipeline import write_manifest
@@ -204,6 +204,58 @@ def test_stealth_browser_check_ok_when_needed_and_installed(monkeypatch):
     )
     assert (name, ok) == ("stealth browser", True)
     assert "astemo" in detail and "google" in detail
+
+
+def test_hermes_hook_check_ok_when_no_hermes_home_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "no-such-hermes-home"))
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert "not configured" in detail
+
+
+def test_hermes_hook_check_ok_when_hermes_configured_but_hook_not_registered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("model: example\n")
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert "not registered" in detail
+
+
+def test_hermes_hook_check_ok_when_registered_and_script_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    hook_script = tmp_path / "agent-hooks" / "job-hunter-profile.py"
+    hook_script.parent.mkdir(parents=True)
+    hook_script.write_text("# hook\n")
+    (tmp_path / "config.yaml").write_text(
+        "hooks:\n  post_tool_call:\n"
+        f"    - command: python3 {hook_script} /some/repo\n      matcher: x\n"
+    )
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", True)
+    assert str(hook_script) in detail
+
+
+def test_hermes_hook_check_fails_when_registered_but_script_missing(tmp_path, monkeypatch):
+    """docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding, point 4:
+    a checkout moved/deleted without ever re-running the installer from its new location leaves a
+    registration pointing at nothing -- must be a diagnosable warning, not silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    missing_hook_script = tmp_path / "agent-hooks" / "job-hunter-profile.py"
+    (tmp_path / "config.yaml").write_text(
+        "hooks:\n  post_tool_call:\n"
+        f"    - command: python3 {missing_hook_script} /some/repo\n      matcher: x\n"
+    )
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", False)
+    assert "does not exist" in detail
+
+
+def test_hermes_hook_check_fails_on_unparseable_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(":\n  - not: [valid\n")
+    name, ok, detail = _hermes_hook_check()
+    assert (name, ok) == ("hermes hook", False)
+    assert "did not parse" in detail
 
 
 def test_cleanup_defaults_to_dry_run():

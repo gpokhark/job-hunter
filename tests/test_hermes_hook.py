@@ -100,6 +100,60 @@ def test_uninstall_with_no_config_does_not_raise(tmp_path):
     assert not (tmp_path / "config.yaml").exists()
 
 
+# --- relocation: install/uninstall must key off the stable hook-script path, not the exact
+# command string (docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding)
+
+
+def test_reinstalling_from_a_different_repo_root_replaces_the_stale_entry(tmp_path, capsys):
+    """The core relocation bug: re-running install() after the checkout moved (or was re-cloned
+    to a new path) used to append a *second*, different-path entry instead of replacing the first
+    one, since the old identity check was the entire command string including repo_root."""
+    installer = load("install_hermes_hook")
+    config = tmp_path / "config.yaml"
+    config.write_text("model: example\nhooks:\n  post_tool_call:\n    - command: existing\n")
+
+    installer.install(tmp_path, tmp_path / "old-checkout-location")
+    installer.install(tmp_path, tmp_path / "new-checkout-location")
+
+    parsed = yaml.safe_load(config.read_text())
+    entries = parsed["hooks"]["post_tool_call"]
+    job_hunter_entries = [e for e in entries if "job-hunter-profile.py" in e.get("command", "")]
+    assert len(job_hunter_entries) == 1
+    assert "new-checkout-location" in job_hunter_entries[0]["command"]
+    assert "old-checkout-location" not in job_hunter_entries[0]["command"]
+    # The unrelated pre-existing entry must survive untouched.
+    assert {"command": "existing"} in entries
+
+    output = capsys.readouterr().out
+    assert "replaced 1 stale registration" in output
+
+
+def test_uninstall_removes_a_registration_from_any_repo_root(tmp_path):
+    """Running --uninstall from the *new* checkout location must still find and remove a
+    registration that was originally written with the *old* repo_root embedded — the whole point
+    of matching by hook-script path instead of exact command string."""
+    installer = load("install_hermes_hook")
+    config = tmp_path / "config.yaml"
+    config.write_text("hooks:\n  post_tool_call:\n    - command: existing\n")
+
+    installer.install(tmp_path, tmp_path / "old-checkout-location")
+    installer.uninstall(tmp_path, tmp_path / "new-checkout-location")
+
+    parsed = yaml.safe_load(config.read_text())
+    assert parsed["hooks"]["post_tool_call"] == [{"command": "existing"}]
+
+
+def test_is_job_hunter_hook_entry_ignores_repo_root_but_requires_the_hook_script_path(tmp_path):
+    installer = load("install_hermes_hook")
+    matches = installer._is_job_hunter_hook_entry
+    hook_script = installer._hook_script_path(tmp_path)
+    assert matches({"command": f"python3 {hook_script} /any/repo"}, tmp_path)
+    assert matches({"command": f"python3 {hook_script} /a/different/repo"}, tmp_path)
+    assert not matches({"command": "some other unrelated command"}, tmp_path)
+    assert not matches("not-a-dict", tmp_path)
+    assert not matches({"command": 123}, tmp_path)
+
+
 # --- real stdin-payload subprocess test ---------------------------------------------------------
 # Closes the gap docs/skill-frontmatter-and-hook-plan.md section 2.3 confirmed: the tests above
 # call hook.run(...) directly and never exercise the actual `if __name__ == "__main__":` block —
