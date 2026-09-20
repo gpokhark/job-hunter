@@ -17,6 +17,7 @@ deleted row/file cannot be re-queried afterward to build that record retroactive
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections import defaultdict
@@ -25,7 +26,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .atomic import atomic_write_text
 from .config import Settings
+from .runlock import run_lock
 from .storage import Storage
 
 PROFILE_DIFF_DIR = Path("data/profile-diff")
@@ -35,13 +38,16 @@ CLEANUP_EXPORT_DIR = Path("data/cleanup-exports")
 # Two generated timestamp shapes coexist on disk: the current local-timezone-readable one
 # (diff_profile.py's `_report_timestamp`) and the earlier bare-UTC one it replaced. Both are
 # genuinely script-generated, neither is hand-named, so both are recognized here — see
-# docs/retention-cleanup-plan.md section 3.5/Q6.
+# docs/retention-cleanup-plan.md section 3.5/Q6. Each regex below also names the exact substring
+# it needs for *age* determination (`timestamp`/`date`) — see `classify_report`/`_parse_timestamp`/
+# `_parse_date` — so the one match already proving "this is a valid report of this shape" is also
+# what supplies its real generation time, with no separate re-scan of the filename needed.
 _TIMESTAMP = r"(?:\d{4}-\d{2}-\d{2}-T-\d{2}-\d{2}-\d{2}|\d{8}T\d{6})"
 _DATE = r"\d{4}-\d{2}-\d{2}"
 
-_PROFILE_DIFF_RE = re.compile(rf"^{_TIMESTAMP}\.html$")
-_ARCHIVE_DIFF_RE = re.compile(rf"^archive-(?P<slug>.+)_{_DATE}-{_TIMESTAMP}\.html$")
-_RADAR_RE = re.compile(rf"^(?P<slug>.+)_{_DATE}\.html$")
+_PROFILE_DIFF_RE = re.compile(rf"^(?P<timestamp>{_TIMESTAMP})\.html$")
+_ARCHIVE_DIFF_RE = re.compile(rf"^archive-(?P<slug>.+)_{_DATE}-(?P<timestamp>{_TIMESTAMP})\.html$")
+_RADAR_RE = re.compile(rf"^(?P<slug>.+)_(?P<date>{_DATE})\.html$")
 
 # The group key for a plain diff_profile.py report, which has no slug of its own (it diffs the
 # profile against a baseline, not any one archive) — confirmed in scope for the same "keep
@@ -54,7 +60,26 @@ class ReportFile:
     path: Path
     kind: str  # "profile_diff" | "archive_diff" | "radar"
     group: str  # a slug, or _NO_SLUG_GROUP for a plain profile_diff report
-    mtime: float
+    generated_at: float  # POSIX timestamp, parsed from the report's own filename — never mtime,
+    # see `classify_report`'s docstring for why.
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """Parses one of `_TIMESTAMP`'s two shapes into an aware instant. `YYYY-MM-DD-T-HH-MM-SS`
+    (`diff_profile.py`'s `_report_timestamp`) is the device's *local* time at generation — parsed
+    as naive, then localized via a bare `.astimezone()` (no argument), the exact inverse of how
+    it was produced (`_report_timestamp`'s own `_local()` helper). `YYYYMMDDTHHMMSS` is the
+    earlier bare-UTC shape it replaced, tagged UTC directly."""
+    if "-T-" in value:
+        return datetime.strptime(value, "%Y-%m-%d-T-%H-%M-%S").astimezone()
+    return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+
+
+def _parse_date(value: str) -> datetime:
+    """A radar report's filename carries only a bare `_DATE`, no separate timestamp — the same
+    local-calendar-date convention `search_archive.py`'s `archive_path()` uses for the archive it
+    was rendered from. Treated as local midnight on that date."""
+    return datetime.strptime(value, "%Y-%m-%d").astimezone()
 
 
 def classify_report(path: Path, *, role: str) -> ReportFile | None:
@@ -66,19 +91,33 @@ def classify_report(path: Path, *, role: str) -> ReportFile | None:
     (confirmed live: `data/profile-diff/soft_exclude_terms_removed_2026-09-05.html` predates
     this feature and must never be swept up by an age-based glob, see
     docs/retention-cleanup-plan.md section 3.5). Never guess a file's provenance from its age or
-    location alone."""
+    location alone.
+
+    `generated_at` comes from the filename's own embedded timestamp/date (via `_parse_timestamp`/
+    `_parse_date`), not `path.stat().st_mtime` — confirmed live as a real, user-facing bug: an
+    existing report's mtime reflects whenever the file was last *written to disk* (a checkout
+    restore, a repo copy, a filesystem migration, `cp` without `-p`), not when its content was
+    actually produced, so a whole `data/` tree materialized fresh on a machine makes every report
+    look equally "recent" regardless of real age — silently defeating `report_after_days`
+    entirely for every file affected, with no error or warning. The filename's own timestamp is
+    exactly what these three scripts already use to *name* the file in the first place, so it's
+    authoritative by construction, not a guess."""
     name = path.name
     if role == "profile-diff":
         archive_match = _ARCHIVE_DIFF_RE.match(name)
         if archive_match:
-            return ReportFile(path, "archive_diff", archive_match.group("slug"), path.stat().st_mtime)
-        if _PROFILE_DIFF_RE.match(name):
-            return ReportFile(path, "profile_diff", _NO_SLUG_GROUP, path.stat().st_mtime)
+            generated_at = _parse_timestamp(archive_match.group("timestamp")).timestamp()
+            return ReportFile(path, "archive_diff", archive_match.group("slug"), generated_at)
+        profile_match = _PROFILE_DIFF_RE.match(name)
+        if profile_match:
+            generated_at = _parse_timestamp(profile_match.group("timestamp")).timestamp()
+            return ReportFile(path, "profile_diff", _NO_SLUG_GROUP, generated_at)
         return None
     if role == "radar":
         radar_match = _RADAR_RE.match(name)
         if radar_match:
-            return ReportFile(path, "radar", radar_match.group("slug"), path.stat().st_mtime)
+            generated_at = _parse_date(radar_match.group("date")).timestamp()
+            return ReportFile(path, "radar", radar_match.group("slug"), generated_at)
         return None
     raise ValueError(f"unknown role: {role!r}")
 
@@ -104,19 +143,20 @@ def select_reports_to_delete(
 ) -> list[ReportFile]:
     """Groups by (kind, group) — a plain profile_diff report, an archive_diff slug, and a radar
     slug are each their own independent series (docs/retention-cleanup-plan.md section 3.4) —
-    sorts each newest-first by mtime, protects the first `keep_latest_per_group` unconditionally,
-    and only deletes the remainder if it's also older than `cutoff`. A file protected by the
-    keep-latest floor is never deleted regardless of age; a file within the age cutoff but
-    outside the floor's window is never deleted either — both conditions gate independently."""
+    sorts each newest-first by `generated_at` (the report's own embedded timestamp — see
+    `classify_report`), protects the first `keep_latest_per_group` unconditionally, and only
+    deletes the remainder if it's also older than `cutoff`. A file protected by the keep-latest
+    floor is never deleted regardless of age; a file within the age cutoff but outside the
+    floor's window is never deleted either — both conditions gate independently."""
     groups: dict[tuple[str, str], list[ReportFile]] = defaultdict(list)
     for report in files:
         groups[(report.kind, report.group)].append(report)
     cutoff_ts = cutoff.timestamp()
     to_delete: list[ReportFile] = []
     for group_files in groups.values():
-        group_files.sort(key=lambda r: r.mtime, reverse=True)
+        group_files.sort(key=lambda r: r.generated_at, reverse=True)
         candidates = group_files[keep_latest_per_group:]
-        to_delete.extend(r for r in candidates if r.mtime < cutoff_ts)
+        to_delete.extend(r for r in candidates if r.generated_at < cutoff_ts)
     return to_delete
 
 
@@ -135,11 +175,8 @@ class CleanupResult:
 
 
 def _write_export(payload: dict[str, Any], *, now: datetime, export_dir: Path) -> Path:
-    export_dir.mkdir(parents=True, exist_ok=True)
     path = export_dir / f"{now.strftime('%Y%m%dT%H%M%SZ')}.json"
-    path.write_text(
-        json.dumps(payload, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(path, json.dumps(payload, indent=2, default=str, ensure_ascii=False) + "\n")
     return path
 
 
@@ -160,7 +197,12 @@ def run_cleanup(
     `apply=True`: writes a pre-delete export (unless `write_export=False`) of exactly what's
     about to be removed, deletes it, and VACUUMs (unless `vacuum=False`) if any jobs were
     deleted. `jobs_only`/`reports_only` are mutually exclusive scopes; passing neither runs
-    both halves."""
+    both halves.
+
+    `apply=True` holds the same shared `run_lock("job-hunter")` a `job-hunter pipeline` run
+    holds (see `pipeline.py`) — cleanup deletes rows/files a concurrent pipeline run could be
+    reading or about to write, so the two must never overlap. A dry run only reads and takes no
+    lock at all. Raises `RunLockHeld` if a pipeline (or another cleanup) is already running."""
     now = now or datetime.now(UTC)
     result = CleanupResult()
     do_jobs = not reports_only
@@ -168,46 +210,47 @@ def run_cleanup(
 
     export_payload: dict[str, Any] = {"cleaned_at": now.isoformat(), "applied": apply}
 
-    if do_jobs:
-        job_cutoff = now - _days(settings.retention.closed_job_after_days)
-        with Storage(settings.database_path) as storage:
-            eligible = storage.find_stale_closed_jobs(job_cutoff)
-            result.closed_jobs_eligible = len(eligible)
-            if apply and eligible:
-                result.db_size_before = _db_size(settings.database_path)
-                deleted = storage.delete_closed_jobs(job_cutoff)
-                export_payload["deleted_jobs"] = deleted["jobs"]
-                export_payload["deleted_assessments"] = deleted["assessments"]
-                export_payload["deleted_job_feedback"] = deleted["job_feedback"]
-                result.closed_jobs_deleted = len(deleted["jobs"])
-                result.assessments_deleted = len(deleted["assessments"])
-                result.job_feedback_deleted = len(deleted["job_feedback"])
-                if vacuum:
-                    storage.vacuum()
-                result.db_size_after = _db_size(settings.database_path)
+    with run_lock("job-hunter") if apply else contextlib.nullcontext():
+        if do_jobs:
+            job_cutoff = now - _days(settings.retention.closed_job_after_days)
+            with Storage(settings.database_path) as storage:
+                eligible = storage.find_stale_closed_jobs(job_cutoff)
+                result.closed_jobs_eligible = len(eligible)
+                if apply and eligible:
+                    result.db_size_before = _db_size(settings.database_path)
+                    deleted = storage.delete_closed_jobs(job_cutoff)
+                    export_payload["deleted_jobs"] = deleted["jobs"]
+                    export_payload["deleted_assessments"] = deleted["assessments"]
+                    export_payload["deleted_job_feedback"] = deleted["job_feedback"]
+                    result.closed_jobs_deleted = len(deleted["jobs"])
+                    result.assessments_deleted = len(deleted["assessments"])
+                    result.job_feedback_deleted = len(deleted["job_feedback"])
+                    if vacuum:
+                        storage.vacuum()
+                    result.db_size_after = _db_size(settings.database_path)
 
-    if do_reports:
-        report_cutoff = now - _days(settings.retention.report_after_days)
-        eligible_reports = select_reports_to_delete(
-            scan_reports(profile_diff_dir=profile_diff_dir, radar_dir=radar_dir),
-            cutoff=report_cutoff,
-            keep_latest_per_group=settings.retention.keep_latest_reports_per_slug,
+        if do_reports:
+            report_cutoff = now - _days(settings.retention.report_after_days)
+            eligible_reports = select_reports_to_delete(
+                scan_reports(profile_diff_dir=profile_diff_dir, radar_dir=radar_dir),
+                cutoff=report_cutoff,
+                keep_latest_per_group=settings.retention.keep_latest_reports_per_slug,
+            )
+            result.reports_eligible = [r.path for r in eligible_reports]
+            if apply and eligible_reports:
+                export_payload["deleted_reports"] = [str(r.path) for r in eligible_reports]
+                for report in eligible_reports:
+                    report.path.unlink(missing_ok=True)
+                result.reports_deleted = result.reports_eligible
+
+        something_deleted = (
+            result.closed_jobs_deleted or result.assessments_deleted
+            or result.job_feedback_deleted or result.reports_deleted
         )
-        result.reports_eligible = [r.path for r in eligible_reports]
-        if apply and eligible_reports:
-            export_payload["deleted_reports"] = [str(r.path) for r in eligible_reports]
-            for report in eligible_reports:
-                report.path.unlink(missing_ok=True)
-            result.reports_deleted = result.reports_eligible
-
-    something_deleted = (
-        result.closed_jobs_deleted or result.assessments_deleted
-        or result.job_feedback_deleted or result.reports_deleted
-    )
-    if apply and write_export and something_deleted:
-        result.export_path = _write_export(export_payload, now=now, export_dir=export_dir)
-    result.applied = apply
-    return result
+        if apply and write_export and something_deleted:
+            result.export_path = _write_export(export_payload, now=now, export_dir=export_dir)
+        result.applied = apply
+        return result
 
 
 def _days(count: int) -> timedelta:

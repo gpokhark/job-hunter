@@ -1,7 +1,13 @@
 ---
 name: job-reviewer
-version: 1.0.0
+version: 1.2.0
 description: Score job-hunter's archived candidates against the user's resume using a local LLM (LM Studio) — resumes automatically from wherever a prior run left off, never spends cloud/agent tokens.
+compatibility: Requires uv and Python 3.11+; LM Studio required (local model scoring via its OpenAI-compatible API).
+metadata:
+  job_hunter:
+    stage: review
+  hermes:
+    tags: [jobs, resume, review]
 ---
 
 # Job Reviewer
@@ -26,28 +32,44 @@ for one-time LM Studio setup), not a sub-agent.
 - `/job-reviewer` — cold start, resolves to the newest archive of any keyword (not a resume
   guarantee — pass `--keyword` whenever you already know it)
 
+## Contract
+
+Input:
+- project path (`--project`, defaults to `$JOB_HUNTER_ROOT`/cwd)
+- keyword or archive path (`--keyword` / `--input`, defaults to the newest archive overall)
+- `--status` (report-only: remaining/cached/total counts, no model calls, no changes made)
+- optional limit (`--limit`, defaults to unlimited) and `--force` (re-review even cached jobs)
+
+Output:
+- status line (`Reviewed N job(s); skipped M already-assessed (unchanged) job(s).`) or, under
+  `--status`, the resolved archive path plus remaining/cached/total counts only
+- persisted verdicts — SQLite's `assessments` table plus `data/assessments.json` — not a rendered
+  report; this skill doesn't produce one
+- counts: reviewed vs. skipped-cached vs. total eligible this run
+- failures: per-job `skipped: <reason>` lines printed to stdout, never aborting the whole run
+- next command: `job-radar` with the same `--keyword`, to render the scored results
+
 ## Procedure
 
-1. Work from the project directory containing `pyproject.toml`.
-2. Decide which archive to review:
-   - **If you already know the keyword** (e.g. you — or the orchestrator step before you — just
-     ran `job-scout` with a specific keyword), pass `--keyword` explicitly. Never rely on the
-     no-arg default when the keyword is already known: it resolves to whichever archive is
-     *newest overall*, which silently changes if any other search has run since — you could end
-     up resuming the wrong job. See `docs/skill-split-plan.md` section 4 for the full rationale.
-   - If invoked cold with no known keyword, omitting both `--keyword` and `--input` resolves to
-     the newest archive of any keyword — a genuine "I don't know/care which run" convenience.
-   - To review one specific historical run regardless of what's newest, pass `--keyword "..."` (
-     resolves to the newest archive for that keyword's slug) or `--input <exact path>`.
+1. Every command below takes `--project "$CLAUDE_PROJECT_DIR"` (Claude Code) — or the equivalent
+   workspace path for another runtime, e.g. Hermes — so this skill works regardless of whether the
+   calling process already `cd`'d into the repo.
+2. Decide which archive to review: pass `--keyword` explicitly whenever you already know it (e.g.
+   you — or the orchestrator step before you — just ran `job-scout` with a specific keyword); the
+   no-arg default resolves to the newest archive *overall*, which can silently change if any other
+   search has run since, so it's a cold-start convenience only, not a substitute for a known
+   keyword. To review one specific historical run regardless of what's newest, pass `--keyword
+   "..."` (resolves to that keyword's newest archive) or `--input <exact path>`. See
+   `docs/skill-split-plan.md` section 4 for the full resolution rule.
 3. Optionally check progress first, with no model calls and no changes made:
    ```bash
-   uv run python scripts/review_with_lm_studio.py --status [--keyword "..."]
+   uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" --status [--keyword "..."]
    ```
    Report the remaining/cached/total counts to the user before committing to a full run if it's
    likely to take a while.
 4. Run the review:
    ```bash
-   uv run python scripts/review_with_lm_studio.py [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" [--keyword "ADAS,Robotics,Product Technical Leader"]
    ```
    Sends every not-yet-cached U.S.-eligible candidate to the local model **one at a time, strictly
    sequentially**, persisting each verdict immediately (SQLite plus `data/assessments.json`) as it
@@ -59,18 +81,34 @@ for one-time LM Studio setup), not a sub-agent.
    processes what's actually left — never redo the whole thing, never lose partial progress.
    It does **not** cap how many jobs get reviewed by default — review all of them. Only pass
    `--limit` if the user explicitly asks to review fewer than all eligible candidates this run.
+
+   If this step reports it can't reach LM Studio (exit 2, a "can't reach LM Studio at ..." stderr
+   line, or `job-hunter pipeline`'s `model_unavailable` status), don't take that at face value as
+   "the server is down" — run the standalone connectivity check first:
+   ```bash
+   uv run python scripts/check_lm_studio.py --project "$CLAUDE_PROJECT_DIR"
+   ```
+   This makes the identical `GET {base_url}/models` call in isolation and prints one `OK`/`FAIL
+   LM Studio: ...` line. Confirmed live with Hermes: the calling agent runtime's own network path
+   to `config/lm_studio.yaml`'s `base_url` can be broken (a different container/host than LM
+   Studio actually runs on, a stale LAN IP, a firewall) while LM Studio itself is running fine —
+   this is a false "server is down" report, not a real one, and reporting it as the latter to the
+   user is misleading. Report the check's actual OK/FAIL line and its `base_url`/model-list detail
+   to the user rather than guessing.
 5. Report to the user how many were newly reviewed versus already cached from a prior run (the
    script's final line: `Reviewed N job(s); skipped M already-assessed (unchanged) job(s).`). No
    Claude/agent tokens are spent scoring anything — the only LLM involved in this step is the
    local one running in LM Studio.
-6. Resume changes never affect this step's caching: a job already assessed stays cached
-   regardless of resume edits (cache validity is keyed on the job's `content_hash` only), while
-   any job actually sent to the model this run is always scored against whatever resume is on
-   disk right now. This is intentional — see `docs/skill-split-plan.md` section 5 — not something
-   to "fix" by adding a resume-change trigger.
-7. Run `uv run python scripts/assessments_to_csv.py` for a human-readable `data/assessments.csv`.
+6. Cache validity is keyed on the job's `content_hash` alone, by design — resume/model/rubric
+   changes never invalidate an already-cached assessment, while any job actually sent to the model
+   this run is always scored against whatever resume is on disk right now. See CLAUDE.md's
+   "Working in this repo" principle on this; not something to "fix" by adding a resume-change
+   trigger.
+7. Run `uv run python scripts/assessments_to_csv.py --project "$CLAUDE_PROJECT_DIR"` for a
+   human-readable `data/assessments.csv`.
 8. This skill's job ends here — it does not render anything. To get a report (text summary and/or
    HTML radar), invoke `job-radar`, passing the same `--keyword` you used here. If compiling a
    text summary yourself instead of delegating to `job-radar`, read `data/assessments.json` (or
-   `uv run job-hunter export-assessments`) for the verdicts to compile from — never invent a
-   score, match, or gap not actually present in a recorded assessment.
+   `uv run job-hunter export-assessments --project "$CLAUDE_PROJECT_DIR"`) for the verdicts to
+   compile from — never invent a score, match, or gap not actually present in a recorded
+   assessment.

@@ -14,6 +14,7 @@ from .location import evaluate_location
 from .models import HealthStatus, Job, RunInfo, SearchResult, SearchSummary, SourceHealth
 from .normalizer import description_hash
 from .prefilter import is_recent, passes_prefilter, passes_recency
+from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
 from .storage import Storage
 
@@ -221,6 +222,7 @@ class Collector:
                     )
                     description = detail.description if detail else (prior["description"] if prior else None)
                     sponsorship = evaluate_sponsorship(description)
+                    salary = evaluate_salary(description)
                     decision = (
                         evaluate_location(
                             (
@@ -256,9 +258,19 @@ class Collector:
                         visa_sponsorship=sponsorship.status,
                         sponsorship_evidence=sponsorship.evidence,
                         description=description,
-                        salary_min=detail.salary_min if detail else None,
-                        salary_max=detail.salary_max if detail else None,
-                        salary_currency=detail.salary_currency if detail else None,
+                        # No adapter currently supplies a structured salary field, but
+                        # detail wins if one ever does — evaluate_salary's text-mined
+                        # figure is only a fallback, same precedence as location.py's
+                        # structured-country-first rule. salary_evidence always comes
+                        # from the text mine since no adapter has an equivalent field.
+                        salary_min=(detail.salary_min if detail and detail.salary_min else salary.min_value),
+                        salary_max=(detail.salary_max if detail and detail.salary_max else salary.max_value),
+                        salary_currency=(
+                            detail.salary_currency
+                            if detail and detail.salary_currency
+                            else ("USD" if salary.evidence else None)
+                        ),
+                        salary_evidence=salary.evidence,
                         content_hash=description_hash(description),
                         last_seen_at=datetime.now(UTC),
                     )

@@ -1,5 +1,7 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from job_hunter import storage as storage_module
 from job_hunter.models import Assessment, Job, JobFeedback, LocationConfidence
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
@@ -86,6 +88,31 @@ def test_upsert_assessment_roundtrips_and_updates(tmp_path):
         assert updated.gaps == []
 
 
+def test_partition_candidates_for_review_splits_cached_from_needed(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment(source_key="acme", job_id="42", content_hash="hash-1"))
+        candidates = [
+            {"source_key": "acme", "job_id": "42", "content_hash": "hash-1"},  # cached, unchanged
+            {"source_key": "acme", "job_id": "42", "content_hash": "hash-2"},  # cached but content changed
+            {"source_key": "acme", "job_id": "99", "content_hash": "hash-3"},  # never assessed
+        ]
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates)
+
+    assert skipped_cached == 1
+    assert [c["job_id"] for c in to_review] == ["42", "99"]
+    assert to_review[0]["content_hash"] == "hash-2"
+
+
+def test_partition_candidates_for_review_force_ignores_cache(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment(source_key="acme", job_id="42", content_hash="hash-1"))
+        candidates = [{"source_key": "acme", "job_id": "42", "content_hash": "hash-1"}]
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates, force=True)
+
+    assert skipped_cached == 0
+    assert len(to_review) == 1
+
+
 def test_export_assessments_matches_all_assessments(tmp_path):
     with Storage(tmp_path / "jobs.sqlite3") as storage:
         storage.upsert_assessment(make_assessment())
@@ -149,6 +176,34 @@ def test_reevaluate_sponsorship_backfills_from_stored_description(tmp_path):
 
         # Idempotent: running it again with nothing changed reports zero.
         assert storage.reevaluate_sponsorship() == 0
+
+
+def test_reevaluate_salary_backfills_from_stored_description(tmp_path):
+    """Same backfill gap as sponsorship above, for salary_evidence: a row's
+    salary_min/max/currency/evidence are only ever set by upsert_job, so a job whose
+    description already contains a real salary range but predates salary.py (or a
+    pattern fix) needs reevaluate_salary to pick it up from the stored description
+    alone, no re-fetch required."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(description="A role with no salary mention at all."))
+        storage.connection.execute(
+            "UPDATE jobs SET description=? WHERE source_key='acme' AND job_id='42'",
+            ("The salary range for this role is $76,100.00 to $114,300.00.",),
+        )
+        storage.connection.commit()
+        assert storage.get_job("acme", "42")["salary_evidence"] is None
+
+        changed = storage.reevaluate_salary()
+
+        assert changed == 1
+        row = storage.get_job("acme", "42")
+        assert row["salary_evidence"] == "$76,100.00 to $114,300.00"
+        assert row["salary_min"] == 76100.0
+        assert row["salary_max"] == 114300.0
+        assert row["salary_currency"] == "USD"
+
+        # Idempotent: running it again with nothing changed reports zero.
+        assert storage.reevaluate_salary() == 0
 
 
 def test_find_stale_closed_jobs_excludes_active_and_recently_closed(tmp_path):
@@ -222,3 +277,68 @@ def test_vacuum_runs_without_error_after_delete(tmp_path):
         storage.delete_closed_jobs(now - timedelta(days=10))
         storage.vacuum()  # must not raise
         assert storage.stats()["closed"] == 0
+
+
+# --- schema-version tracking (docs/agent-runtime-audit.md's "no explicit schema-version marker"
+# finding) -- PRAGMA user_version, not a separate table.
+
+
+def test_fresh_database_ends_up_at_the_current_schema_version(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(storage_module._MIGRATIONS)
+
+
+def test_migrate_adds_missing_columns_to_a_pre_migration_database(tmp_path):
+    """A database created before visa_sponsorship/sponsorship_evidence/salary_evidence existed
+    (no PRAGMA user_version ever set -- the SQLite default is 0) must still end up with those
+    columns and the current schema version after Storage opens it, exactly as the pre-refactor
+    ad-hoc column-presence checks already guaranteed -- this confirms the refactor preserved that
+    behavior, not just the new version-tracking mechanism."""
+    db_path = tmp_path / "jobs.sqlite3"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE jobs (
+            source_key TEXT NOT NULL, company TEXT NOT NULL, job_id TEXT NOT NULL,
+            source_platform TEXT NOT NULL, title TEXT NOT NULL, canonical_url TEXT NOT NULL,
+            us_eligible INTEGER NOT NULL,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active', missing_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(source_key, job_id)
+        );
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    with Storage(db_path) as storage:
+        columns = {row["name"] for row in storage.connection.execute("PRAGMA table_info(jobs)")}
+        assert {"visa_sponsorship", "sponsorship_evidence", "salary_evidence"} <= columns
+        version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(storage_module._MIGRATIONS)
+
+
+def test_migrate_skips_already_applied_migrations_on_a_second_open(tmp_path, monkeypatch):
+    """The whole point of tracking PRAGMA user_version: a migration a database has already been
+    upgraded past must not run again on a later open -- confirmed here by making the first
+    migration blow up if it's ever invoked more than once, rather than only checking the end
+    state looks right (which the old, purely column-presence-guarded checks would already satisfy
+    even with no real version tracking behind them)."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path):
+        pass  # first open: runs every migration, advances user_version
+
+    calls: list[int] = []
+
+    def _spy(connection):
+        calls.append(1)
+
+    monkeypatch.setattr(
+        storage_module, "_MIGRATIONS", [_spy, storage_module._migrate_v2_add_salary_evidence_column]
+    )
+
+    with Storage(db_path):
+        pass  # second open: must not re-run migration 1
+
+    assert calls == [], "migration 1 ran again on an already-migrated database"

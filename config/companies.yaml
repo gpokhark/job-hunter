@@ -304,32 +304,38 @@ companies:
       description_selector: .DkhPwc
   - key: waymo
     company: Waymo
-    adapter: html_paginated
+    adapter: stealth_html
     platform: html
     config:
-      # careers.withwaymo.com is a plain server-rendered Rails/ClinchTalent site (a
-      # full 200 returns all ~336 jobs across 12 pages) — but it sits behind a
-      # CloudFront WAF with a request-rate-based challenge: a burst of requests (this
-      # collector's pagination plus its own concurrent per-job detail fetches) flips it
-      # to a sticky HTTP 202 challenge (x-amzn-waf-action: challenge, empty body) that
-      # only self-clears once the IP goes quiet. Confirmed live: an unthrottled run got
-      # page 1 (30 jobs) then hit the challenge on every subsequent request, which
-      # `html_paginated` read as "0 cards, no next link" and silently stopped on rather
-      # than erroring — `detect_count_anomaly` flagged the resulting undercount as a
-      # WARNING, which is what actually kept it from mis-closing real jobs. Fixed
-      # generically in adapters/base.py (any WAF-fronted source can opt in the same
-      # way) rather than with a Waymo-specific adapter: min_request_interval_seconds
-      # paces/serializes every request this adapter instance makes regardless of the
-      # collector's own concurrency, and max_retries raises this source's retry budget
-      # since the challenge's backoff window is much longer than a transient 429/5xx.
-      min_request_interval_seconds: 2.0
-      max_retries: 6
+      # careers.withwaymo.com is behind a CloudFront WAF (request-rate challenge) that
+      # blocks plain httpx with HTTP 202 challenge. stealth_html uses Scrapling's
+      # AsyncStealthySession (headless browser) which bypasses the WAF — confirmed live:
+      # a real browser renders all 30+ job cards per page across 12 pages.
+      # Selectors verified via browser inspection (Sep 2026):
+      # card: div.job-search-results-card (also matches <article> tags)
+      # title/link: h3.card-title.job-search-results-card-title > a
+      # location: span[id^="location_icon_text_"]
+      # department: span[id^="department_icon_text_"]
+      # employment_type: span[id^="employment_type_icon_text_"]
+      # summary: p.card-text.job-search-results-summary
+      # WAF throttles rapid requests — pace them to avoid sticky challenge.
+      # stealth_html adapter returns partial results on timeout (graceful degradation).
+      # DETAIL PAGES ARE BLOCKED: Waymo's WAF blocks almost every detail page.
+      # Extract everything from listing cards and skip detail-page fetching.
       list_url: https://careers.withwaymo.com/jobs/search
       card_selector: div.job-search-results-card
-      link_selector: .card-title a
-      title_selector: .card-title a
-      location_selector: .job-component-location
-      description_selector: .job-description
+      link_selector: h3.card-title.job-search-results-card-title a
+      title_selector: h3.card-title.job-search-results-card-title a
+      location_selector: span[id^="location_icon_text_"]
+      department_selector: span[id^="department_icon_text_"]
+      employment_type_selector: span[id^="employment_type_icon_text_"]
+      description_selector: p.card-text.job-search-results-summary
+      page_number_parameter: page
+      page_size: 30
+      wait_selector: div.job-search-results-card
+      min_request_interval_seconds: 5.0
+      max_retries: 3
+      skip_detail_fetch: true
   - key: hatci
     company: Hyundai America Technical Center, Inc.
     adapter: successfactors_rmk
@@ -1472,3 +1478,51 @@ companies:
       id_attribute: data-job-id
       page_number_parameter: p
       page_size: 15
+  - key: hyundai_mobis
+    company: Hyundai MOBIS
+    adapter: paylocity
+    platform: paylocity
+    config:
+      # recruiting.paylocity.com/recruiting/jobs/All/<guid>/Mobis-North-American-LLC---
+      # Plymouth is a Paylocity Recruiting ("Citrus HR") board scoped to the legal entity
+      # Mobis North American LLC — the Mobis Technical Center of North America (MTCA),
+      # Hyundai MOBIS's Plymouth, MI R&D center (confirmed from the postings' own
+      # "MOBIS Technical Center of North America... an affiliate under Hyundai Motor
+      # Group" boilerplate); this covers that one tenant/module only, not necessarily
+      # every Hyundai MOBIS North America location if others sit on a separate module.
+      # A new, reusable platform (paylocity.py): the whole job list, including a
+      # structured per-job JobLocation (City/State/Zip/Country), is embedded server-side
+      # in the listing's own plain HTML as a `window.pageData = {...}` JS object literal
+      # — no separate API call needed, no pagination found or needed (12 jobs, all
+      # present in one response). Sample job 4495586 ("Program Manager (Hybrid)",
+      # Plymouth, MI) confirmed present with matching title/location/PublishedDate.
+      # Detail pages carry a schema.org JobPosting JSON-LD block only sometimes
+      # (confirmed absent on a job with no listing-level city/state) so it's not used;
+      # full description instead comes from matching the detail page's own
+      # Description/Requirements `<div class="job-listing-header">` sibling pairs by
+      # label text, present on every sampled page regardless of JSON-LD.
+      list_url: https://recruiting.paylocity.com/recruiting/jobs/All/3c45d436-6834-4b85-b82a-a0abdca9f507/Mobis-North-American-LLC---Plymouth
+  - key: torc_robotics
+    company: Torc Robotics
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # job-boards.greenhouse.io/torcrobotics/jobs/<id> is itself a standard Greenhouse
+      # job-boards host, so no front-end/backend split to chase here — same shape as the
+      # anthropic entry above. Greenhouse's public Job Board API mirrors it exactly,
+      # zero-auth, at boards-api.greenhouse.io/v1/boards/torcrobotics (52 jobs).
+      # ?content=true inlines each job's full (double-HTML-encoded, unescaped centrally
+      # by greenhouse.py) description in the one list response, so no per-job detail
+      # fetch is needed. Sample job 8784018002 ("Senior System Test Engineer -
+      # Simulation", Remote - US; Blacksburg, VA; Ann Arbor, MI) confirmed present with
+      # matching title/location/first_published date via a direct API fetch.
+      list_url: https://boards-api.greenhouse.io/v1/boards/torcrobotics/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published

@@ -13,28 +13,32 @@ from typing import Any
 from pydantic import ValidationError
 
 from .adapters import adapter_class
+from .atomic import atomic_write_text
 from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
-from .models import Assessment
+from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus, format_search_summary
+from .pipeline import latest_run_id, read_manifest, run_pipeline
+from .rootutil import add_project_argument, chdir_to_project_root, nonneg_int
+from .runlock import RunLockHeld, pid_alive, process_start_time
 from .search_archive import archive_path, resolve_search_path
 from .storage import Storage
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="job-hunter")
+    add_project_argument(root)
     sub = root.add_subparsers(dest="command", required=True)
     search = sub.add_parser("search")
     search.add_argument("--companies")
-    search.add_argument("--all-companies", action="store_true")
     seen = search.add_mutually_exclusive_group()
     seen.add_argument("--include-seen", action="store_true")
     seen.add_argument("--new-only", action="store_true")
     search.add_argument("--refresh-details", action="store_true")
     search.add_argument(
         "--max-candidates",
-        type=int,
+        type=nonneg_int,
         help="optional cap on candidates returned; none by default — every prefilter match is kept",
     )
     search.add_argument(
@@ -53,10 +57,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "write to an auto-named data/searches/{keyword-or-default}_{date}.json instead "
-            "of choosing a path yourself with --output. The same keyword on the same day "
-            "overwrites (today's answer refreshing); a new day or a different keyword gets "
-            "its own file, so an earlier run's candidate snapshot is never silently lost. "
-            "Mutually exclusive with --output."
+            "of choosing a path yourself with --output. The same keyword (and --companies "
+            "scope, if given) on the same day overwrites (today's answer refreshing); a new "
+            "day, a different keyword, or a different --companies scope gets its own file, "
+            "so an earlier run's candidate snapshot is never silently lost. Mutually "
+            "exclusive with --output."
         ),
     )
     search.add_argument("--verbose", action="store_true")
@@ -89,6 +94,14 @@ def parser() -> argparse.ArgumentParser:
             "successfully re-fetched since visa_sponsorship was added"
         ),
     )
+    sub.add_parser(
+        "reevaluate-salary",
+        help=(
+            "re-run salary detection against every stored job's existing description "
+            "(no network) — use after salary.py's pattern changes, or to backfill jobs "
+            "collected before salary_evidence existed"
+        ),
+    )
     resolve = sub.add_parser(
         "resolve-search",
         help=(
@@ -101,6 +114,15 @@ def parser() -> argparse.ArgumentParser:
     resolve_group.add_argument("--search", type=Path, help="use this exact archive path")
     resolve_group.add_argument(
         "--keyword", help="resolve to the newest archive for this keyword's slug"
+    )
+    resolve.add_argument(
+        "--companies",
+        help=(
+            "disambiguate among archives sharing --keyword by --companies scope (same value "
+            "originally passed to job-hunter search/pipeline --companies) — omit to resolve "
+            "only among unscoped archives, the default and overwhelming majority of real runs. "
+            "Ignored together with --search, which always resolves to exactly that path."
+        ),
     )
     cleanup = sub.add_parser(
         "cleanup",
@@ -129,11 +151,114 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip writing the pre-delete export record (only relevant with --apply)",
     )
+    pipeline = sub.add_parser(
+        "pipeline",
+        help=(
+            "run search -> local-LLM review -> radar report end to end as one Python-owned "
+            "command, writing a durable data/runs/<run_id>/manifest.json at every stage — the "
+            "same three commands the job-hunter skill documents, sequenced deterministically "
+            "instead of by agent prose. See `pipeline-status` to poll a run afterward."
+        ),
+    )
+    pipeline.add_argument("--keyword", help="same as job-hunter search --keyword")
+    pipeline.add_argument(
+        "--search", type=Path,
+        help=(
+            "with --no-scrape only: refilter this exact archive instead of resolving one by "
+            "--keyword/newest-mtime — use when you already know which archive you want "
+            "(mtime-based resolution can pick an unexpected one, e.g. a narrow archive "
+            "refiltered more recently than a broader one actually collected later; confirmed "
+            "live, see docs/agent-runtime-audit.md). --keyword still applies independently as "
+            "the refilter's own positive-match-term override, not just an archive-selection hint."
+        ),
+    )
+    pipeline.add_argument("--companies", help="same as job-hunter search --companies")
+    pipeline.add_argument(
+        "--limit", type=nonneg_int, help="cap on NEW reviews this run (passed through to the review stage)"
+    )
+    pipeline.add_argument("--new-only", action="store_true", help="same as job-hunter search --new-only")
+    pipeline.add_argument("--refresh-details", action="store_true", help="same as job-hunter search --refresh-details")
+    pipeline.add_argument(
+        "--max-candidates", type=nonneg_int, help="same as job-hunter search --max-candidates"
+    )
+    pipeline.add_argument("--skip-review", action="store_true", help="search only; leave review/radar for later")
+    pipeline.add_argument(
+        "--skip-radar", action="store_true", help="search + review only; skip rendering the HTML report"
+    )
+    pipeline.add_argument(
+        "--no-scrape",
+        action="store_true",
+        help=(
+            "skip the live search stage and re-run scripts/refilter_archive.py against an "
+            "already-resolved archive instead (the 'I edited candidate_profile.yaml, show me "
+            "the report reflecting that, without a new scrape' workflow) — rejected together "
+            "with --companies, since refiltering re-evaluates an archive's own already-"
+            "attempted source scope, not a fresh company selection; see "
+            "docs/pipeline-refilter-stale-source-plan.md section 4.2"
+        ),
+    )
+    pipeline.add_argument(
+        "--review",
+        action="store_true",
+        help=(
+            "with --no-scrape only: also run the local-LLM review stage against whatever the "
+            "refilter surfaced as new/changed — review defaults OFF in --no-scrape mode "
+            "(opt in with this flag), the opposite default from normal pipeline mode's "
+            "--skip-review opt-out"
+        ),
+    )
+    status = sub.add_parser(
+        "pipeline-status",
+        help="print a pipeline run's manifest — the newest run by default, or --run <id>",
+    )
+    status.add_argument("--run", help="a specific run_id (default: the newest run overall)")
+    # --project is registered on the root parser above so `job-hunter --project X <command>`
+    # works, but argparse subparsers only see arguments that appear *after* the command token —
+    # `job-hunter <command> --project X` would otherwise be rejected as unrecognized. Registering
+    # it again on every subparser here (rather than only documenting "put it before the
+    # subcommand") makes both positions work. This used to re-register with the same `default=None`
+    # as the root parser, which was a real bug: argparse's subparser pass runs *after* the root
+    # pass and unconditionally re-applies its own default whenever the subcommand's own args don't
+    # repeat the flag, so `job-hunter --project X doctor` silently lost `X` the moment `doctor`'s
+    # subparser re-defaulted it to `None` (confirmed live, and with a standalone argparse repro).
+    # `suppress_default=True` fixes this: a subparser with `default=argparse.SUPPRESS` leaves
+    # `args.project` untouched when the flag wasn't given at that position, so whichever parser
+    # actually saw it wins either way. Confirmed live: every skills/*/SKILL.md example shows
+    # `<command> --project ...` (after the subcommand) — that shape must work, not just be
+    # documented as the "wrong" order to avoid.
+    for subparser in sub.choices.values():
+        add_project_argument(subparser, suppress_default=True)
     return root
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+
+
+def _archive_scope_summary(archive_path: Path) -> str:
+    """One-line, stderr-only scope summary for `resolve-search` -- how many sources an archive's
+    own `source_health` recorded as attempted, and the top few by job count -- so a caller can
+    sanity-check what a resolution actually landed on before committing to it (e.g. a --no-scrape
+    refilter) instead of discovering a mismatch only by reading the archive's raw JSON by hand.
+    Confirmed live as a real gap: mtime-based "newest" resolution picked a 1-company archive over
+    a 43-company one collected two days earlier, silently, with nothing short of opening the file
+    to reveal it (see docs/agent-runtime-audit.md). Never printed to stdout -- resolve-search's
+    stdout contract (the bare resolved path, nothing else) is relied on by scripted callers."""
+    try:
+        data = json.loads(archive_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "scope: unknown (could not read archive)"
+    source_health = data.get("source_health") or []
+    if not source_health:
+        return "scope: unknown (no source_health recorded)"
+    by_count = sorted(source_health, key=lambda h: h.get("job_count") or 0, reverse=True)
+    top = [h.get("source_key", "?") for h in by_count[:5]]
+    total = len(source_health)
+    names = ", ".join(top)
+    if total > len(top):
+        names += f", ... +{total - len(top)} more"
+    plural = "source" if total == 1 else "sources"
+    return f"scope: {total} {plural} attempted ({names})"
 
 
 def _print_cleanup_result(result: CleanupResult) -> None:
@@ -162,15 +287,13 @@ def _print_cleanup_result(result: CleanupResult) -> None:
 
 def _write_assessments_export(settings, rows: list[dict[str, Any]]) -> Path:
     path = settings.database_path.parent / "assessments.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    atomic_write_text(path, _json(rows) + "\n")
     return path
 
 
 def _write_feedback_export(settings, rows: list[dict[str, Any]]) -> Path:
     path = settings.database_path.parent / "job_feedback.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json(rows) + "\n", encoding="utf-8")
+    atomic_write_text(path, _json(rows) + "\n")
     return path
 
 
@@ -216,6 +339,44 @@ def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
     return "stealth browser", installed, detail
 
 
+def _hermes_hook_check() -> tuple[str, bool, str]:
+    """Confirms a registered Hermes profile-diff hook's own script still exists on disk —
+    catches a stale registration left pointing at a moved/deleted checkout (the relocatable-
+    registration fix in `scripts/install_hermes_hook.py` stops a *reinstall* from leaving a stale
+    entry behind, but a checkout that's moved without ever re-running `install_skill.sh --hermes`
+    from the new location is still silently broken until something surfaces it —
+    docs/agent-runtime-audit.md's "Hermes registration is not relocatable" finding, point 4). A
+    machine with no Hermes install at all (the common case) is reported OK/not-applicable, not a
+    failure — same shape as `_stealth_browser_check`'s "not needed" branch."""
+    import yaml
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    config_path = hermes_home / "config.yaml"
+    if not config_path.exists():
+        return "hermes hook", True, "not configured — no Hermes config.yaml found"
+    try:
+        config = yaml.safe_load(config_path.read_text())
+    except yaml.YAMLError as exc:
+        return "hermes hook", False, f"{config_path} did not parse: {exc}"
+    hooks = config.get("hooks") if isinstance(config, dict) else None
+    entries = hooks.get("post_tool_call") if isinstance(hooks, dict) else None
+    hook_script = hermes_home / "agent-hooks" / "job-hunter-profile.py"
+    registered = isinstance(entries, list) and any(
+        isinstance(e, dict) and isinstance(e.get("command"), str) and str(hook_script) in e["command"]
+        for e in entries
+    )
+    if not registered:
+        return "hermes hook", True, "not registered"
+    if hook_script.exists():
+        return "hermes hook", True, str(hook_script)
+    return (
+        "hermes hook",
+        False,
+        f"registered in {config_path} but {hook_script} does not exist — re-run "
+        "`scripts/install_skill.sh --hermes --update` from the current checkout",
+    )
+
+
 def doctor() -> int:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("python", sys.version_info >= (3, 11), sys.version.split()[0]))
@@ -249,6 +410,7 @@ def doctor() -> int:
     except OSError as exc:
         checks.append(("DNS", False, str(exc)))
     checks.append(_stealth_browser_check(companies))
+    checks.append(_hermes_hook_check())
     for name, ok, detail in checks:
         print(f"{'OK' if ok else 'FAIL':4} {name}: {detail}")
     return 0 if all(ok for _, ok, _ in checks) else 1
@@ -257,6 +419,7 @@ def doctor() -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        chdir_to_project_root(args.project)
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
@@ -286,10 +449,91 @@ def main(argv: list[str] | None = None) -> int:
                 changed = storage.reevaluate_sponsorship()
             print(f"Re-evaluated visa sponsorship for every stored job; {changed} changed.")
             return 0
-        if args.command == "resolve-search":
-            resolved = resolve_search_path(search=args.search, keyword=args.keyword)
-            print(resolved)
+        if args.command == "reevaluate-salary":
+            with Storage(settings.database_path) as storage:
+                changed = storage.reevaluate_salary()
+            print(f"Re-evaluated salary for every stored job; {changed} changed.")
             return 0
+        if args.command == "resolve-search":
+            resolved = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
+            print(resolved)
+            print(_archive_scope_summary(resolved), file=sys.stderr)
+            return 0
+        if args.command == "pipeline-status":
+            run_id = args.run or latest_run_id()
+            if run_id is None:
+                print("job-hunter: no pipeline runs found (data/runs is empty)", file=sys.stderr)
+                return 2
+            manifest = read_manifest(run_id)
+            # A manifest can be stuck at RUNNING forever if its process died without updating it
+            # (killed, crashed, machine restarted) — the manifest file itself never lies about
+            # what it last wrote, so this is a read-time, presentation-only verdict computed here,
+            # never persisted back to the manifest (see docs/agent-runtime-audit.md's "abandoned
+            # vs. running" finding). `pid_alive` alone isn't sufficient: the OS can reuse a dead
+            # process's pid for an unrelated later process, which would make a genuinely-abandoned
+            # manifest look live for the wrong reason ("PID reuse" finding). When the manifest
+            # recorded `pid_start_time` (process identity, not just a number) and the pid's
+            # *current* start time can be determined right now, a mismatch means this isn't the
+            # same process anymore — treated as abandoned even though `pid_alive` alone would say
+            # "alive". Either side being unavailable (`None`) means "can't verify" and falls back
+            # to the original PID-only liveness check, never treated as evidence of reuse.
+            current_start_time = (
+                process_start_time(manifest.pid)
+                if manifest.pid is not None and manifest.pid_start_time is not None
+                else None
+            )
+            pid_reused = (
+                manifest.pid_start_time is not None
+                and current_start_time is not None
+                and current_start_time != manifest.pid_start_time
+            )
+            abandoned = manifest.status == PipelineStatus.RUNNING and manifest.pid is not None and (
+                not pid_alive(manifest.pid) or pid_reused
+            )
+            payload = manifest.model_dump(mode="json")
+            if abandoned:
+                payload["last_written_status"] = payload["status"]
+                payload["status"] = "abandoned"
+            print(_json(payload))
+            if abandoned:
+                return 2
+            return 0 if manifest.status not in PIPELINE_NON_SUCCESS_STATUSES else 2
+        if args.command == "pipeline":
+            if args.no_scrape and args.companies:
+                print(
+                    "job-hunter: --companies has no effect with --no-scrape (refiltering "
+                    "re-evaluates an archive's own already-attempted source scope, not a "
+                    "fresh company selection) — drop one of the two flags",
+                    file=sys.stderr,
+                )
+                return 2
+            if args.search and not args.no_scrape:
+                print(
+                    "job-hunter: --search only applies to --no-scrape (a live search always "
+                    "writes a fresh archive rather than resolving an existing one) — add "
+                    "--no-scrape or drop --search",
+                    file=sys.stderr,
+                )
+                return 2
+            manifest = asyncio.run(
+                run_pipeline(
+                    settings,
+                    Path.cwd(),
+                    keyword=args.keyword,
+                    search=args.search,
+                    companies_filter=args.companies,
+                    limit=args.limit,
+                    new_only=args.new_only,
+                    refresh_details=args.refresh_details,
+                    max_candidates=args.max_candidates,
+                    skip_review=args.skip_review,
+                    skip_radar=args.skip_radar,
+                    no_scrape=args.no_scrape,
+                    review=args.review,
+                )
+            )
+            print(_json(manifest.model_dump(mode="json")))
+            return 0 if manifest.status not in PIPELINE_NON_SUCCESS_STATUSES else 2
         if args.command == "cleanup":
             result = run_cleanup(
                 settings,
@@ -335,28 +579,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         rendered = _json(result.model_dump(mode="json"))
-        output_path = archive_path(args.keyword) if args.archive else args.output
+        output_path = archive_path(args.keyword, companies=args.companies) if args.archive else args.output
         if output_path:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(rendered + "\n", encoding="utf-8")
+            atomic_write_text(output_path, rendered + "\n")
             print(f"Archived to: {output_path}")
         if args.json:
             print(rendered)
         else:
-            summary = result.summary
-            print(
-                f"Sources: {summary.sources_attempted} attempted / {summary.sources_succeeded} succeeded / {summary.sources_failed} failed"
-            )
-            print(
-                f"Jobs: {summary.jobs_observed} observed / {summary.us_eligible} U.S.-eligible / "
-                f"{summary.stale_excluded} excluded as stale / {summary.prefilter_candidates} candidates"
-            )
+            for line in format_search_summary(result.summary):
+                print(line)
             for health in result.source_health:
                 print(
                     f"{health.source_key}: {health.status.value} ({health.job_count}){': ' + health.message if health.message else ''}"
                 )
         return 0 if result.summary.sources_succeeded else 2
-    except (FileNotFoundError, ValueError, ValidationError) as exc:
+    except (FileNotFoundError, ValueError, ValidationError, RunLockHeld) as exc:
         print(f"job-hunter: {exc}", file=sys.stderr)
         return 2
 

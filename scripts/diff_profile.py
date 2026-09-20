@@ -57,11 +57,13 @@ import yaml
 # Reused from the sibling script rather than reimplemented: same hybrid-beats-remote text
 # precedence and same "only the two actionable states get a tag" rule as the radar report uses,
 # so a job tagged Hybrid/No Sponsorship here and in job-radar's report never disagrees.
-from render_radar import _arrangement_tag, _sponsorship_tag  # noqa: E402
+from render_radar import _arrangement_tag, _sponsorship_tag, _tier  # noqa: E402
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_settings
 from job_hunter.models import Assessment, Job
 from job_hunter.prefilter import PrefilterDecision, evaluate_prefilter, passes_recency
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.storage import Storage
 
 _FILTER_FIELDS = (
@@ -105,10 +107,9 @@ def _advance_baseline(profile_path: Path) -> None:
     """Record profile_path's current content as the new check-mode baseline, keeping exactly
     one prior generation for --rollback-baseline. A plain text copy, never a YAML parse/dump —
     see this module's docstring for why that distinction matters."""
-    _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     if _SNAPSHOT_PATH.exists():
-        _SNAPSHOT_PREV_PATH.write_text(_SNAPSHOT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    _SNAPSHOT_PATH.write_text(profile_path.read_text(encoding="utf-8"), encoding="utf-8")
+        atomic_write_text(_SNAPSHOT_PREV_PATH, _SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    atomic_write_text(_SNAPSHOT_PATH, profile_path.read_text(encoding="utf-8"))
 
 
 def _rollback_baseline() -> bool:
@@ -119,9 +120,9 @@ def _rollback_baseline() -> bool:
         return False
     prev_content = _SNAPSHOT_PREV_PATH.read_text(encoding="utf-8")
     current_content = _SNAPSHOT_PATH.read_text(encoding="utf-8") if _SNAPSHOT_PATH.exists() else None
-    _SNAPSHOT_PATH.write_text(prev_content, encoding="utf-8")
+    atomic_write_text(_SNAPSHOT_PATH, prev_content)
     if current_content is not None:
-        _SNAPSHOT_PREV_PATH.write_text(current_content, encoding="utf-8")
+        atomic_write_text(_SNAPSHOT_PREV_PATH, current_content)
     return True
 
 # jobs.canonical_url -> Job.url is the one required rename; every other column already lines
@@ -133,7 +134,7 @@ _JOB_COLUMNS = (
     "us_eligible", "location_confidence", "location_evidence",
     "visa_sponsorship", "sponsorship_evidence", "department",
     "employment_type", "posted_at", "description", "salary_min",
-    "salary_max", "salary_currency", "content_hash", "first_seen_at",
+    "salary_max", "salary_currency", "salary_evidence", "content_hash", "first_seen_at",
     "last_seen_at",
 )
 
@@ -443,8 +444,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     --line: #DCE3E7;
     --accent: #0C7F91;
     --accent-soft: #E4F1F3;
-    --tier-exceptional: #1D9A66;
-    --tier-exceptional-soft: #E4F5EC;
+    /* Score tiers — identical values to radar_template.html's, so a job scores
+       the same color in either report. */
+    --score-fair: #5C7A99;
+    --score-moderate: #0C7F91;
+    --score-promising: #A3760E;
+    --score-strong: #D2691E;
+    --score-exceptional: #1D9A66;
+    /* Status color: reserved, fixed meaning ("good") — kept out of the accent/
+       categorical set so it never impersonates a series or a UI action color;
+       mirrors radar_template.html's identical --status-good token. */
+    --status-good: #1D9A66;
+    --status-good-soft: #E4F5EC;
     --danger: #C1443A;
     --danger-soft: #FBEAE8;
     --arrangement-remote: #2D6FB0;
@@ -464,8 +475,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       --line: #2A333A;
       --accent: #3FC1D4;
       --accent-soft: #17323A;
-      --tier-exceptional: #3FCC8C;
-      --tier-exceptional-soft: #163829;
+      --score-fair: #7FA3C4;
+      --score-moderate: #3FC1D4;
+      --score-promising: #E3B24A;
+      --score-strong: #E8875A;
+      --score-exceptional: #3FCC8C;
+      --status-good: #3FCC8C;
+      --status-good-soft: #163829;
       --danger: #E2695E;
       --danger-soft: #3A1F1C;
       --arrangement-remote: #6FB1EE;
@@ -485,8 +501,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     --line: #2A333A;
     --accent: #3FC1D4;
     --accent-soft: #17323A;
-    --tier-exceptional: #3FCC8C;
-    --tier-exceptional-soft: #163829;
+    --score-fair: #7FA3C4;
+    --score-moderate: #3FC1D4;
+    --score-promising: #E3B24A;
+    --score-strong: #E8875A;
+    --score-exceptional: #3FCC8C;
+    --status-good: #3FCC8C;
+    --status-good-soft: #163829;
     --danger: #E2695E;
     --danger-soft: #3A1F1C;
     --arrangement-remote: #6FB1EE;
@@ -513,14 +534,29 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   section { margin: 32px 0; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
   .row { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow); padding: 12px 16px; }
-  .row-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-  .job-title { font-weight: 600; font-size: 15px; }
-  .job-company { font-size: 13px; color: var(--muted); }
+  /* Same 4-track grid as radar_template.html's summary/plain-row-top — score |
+     job | tags | row-end — so a score column lines up down the whole list the
+     same way it does in the radar report. */
+  .row-top { display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 14px; }
+  .score { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 20px; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-soft); }
+  .score-nr { color: var(--muted); font-size: 13px; letter-spacing: 0.02em; }
+  .row.tier-exceptional .score { color: var(--score-exceptional); }
+  .row.tier-strong .score { color: var(--score-strong); }
+  .row.tier-promising .score { color: var(--score-promising); }
+  .row.tier-moderate .score { color: var(--score-moderate); }
+  .row.tier-fair .score { color: var(--score-fair); }
+  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .job-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .job-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .job-title-line .tag-new { flex: none; }
+  .job-company { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-salary { color: var(--accent); font-weight: 600; }
   .job-date { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row-end { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 220px; }
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
-  .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
+  .tag-sponsor-yes { background: var(--status-good-soft); color: var(--status-good); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
   .tag-long-standing { background: var(--line); color: var(--muted); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
@@ -534,15 +570,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .apply-link:hover, .apply-link:focus-visible { border-bottom-color: var(--accent); }
   .row-meta { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
   .empty { color: var(--muted); font-style: italic; }
+  @media (max-width: 560px) {
+    .row-top { grid-template-columns: 36px 1fr auto auto; }
+    .tags { max-width: 90px; }
+    .job-date { display: none; }
+  }
   .terms-field { margin: 14px 0; }
   .terms-field-name { font-weight: 600; font-size: 13px; font-family: "IBM Plex Mono", monospace; color: var(--muted); margin-bottom: 4px; }
   .term-tag { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 12.5px; margin: 2px 4px 2px 0; background: var(--accent-soft); color: var(--ink); }
-  .term-tag-added { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); font-weight: 600; }
+  .term-tag-added { background: var(--status-good-soft); color: var(--status-good); font-weight: 600; }
   .term-tag-removed { background: var(--danger-soft); color: var(--danger); text-decoration: line-through; }
 
   /* --- Feedback capture (same mechanism/schema as job-radar's report — see
      docs/feedback-exclusion-plan.md) --- */
-  .row-feedback { margin-top: 8px; }
   .feedback-buttons { display: flex; gap: 4px; align-items: center; }
   .fb-btn { font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
   .fb-btn:hover { border-color: var(--accent); }
@@ -722,35 +762,55 @@ def _fmt_posted_date(posted_at: datetime | None, first_seen_at: datetime | None 
     return "Date unknown"
 
 
-def _job_tags(job: Job, *, now: datetime, undated_new_days: int, undated_stale_days: int) -> str:
-    """[New]/sponsorship/work-arrangement tags — deliberately the same three tags and the
-    same rules job-radar's report uses (see _arrangement_tag/_sponsorship_tag), so a job never
-    looks tagged differently in the two reports. This report never scores anything, so there's
-    no score tier tag ([90+]/[80+]) to show here.
-
-    A job with no posted_at falls back to first_seen_at as a display-only proxy for age —
-    never a filter, see config.py's SearchConfig.undated_new_days/undated_stale_days: [New]
-    while freshly first-seen, "Long-standing" once first seen a long time ago. This can be
-    wrong (a job onboarded from a brand-new source looks "new" regardless of how long it's
-    actually been posted, and an evergreen undated listing will eventually get tagged
-    long-standing even though it's still genuinely open) — it's a hint for a human reviewer,
-    not a claim about the job's real age, which is why it never removes anything from the
-    report the way max_posting_age_days can for a job with a real posted_at."""
-    tags = ""
+def _is_new(job: Job, *, now: datetime, undated_new_days: int) -> bool:
     if job.posted_at:
         posted = job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC)
-        if (now - posted).days <= _NEW_DAYS:
-            tags += '<span class="tag tag-new">New</span>'
-    elif job.first_seen_at:
+        return (now - posted).days <= _NEW_DAYS
+    if job.first_seen_at:
+        first_seen = job.first_seen_at if job.first_seen_at.tzinfo else job.first_seen_at.replace(tzinfo=UTC)
+        return (now - first_seen).days <= undated_new_days
+    return False
+
+
+def _job_tags(job: Job, *, now: datetime, undated_new_days: int, undated_stale_days: int) -> str:
+    """Long-standing/sponsorship/work-arrangement tags — deliberately the same tags and the
+    same rules job-radar's report uses (see _arrangement_tag/_sponsorship_tag), so a job never
+    looks tagged differently in the two reports. This report never scores anything, so there's
+    no score tier tag ([90+]/[80+]) to show here. [New] is handled separately by `_is_new` —
+    job-radar's report renders it inline before the title rather than in this tags column, and
+    this report mirrors that layout (see `_render_rows`), so it's excluded here to avoid
+    rendering it twice.
+
+    A job with no posted_at falls back to first_seen_at as a display-only proxy for age —
+    never a filter, see config.py's SearchConfig.undated_new_days/undated_stale_days:
+    "Long-standing" once first seen a long time ago. This can be wrong (an evergreen undated
+    listing will eventually get tagged long-standing even though it's still genuinely open) —
+    it's a hint for a human reviewer, not a claim about the job's real age, which is why it
+    never removes anything from the report the way max_posting_age_days can for a job with a
+    real posted_at."""
+    tags = ""
+    if not job.posted_at and job.first_seen_at:
         first_seen = job.first_seen_at if job.first_seen_at.tzinfo else job.first_seen_at.replace(tzinfo=UTC)
         age_days = (now - first_seen).days
-        if age_days <= undated_new_days:
-            tags += '<span class="tag tag-new">New</span>'
-        elif age_days > undated_stale_days:
+        if age_days > undated_stale_days:
             tags += '<span class="tag tag-long-standing">Long-standing</span>'
     tags += _sponsorship_tag(job.visa_sponsorship)
     tags += _arrangement_tag(job.work_arrangement)
     return tags
+
+
+def _job_meta_html(location: str | None, salary_evidence: str | None) -> str:
+    """Location and salary, shown directly in the always-visible summary row — identical
+    presentation to job-radar's report (`render_radar.py`'s `_job_meta_html`): `·`-joined onto
+    one line, salary in the report's accent color so a reader scanning down the list can spot
+    which rows mention pay without reading every word. Returns ready-to-embed HTML (each piece
+    escaped individually); the caller must not re-escape it."""
+    parts = []
+    if location:
+        parts.append(f'<span class="job-location">{_e(location)}</span>')
+    if salary_evidence:
+        parts.append(f'<span class="job-salary">{_e(salary_evidence)}</span>')
+    return " &middot; ".join(parts)
 
 
 def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: str) -> str:
@@ -761,12 +821,25 @@ def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: 
         job = item.job
         label = result.feedback_label(job)
         flag = f'<span class="flag">TAGGED {_e(label.upper())}</span>' if label in ("relevant", "okay") else ""
+        new_badge = (
+            '<span class="tag tag-new">New</span>'
+            if _is_new(job, now=result.evaluated_at, undated_new_days=result.undated_new_days)
+            else ""
+        )
         tags = _job_tags(
             job, now=result.evaluated_at,
             undated_new_days=result.undated_new_days, undated_stale_days=result.undated_stale_days,
         )
         date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
         score = result.assessment_score(job)
+        if score is None:
+            score_html = '<span class="score score-nr" title="Not yet reviewed by the local model">NR</span>'
+            tier_class = ""
+        else:
+            score_html = f'<span class="score">{score}</span>'
+            tier_class = f" tier-{_tier(score)}"
+        meta_html = _job_meta_html(job.location_raw, job.salary_evidence)
+        job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
         feedback_buttons = f'''<span class="feedback-buttons"
               data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
               data-company="{_e(job.company)}" data-title="{_e(job.title)}"
@@ -777,19 +850,26 @@ def _render_rows(items: list[ChangedJob], result: DiffResult, *, empty_message: 
               <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
             </span>'''
         parts.append(f"""
-        <div class="row">
+        <div class="row{tier_class}">
           <div class="row-top">
-            <span class="tags">{tags}</span>
+            {score_html}
             <span class="job">
-              <span class="job-title">{_e(job.title)}{flag}</span>
+              <span class="job-title-line">
+                {new_badge}
+                <span class="job-title">{_e(job.title)}{flag}</span>
+              </span>
               <span class="job-company">{_e(job.company)}</span>
+              {job_meta}
             </span>
-            <span class="job-date">{_e(date_display)}</span>
-            <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            <span class="tags">{tags}</span>
+            <span class="row-end">
+              <span class="job-date">{_e(date_display)}</span>
+              {feedback_buttons}
+              <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            </span>
           </div>
           <div class="row-meta">before: {_e(_decision_str(item.before))} &middot; after: {_e(_decision_str(item.after))}</div>
-          <div class="row-meta">{_e(result.assessment_note(job))} &middot; last seen {_e(str(_local(job.last_seen_at)))}</div>
-          <div class="row-feedback">{feedback_buttons}</div>
+          <div class="row-meta">last seen {_e(str(_local(job.last_seen_at)))}</div>
         </div>""")
     return "".join(parts)
 
@@ -841,8 +921,7 @@ def render_html(result: DiffResult, output_path: Path, *, title: str) -> None:
         .replace("__LOST_ROWS__", _render_rows(result.lost, result, empty_message="Nothing lost."))
         .replace("__GAINED_ROWS__", _render_rows(result.gained, result, empty_message="Nothing gained."))
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
 
 
 def main() -> int:
@@ -881,7 +960,9 @@ def main() -> int:
             "Standalone action: takes no other flags, runs no comparison."
         ),
     )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     file_pair_mode = args.before is not None or args.after is not None
     convenience_mode = bool(args.add) or bool(args.remove)

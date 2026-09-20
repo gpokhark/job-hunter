@@ -26,4 +26,14 @@ retention:
   closed_job_after_days: 10
   report_after_days: 15
   keep_latest_reports_per_slug: 2
+# job-hunter pipeline's child-process supervision (docs/agent-runtime-audit.md). Shipped as a
+# safe default for a fresh clone -- a stuck search/review/refilter/radar subprocess would
+# otherwise hang the pipeline indefinitely (PipelineConfig.stage_timeout_seconds itself still
+# defaults to None/no-timeout at the Python level, so an existing installation that already has
+# this commented out, or removed, is unaffected unless it re-copies this file). 8 hours is sized
+# to comfortably exceed a large sequential local-model review (one job at a time against LM
+# Studio) -- raise it further, or comment it back out, if your own review runs legitimately take
+# longer than that.
+pipeline:
+  stage_timeout_seconds: 28800  # 8 hours
 

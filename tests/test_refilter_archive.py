@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from refilter_archive import _assessment_note, _render_job_rows, refilter  # noqa: E402
+from refilter_archive import _render_job_rows, refilter  # noqa: E402
 
 from job_hunter.config import CandidateProfile, Settings
 from job_hunter.models import (
@@ -67,6 +67,35 @@ def test_refilter_recomputes_recency_against_now(monkeypatch, tmp_path):
     result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
     assert result["candidates"] == []
     assert result["summary"]["stale_excluded"] == 1
+
+
+def test_refilter_carries_salary_and_sponsorship_evidence_through(monkeypatch, tmp_path):
+    """Regression: _JOB_COLUMNS is a hand-maintained allowlist, not SELECT * — a column
+    added to the jobs table (salary_evidence) but never added here would silently rebuild
+    every candidate with that field defaulted to None even though the real value is
+    sitting right there in SQLite, exactly what happened before this test existed."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            make_job(
+                title="Engineer",
+                salary_min=100000.0,
+                salary_max=150000.0,
+                salary_currency="USD",
+                salary_evidence="$100,000 - $150,000",
+                visa_sponsorship=SponsorshipStatus.NOT_AVAILABLE,
+                sponsorship_evidence="does not sponsor visas",
+            )
+        )
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile(target_domains=["engineer"]))
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings())
+
+    data = _archive([{"source_key": "apple", "job_id": "1"}])
+    result = refilter(data, now=datetime(2026, 9, 5, tzinfo=UTC), database_path=db_path)
+    candidate = result["candidates"][0]
+    assert candidate["salary_evidence"] == "$100,000 - $150,000"
+    assert candidate["sponsorship_evidence"] == "does not sponsor visas"
 
 
 def test_refilter_does_not_mutate_input(monkeypatch, tmp_path):
@@ -180,7 +209,7 @@ def test_render_job_rows_includes_link_tags_date_and_feedback_buttons():
     assert 'data-source-key="gm"' in html_out
     assert 'data-job-id="1"' in html_out
     assert 'data-label="relevant"' in html_out
-    assert "no assessment on record" in html_out
+    assert 'class="score score-nr"' in html_out
 
 
 def test_render_job_rows_empty_shows_message():
@@ -191,16 +220,24 @@ def test_render_job_rows_empty_shows_message():
     assert "Nothing gained." in html_out
 
 
-def test_assessment_note_reflects_prior_assessment_attached_by_active_jobs():
+def test_render_job_rows_score_badge_reflects_prior_assessment_attached_by_active_jobs():
     """_active_jobs only ever attaches prior_assessment when the content_hash still matches,
     so its mere presence already means valid — no separate staleness check needed here."""
+    now = datetime(2026, 9, 6, tzinfo=UTC)
     job = make_job(job_id="1")
-    assert _assessment_note(job) == "no assessment on record"
+    html_out = _render_job_rows(
+        [job], now=now, empty_message="unused", undated_new_days=15, undated_stale_days=45
+    )
+    assert 'class="score score-nr"' in html_out
+
     job.prior_assessment = Assessment(
         source_key="apple", job_id="1", company="Apple", title="x", url="https://example.com/1",
         score=82, recommended=True,
     )
-    assert _assessment_note(job) == "has a valid prior assessment (score 82)"
+    html_out = _render_job_rows(
+        [job], now=now, empty_message="unused", undated_new_days=15, undated_stale_days=45
+    )
+    assert '<span class="score">82</span>' in html_out
 
 
 def test_refilter_excludes_a_source_that_failed_this_archives_run(monkeypatch, tmp_path):
@@ -302,3 +339,37 @@ def test_main_writes_archive_diff_report_excluding_a_failed_sources_stale_job(mo
     gained_section = report_html.split("<h2>Gained</h2>")[1].split("<h2>Lost</h2>")[0]
     assert "Verification Lead" not in gained_section  # the failed-source job stays excluded
     assert "Nothing gained." in gained_section
+
+
+def test_result_json_includes_refiltered_at_provenance(monkeypatch, tmp_path):
+    """docs/agent-runtime-audit.md's "provenance fields" finding: --result-json must record
+    when this refilter actually ran, not just gained/lost/diff_report -- a refiltered report's
+    contents depend on *when* it ran against whatever live SQLite state existed at that instant,
+    which the archive file on disk alone can't reveal."""
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path):
+        pass
+
+    monkeypatch.setattr("refilter_archive.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr("refilter_archive.load_settings", lambda: Settings(database_path=db_path))
+    monkeypatch.chdir(tmp_path)
+
+    search_path = tmp_path / "data" / "searches" / "default_2026-09-06.json"
+    search_path.parent.mkdir(parents=True)
+    search_path.write_text(json.dumps(_archive([])))
+
+    import refilter_archive
+
+    result_json_path = tmp_path / "result.json"
+    before = datetime.now(UTC)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["refilter_archive.py", "--search", str(search_path), "--no-report", "--result-json", str(result_json_path)],
+    )
+    refilter_archive.main()
+    after = datetime.now(UTC)
+
+    result = json.loads(result_json_path.read_text())
+    assert set(result.keys()) == {"gained", "lost", "diff_report", "refiltered_at"}
+    refiltered_at = datetime.fromisoformat(result["refiltered_at"])
+    assert before <= refiltered_at <= after

@@ -3,8 +3,14 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from render_radar import _default_title, build  # noqa: E402
+from render_radar import _default_title, build, main  # noqa: E402
+
+from job_hunter.config import CandidateProfile
+from job_hunter.models import HealthStatus, Job, LocationConfidence, SourceHealth
+from job_hunter.storage import Storage
 
 
 def _search_json(candidates: list[dict], source_health: list[dict] | None = None) -> dict:
@@ -23,6 +29,7 @@ def _candidate(
     location_raw="Detroit, MI",
     visa_sponsorship="unmentioned",
     sponsorship_evidence=None,
+    salary_evidence=None,
     work_arrangement="unknown",
     company="Acme",
     title="Engineer",
@@ -36,6 +43,7 @@ def _candidate(
         "location_raw": location_raw,
         "visa_sponsorship": visa_sponsorship,
         "sponsorship_evidence": sponsorship_evidence,
+        "salary_evidence": salary_evidence,
         "work_arrangement": work_arrangement,
         "company": company,
         "title": title,
@@ -101,12 +109,72 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
         "never_reviewed": 0,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert "Exceptional Role" in html
     assert "Weak Role" in html  # below-50 candidates are listed in their own section
-    assert 'tag-exceptional">90+' in html
-    assert 'tag-strong">80+' in html
+    # No separate per-row 90+/80+ text tag — the score number's own color (via the row's
+    # tier-* class) is the only tier signal now. "90+"/"80s" still appear exactly once each,
+    # in the static page-level score-legend key (radar_template.html), not per row.
+    assert 'tier-exceptional"' in html
+    assert 'tier-strong"' in html
+    assert html.count("90+") == 1
+    assert html.count("80s") == 1
+
+
+def test_score_gradient_covers_the_full_50_to_100_range(tmp_path):
+    """The score color is a five-step gradient across the whole 50-100 range, not just
+    a hard cutoff at 80/90 — a 55 (barely "for review") and a 68 must read differently
+    from each other and from an 88, not all fall back to the same uncolored default.
+    Below 50 stays uncolored: those jobs are excluded from the chat-facing summary
+    entirely, so there's no reason for a reader to be comparing shades of "not it"."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="Fair Role"),
+                    _candidate("x", "2", title="Moderate Role"),
+                    _candidate("x", "3", title="Promising Role"),
+                    _candidate("x", "4", title="Strong Role"),
+                    _candidate("x", "5", title="Exceptional Role"),
+                    _candidate("x", "6", title="Below Fifty Role"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 55, title="Fair Role"),
+                _assessment("x", "2", 65, title="Moderate Role"),
+                _assessment("x", "3", 72, title="Promising Role"),
+                _assessment("x", "4", 85, title="Strong Role"),
+                _assessment("x", "5", 95, title="Exceptional Role"),
+                _assessment("x", "6", 45, title="Below Fifty Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+    for title, tier in [
+        ("Fair Role", "fair"),
+        ("Moderate Role", "moderate"),
+        ("Promising Role", "promising"),
+        ("Strong Role", "strong"),
+        ("Exceptional Role", "exceptional"),
+    ]:
+        idx = html.index(title)
+        assert f'tier-{tier}"' in html[max(0, idx - 400) : idx]
+    below_idx = html.index("Below Fifty Role")
+    assert 'tier-plain"' in html[max(0, below_idx - 400) : below_idx]
 
 
 def test_never_reviewed_candidate_excluded_from_scored_groups_but_listed_separately(tmp_path):
@@ -177,8 +245,97 @@ def test_new_tag_uses_posting_recency_window(tmp_path):
     html = output_path.read_text()
     fresh_idx = html.index("Fresh Role")
     older_idx = html.index("Older Role")
-    assert 'tag-new">New' in html[max(0, fresh_idx - 400) : fresh_idx]
-    assert 'tag-new">New' not in html[max(0, older_idx - 400) : older_idx]
+    # "New" is the one tag that renders immediately before the title text itself
+    # (inside .job-title-line, so .job's own start position is unaffected) — every
+    # other tag renders in its own column after the whole job block.
+    assert 'tag-new">New' in html[max(0, fresh_idx - 200) : fresh_idx]
+    assert 'tag-new">New' not in html[max(0, older_idx - 200) : older_idx]
+
+
+def test_row_grid_column_count_is_constant_regardless_of_tags(tmp_path):
+    """Regression: summary's grid tracks are positional (auto-placement fills them in
+    DOM order, not by track name) — a row with zero secondary tags must still emit an
+    (empty) .tags element, or .row-end would silently shift into .tags' own track and
+    the date/feedback column would misalign across rows exactly like the title column
+    used to before tags moved out of a variable-width column ahead of it."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="No Tags Role", work_arrangement="onsite"),
+                    _candidate("x", "2", title="Tagged Role", work_arrangement="remote"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 80, title="No Tags Role"),
+                _assessment("x", "2", 80, title="Tagged Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+    no_tags_idx = html.index("No Tags Role")
+    tagged_idx = html.index("Tagged Role")
+    # Both rows must still have a .tags element (even an empty one) as a direct child
+    # of the summary grid, immediately followed by .row-end — regardless of whether
+    # that particular row actually has a secondary tag to show.
+    assert '<span class="tags"></span>\n        <span class="row-end">' in html[no_tags_idx : no_tags_idx + 600]
+    assert '<span class="tags"><span class="tag tag-remote">' in html[tagged_idx : tagged_idx + 600]
+
+
+def test_apply_link_always_visible_and_below_feedback_buttons_in_both_sections(tmp_path):
+    """The "View posting" link must never require expanding a row to reach — it sits
+    in .row-end (inside <summary>, always visible) below the feedback buttons, in the
+    exact same order, for a scored row and a never-reviewed one alike."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", title="Scored Role", url="https://example.com/scored"),
+                    _candidate("x", "2", title="Unreviewed Role", url="https://example.com/unreviewed"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("x", "1", 80, title="Scored Role")]))
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+    )
+    html = output_path.read_text()
+
+    scored_idx = html.index("Scored Role")
+    scored_summary_end = html.index("</summary>", scored_idx)
+    scored_block = html[scored_idx:scored_summary_end]
+    assert "https://example.com/scored" in scored_block  # inside <summary>, not row-detail
+    assert scored_block.index("feedback-buttons") < scored_block.index("apply-link")
+
+    unreviewed_idx = html.index("Unreviewed Role")
+    unreviewed_top_end = html.index("</div>", unreviewed_idx)
+    unreviewed_block = html[unreviewed_idx:unreviewed_top_end]
+    assert "https://example.com/unreviewed" in unreviewed_block
+    assert unreviewed_block.index("feedback-buttons") < unreviewed_block.index("apply-link")
+
+    # Never a filter/gate on the link's own visibility — the row-detail section (only
+    # matches/gaps/sponsorship-evidence, no link) must not contain the URL a second time.
+    row_detail_start = html.index('<div class="row-detail">', scored_idx)
+    row_detail_end = html.index("</details>", row_detail_start)
+    assert "https://example.com/scored" not in html[row_detail_start:row_detail_end]
 
 
 def test_url_title_company_come_from_the_fresh_candidate_not_the_stale_assessment(tmp_path):
@@ -293,11 +450,73 @@ def test_sponsorship_tags_and_never_excludes_a_job(tmp_path):
     yes_idx = html.index("Sponsorship OK Role")
     unmentioned_idx = html.index("Unmentioned Role")
     predates_idx = html.index("Predates Feature Role")
-    assert 'tag-sponsor-no">No Sponsorship' in html[max(0, no_idx - 400) : no_idx]
+    # Tags render inside .job, right after the title — see test_new_tag_uses_posting_
+    # recency_window's comment for why a before-the-title column was removed.
+    assert 'tag-sponsor-no">No Sponsorship' in html[no_idx : no_idx + 400]
     assert "will not be sponsored" in html
-    assert 'tag-sponsor-yes">Sponsorship OK' in html[max(0, yes_idx - 400) : yes_idx]
-    assert 'tag-sponsor' not in html[max(0, unmentioned_idx - 400) : unmentioned_idx]
-    assert 'tag-sponsor' not in html[max(0, predates_idx - 400) : predates_idx]
+    assert 'tag-sponsor-yes">Sponsorship OK' in html[yes_idx : yes_idx + 400]
+    assert 'tag-sponsor' not in html[unmentioned_idx : unmentioned_idx + 400]
+    assert 'tag-sponsor' not in html[predates_idx : predates_idx + 400]
+
+
+def test_job_meta_shows_location_and_salary_in_the_always_visible_summary(tmp_path):
+    """Location and salary must be visible without expanding the row — they render as
+    one job-meta line inside the always-visible <summary>, not hidden inside the
+    click-to-expand detail. Salary is still never a filter: it never changes inclusion,
+    and a row with no salary_evidence just shows location alone (no placeholder),
+    mirroring sponsorship's "unmentioned carries no tag" reasoning."""
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate(
+                        "x", "1", salary_evidence="$76,100.00 to $114,300.00",
+                        title="Salary Stated Role",
+                    ),
+                    _candidate("x", "2", salary_evidence=None, title="No Salary Role"),
+                ]
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps(
+            [
+                _assessment("x", "1", 80, title="Salary Stated Role"),
+                _assessment("x", "2", 80, title="No Salary Role"),
+            ]
+        )
+    )
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path,
+        assessments_path=assessments_path,
+        output_path=output_path,
+        title="Test Radar",
+        keyword_label=None,
+        new_days=10,
+        now=now,
+    )
+    assert stats["strong"] == 2
+
+    html = output_path.read_text()
+    stated_idx = html.index("Salary Stated Role")
+    no_salary_idx = html.index("No Salary Role")
+    # Both the location and the salary line sit in the <summary> — before the
+    # click-to-expand <div class="row-detail"> even starts, not inside it. Salary gets
+    # its own .job-salary span (a distinct color from location's muted default).
+    stated_summary_end = html.index("</summary>", stated_idx)
+    no_salary_summary_end = html.index("</summary>", no_salary_idx)
+    assert (
+        'job-location">Detroit, MI</span> · <span class="job-salary">$76,100.00 to $114,300.00'
+        in html[stated_idx:stated_summary_end]
+    )
+    assert 'job-location">Detroit, MI<' in html[no_salary_idx:no_salary_summary_end]
+    assert "job-salary" not in html[no_salary_idx:no_salary_summary_end]
+    assert "$76,100.00" not in html[no_salary_idx:no_salary_summary_end]
 
 
 def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):
@@ -349,12 +568,14 @@ def test_work_arrangement_tags_and_never_excludes_a_job(tmp_path):
     hybrid_idx = html.index("Hybrid Role")
     onsite_idx = html.index("Onsite Role")
     unknown_idx = html.index("Unknown Role")
-    assert 'tag-remote">Remote' in html[max(0, remote_idx - 400) : remote_idx]
-    assert 'tag-hybrid">Hybrid' in html[max(0, hybrid_idx - 400) : hybrid_idx]
-    assert "tag-remote" not in html[max(0, onsite_idx - 400) : onsite_idx]
-    assert "tag-hybrid" not in html[max(0, onsite_idx - 400) : onsite_idx]
-    assert "tag-remote" not in html[max(0, unknown_idx - 400) : unknown_idx]
-    assert "tag-hybrid" not in html[max(0, unknown_idx - 400) : unknown_idx]
+    # Tags render inside .job, right after the title — see test_new_tag_uses_posting_
+    # recency_window's comment for why a before-the-title column was removed.
+    assert 'tag-remote">Remote' in html[remote_idx : remote_idx + 400]
+    assert 'tag-hybrid">Hybrid' in html[hybrid_idx : hybrid_idx + 400]
+    assert "tag-remote" not in html[onsite_idx : onsite_idx + 400]
+    assert "tag-hybrid" not in html[onsite_idx : onsite_idx + 400]
+    assert "tag-remote" not in html[unknown_idx : unknown_idx + 400]
+    assert "tag-hybrid" not in html[unknown_idx : unknown_idx + 400]
 
 
 def test_empty_group_renders_fallback_message(tmp_path):
@@ -415,10 +636,12 @@ def test_feedback_buttons_carry_correct_data_attributes(tmp_path):
     assert 'radar-feedback-search.json' in html  # __SEARCH_STEM__ substitution
 
 
-def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
-    """A never-reviewed job still gets the same [New]/sponsorship/arrangement tags and
-    feedback buttons as a scored row — just no score/matches/gaps, since there's no
-    assessment to draw them from."""
+def test_never_reviewed_row_matches_scored_row_layout(tmp_path):
+    """A never-reviewed job gets the exact same layout as a scored row (audited
+    end to end, not just "has the tags somewhere"): an NR placeholder where the score
+    goes, the New tag before the title, location shown in job-meta (this section never
+    showed it at all before), other tags in their own column, and feedback buttons —
+    just no score/matches/gaps, since there's no assessment to draw them from."""
     candidate = _candidate(
         "ford", "77", title="ADAS Engineer", company="Ford Motor Company",
         posted_at="2026-08-28T00:00:00Z",  # 3 days before `now` below -> [New]
@@ -448,15 +671,23 @@ def test_never_reviewed_row_carries_feedback_buttons_and_tags(tmp_path):
         "never_reviewed": 1,
         "source_issues": 0,
         "failed": 0,
+        "stale_source_fallback": [],
     }
     html = output_path.read_text()
     assert 'data-source-key="ford"' in html
     assert 'data-job-id="77"' in html
     assert 'data-label="relevant"' in html
-    assert 'tag-new">New' in html
-    assert 'tag-hybrid">Hybrid' in html
-    assert 'tag-sponsor-no">No Sponsorship' in html
-    assert "Not yet reviewed by the local model" in html
+    title_idx = html.index("ADAS Engineer")
+    # NR sits where the score goes, immediately before .job — mirroring _row_html's
+    # own <span class="score">...</span><span class="job"> adjacency exactly.
+    assert 'class="score score-nr" title="Not yet reviewed by the local model">NR</span>\n        <span class="job">' in html[max(0, title_idx - 300) : title_idx]
+    # New renders immediately before the title text itself, same as a scored row.
+    assert 'tag-new">New' in html[max(0, title_idx - 100) : title_idx]
+    # Location (job-meta) — this section rendered no location/salary at all before.
+    assert 'job-location">Detroit, MI<' in html[title_idx : title_idx + 400]
+    # Secondary tags (arrangement, sponsorship) sit in their own column after .job.
+    assert 'tag-hybrid">Hybrid' in html[title_idx : title_idx + 700]
+    assert 'tag-sponsor-no">No Sponsorship' in html[title_idx : title_idx + 700]
 
 
 def test_build_surfaces_non_ok_source_health_grouped_and_ordered(tmp_path):
@@ -629,3 +860,273 @@ def test_undated_job_recently_first_seen_gets_new_tag_not_long_standing(tmp_path
     assert "First seen" in html
     assert 'tag-new">New' in html
     assert 'tag-long-standing">Long-standing' not in html
+
+
+# --- ability 3: stale-source-collection fallback (docs/pipeline-refilter-stale-source-plan.md section 4.3) ---
+
+
+def _make_stored_job(**updates) -> Job:
+    values = dict(
+        source_key="waymo", source_platform="test", company="Waymo", job_id="1",
+        title="AV Perception Engineer", url="https://example.com/waymo/1",
+        us_eligible=True, location_confidence=LocationConfidence.HIGH,
+    )
+    values.update(updates)
+    return Job(**values)
+
+
+def test_collection_fallback_merges_only_recency_passing_jobs_with_a_dated_note(tmp_path):
+    """The core ability-3 scenario: a source that failed to scrape *this* run still shows its
+    last-known-good jobs, but only the ones that still pass the normal recency filter — a source
+    down long enough eventually shows zero fallback jobs while still carrying the note (plan
+    section 3, decision 2), it never bypasses passes_recency."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="fresh", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.upsert_job(
+            _make_stored_job(job_id="stale", title="AV Perception Engineer", posted_at=now - timedelta(days=400))
+        )
+        # A mid-day UTC instant (not midnight) so its local-timezone calendar date is stable
+        # across common timezones when this test runs — same reasoning as
+        # test_eyebrow_date_uses_the_calendar_date_of_whatever_tzinfo_now_carries above: the
+        # expected display string is derived from the same instant with the same .astimezone()
+        # call `_fmt_local_date` itself uses, rather than a separately hand-typed date string
+        # that could silently drift out of sync with whatever timezone actually runs this test.
+        last_success = datetime(2026, 9, 10, 18, 0, tzinfo=UTC)
+        storage.update_health(
+            SourceHealth(
+                source_key="waymo", company="Waymo", status=HealthStatus.OK,
+                job_count=2, attempted_at=last_success,
+            )
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[
+                    {"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Connection timed out."}
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    html = output_path.read_text()
+    assert "AV Perception Engineer" in html  # the recency-passing job made it into the report
+    assert stats["never_reviewed"] == 1  # merged, but not yet scored -> "Not LLM Reviewed"
+    expected_date = last_success.astimezone().strftime("%b %-d, %Y")
+    assert (
+        f"Connection timed out. Failed to scrape today — showing 1 job(s) from the last "
+        f"successful scrape on {expected_date}."
+    ) in html
+    # docs/agent-runtime-audit.md's "provenance fields" finding: the same fallback info must
+    # also be available as structured data, not only folded into the HTML note's prose.
+    assert stats["stale_source_fallback"] == [
+        {
+            "source_key": "waymo",
+            "merged_count": 1,
+            "last_success_at": last_success.isoformat(),
+        }
+    ]
+
+
+def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
+    """A source that has *never* succeeded (source_health.last_success_at IS NULL) gets the
+    "no prior successful data" note instead, with zero jobs merged — there's nothing to merge."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        # A job happens to sit active in SQLite (e.g. from some other source key sharing a
+        # database, or stale test data) but this source itself has no recorded success.
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.FAILED, job_count=0)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "DNS error."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    html = output_path.read_text()
+    assert stats["never_reviewed"] == 0
+    assert "DNS error. Failed to scrape — no prior successful data available for this source." in html
+    assert stats["stale_source_fallback"] == [
+        {"source_key": "waymo", "merged_count": 0, "last_success_at": None}
+    ]
+
+
+def test_collection_fallback_never_triggers_for_warning_or_unsupported_sources(tmp_path):
+    """Deliberately scoped to status == "failed" only — a warning source already produced real
+    live data this run (just fewer jobs than health.py's count-anomaly check expected), and an
+    unsupported source never has cached data to fall back to; neither should ever pull in old
+    SQLite jobs or gain the fallback note text."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(
+                source_key="widget", job_id="1", company="Widget Inc", title="AV Perception Engineer",
+                posted_at=now - timedelta(days=5),
+            )
+        )
+        storage.upsert_job(
+            _make_stored_job(
+                source_key="zeta", job_id="2", company="Zeta Motors", title="AV Perception Engineer",
+                posted_at=now - timedelta(days=5),
+            )
+        )
+        storage.update_health(
+            SourceHealth(source_key="widget", company="Widget Inc", status=HealthStatus.WARNING, job_count=1)
+        )
+        storage.update_health(
+            SourceHealth(source_key="zeta", company="Zeta Motors", status=HealthStatus.UNSUPPORTED, job_count=0)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[
+                    {"source_key": "widget", "company": "Widget Inc", "status": "warning", "message": "Job count dropped 80%."},
+                    {"source_key": "zeta", "company": "Zeta Motors", "status": "unsupported", "message": "Akamai blocks every request."},
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    assert stats["never_reviewed"] == 0  # nothing merged for either source
+    html = output_path.read_text()
+    assert "AV Perception Engineer" not in html
+    assert "Failed to scrape" not in html
+    assert "Job count dropped 80%." in html  # original messages untouched
+    assert "Akamai blocks every request." in html
+
+
+def test_collection_fallback_dedupes_against_jobs_already_in_the_archive(tmp_path):
+    """A `failed` status can still coexist with a job already present in `candidates` (e.g. a
+    partially-succeeded detail fetch before the failure) — the fallback must not double-add it."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="1", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.OK, job_count=1)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [_candidate("waymo", "1", title="AV Perception Engineer")],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Timed out."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([_assessment("waymo", "1", 80, title="AV Perception Engineer")]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+
+    assert stats["strong"] == 1  # not duplicated into a second row
+    html = output_path.read_text()
+    # One rendered row for this job, not two — html.count() on the title text itself would
+    # also count the row's own data-title="..." feedback attribute, so count the row wrapper
+    # instead, the thing that would actually double up if the dedupe were broken.
+    assert html.count('data-job-id="1"') == 1
+    assert "showing 0 job(s)" in html  # the only fallback candidate was already present
+
+
+def test_no_collection_fallback_flag_disables_the_merge(tmp_path):
+    """`collection_fallback=False` (the --no-collection-fallback CLI flag) restores today's
+    plain note-with-no-jobs behavior even when a database_path/profile/max_age_days are given —
+    the escape hatch must actually take effect, not just be accepted and ignored."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(
+            _make_stored_job(job_id="1", title="AV Perception Engineer", posted_at=now - timedelta(days=5))
+        )
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.OK, job_count=1)
+        )
+
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [],
+                source_health=[{"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Timed out."}],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+        collection_fallback=False,
+    )
+
+    assert stats["never_reviewed"] == 0
+    html = output_path.read_text()
+    assert "AV Perception Engineer" not in html
+    assert "Timed out." in html
+    assert "Failed to scrape" not in html  # no note appended at all when the flag disables this
+
+
+@pytest.mark.parametrize("option", ["--new-days", "--undated-new-days", "--undated-stale-days"])
+def test_negative_day_window_options_are_rejected(option, monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "input validation" finding -- argparse's own type= check
+    must reject a negative value before main() ever touches SQLite/the archive file."""
+    monkeypatch.setattr(sys, "argv", ["render_radar.py", option, "-1"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err

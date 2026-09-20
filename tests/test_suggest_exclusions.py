@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from job_hunter.config import CandidateProfile
 from job_hunter.models import Job, LocationConfidence
 from job_hunter.prefilter import evaluate_prefilter
@@ -19,6 +21,7 @@ from suggest_exclusions import (  # noqa: E402
     _print_positive_gate_bucket,
     _print_rescue_caution_bucket,
     _print_strong_relevance_bucket,
+    main,
 )
 
 
@@ -231,3 +234,12 @@ def test_print_not_fixable_bucket_lists_non_us_eligible_relevant_jobs(capsys):
     out = capsys.readouterr().out
     assert "not us_eligible" in out
     assert "ADAS Engineer" in out
+
+
+def test_negative_min_support_is_rejected(monkeypatch, capsys):
+    """docs/agent-runtime-audit.md's "input validation" finding."""
+    monkeypatch.setattr(sys, "argv", ["suggest_exclusions.py", "--min-support", "-1"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2
+    assert "non-negative" in capsys.readouterr().err

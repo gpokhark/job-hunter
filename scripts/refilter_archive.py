@@ -45,6 +45,14 @@ snapshot from when this archive was first written — matching this tool's exist
 handling, which already recomputes against wall-clock *now* rather than assuming nothing aged
 since collection.
 
+The raw "every active/US-eligible job, optionally source-scoped" query this module's `refilter()`
+runs against SQLite used to be a private `_active_jobs()` right here; it now lives in
+`job_hunter.active_pool.raw_active_jobs()` instead (see `docs/pipeline-refilter-stale-source-plan.md`
+section 4.4), moved into the installed package once `scripts/render_radar.py`'s stale-source
+fallback needed the same query for one source at a time (`active_pool.source_jobs()`). This
+module is a behavior-preserving refactor around that move, not a behavior change — every test in
+`tests/test_refilter_archive.py` still exercises the identical `refilter()` output.
+
 Usage:
     uv run python scripts/refilter_archive.py
     uv run python scripts/refilter_archive.py --keyword ADAS
@@ -56,41 +64,32 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import sqlite3
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 # Reused rather than reimplemented — same [New]/sponsorship/hybrid-remote tag rules and date
 # formatting as the other two reports, so a job is never tagged differently across all three.
-from diff_profile import _e, _fmt_posted_date, _job_tags, _local, _report_timestamp  # noqa: E402
+from diff_profile import (  # noqa: E402
+    _e,
+    _fmt_posted_date,
+    _is_new,
+    _job_meta_html,
+    _job_tags,
+    _local,
+    _report_timestamp,
+)
+from render_radar import _tier  # noqa: E402
 
+from job_hunter.active_pool import raw_active_jobs
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
 from job_hunter.models import Job
 from job_hunter.prefilter import passes_prefilter, passes_recency
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root
+from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
-from job_hunter.storage import Storage
-
-# jobs.canonical_url -> Job.url is the one required rename; every other column already lines up
-# with a Job field by name. Same allowlist as scripts/diff_profile.py's _row_to_job — duplicated
-# rather than shared, matching this project's existing per-script self-containment for these
-# support scripts.
-_JOB_COLUMNS = (
-    "source_key", "company", "job_id", "source_platform", "title",
-    "location_raw", "city", "state", "country", "work_arrangement",
-    "us_eligible", "location_confidence", "location_evidence",
-    "visa_sponsorship", "sponsorship_evidence", "department",
-    "employment_type", "posted_at", "description", "salary_min",
-    "salary_max", "salary_currency", "content_hash", "first_seen_at",
-    "last_seen_at",
-)
-
-
-def _row_to_job(row: sqlite3.Row) -> Job:
-    data = {column: row[column] for column in _JOB_COLUMNS}
-    data["url"] = row["canonical_url"]
-    return Job(**data)
-
 
 _FAILED_STATUSES = {"failed", "unsupported"}
 
@@ -132,27 +131,6 @@ def _successful_source_scope(data: dict[str, Any]) -> set[str] | None:
     return {key for key, status in statuses.items() if status not in _FAILED_STATUSES}
 
 
-def _active_jobs(database_path: Path, source_scope: set[str] | None) -> list[Job]:
-    """Every currently-active, US-eligible job in SQLite, optionally restricted to a source-key
-    scope. Attaches `prior_assessment` exactly like `collector.py` does for a live search, so a
-    rebuilt candidate carries the same fields a fresh search would have produced."""
-    with Storage(database_path) as storage:
-        rows = storage.connection.execute(
-            "SELECT * FROM jobs WHERE status='active' AND us_eligible=1"
-        ).fetchall()
-        assessments = storage.all_assessments()
-    jobs = []
-    for row in rows:
-        if source_scope is not None and row["source_key"] not in source_scope:
-            continue
-        job = _row_to_job(row)
-        prior = assessments.get((job.source_key, job.job_id))
-        if prior and prior.content_hash == job.content_hash:
-            job.prior_assessment = prior
-        jobs.append(job)
-    return jobs
-
-
 def refilter(
     data: dict[str, Any],
     *,
@@ -171,7 +149,12 @@ def refilter(
     resolved_db_path = Path(database_path) if database_path is not None else settings.database_path
 
     source_scope = _successful_source_scope(data)
-    jobs = _active_jobs(resolved_db_path, source_scope)
+    # Deliberately the *unfiltered* multi-source pool (job_hunter.active_pool.raw_active_jobs,
+    # not its sibling source_jobs()) — this loop still needs to distinguish a prefilter failure
+    # from a recency failure itself (stale_excluded counts only the latter), which a
+    # pre-filtered single-source list can no longer tell apart once the excluded jobs are
+    # already gone from it. See active_pool.py's module docstring for the full reasoning.
+    jobs = raw_active_jobs(resolved_db_path, source_scope)
 
     kept: list[Job] = []
     stale_excluded = 0
@@ -208,8 +191,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     --line: #DCE3E7;
     --accent: #0C7F91;
     --accent-soft: #E4F1F3;
-    --tier-exceptional: #1D9A66;
-    --tier-exceptional-soft: #E4F5EC;
+    /* Score tiers — identical values to radar_template.html's/diff_profile.py's. */
+    --score-fair: #5C7A99;
+    --score-moderate: #0C7F91;
+    --score-promising: #A3760E;
+    --score-strong: #D2691E;
+    --score-exceptional: #1D9A66;
+    /* Status color: reserved, fixed meaning ("good") — mirrors diff_profile.py's
+       and radar_template.html's identical --status-good token. */
+    --status-good: #1D9A66;
+    --status-good-soft: #E4F5EC;
     --danger: #C1443A;
     --danger-soft: #FBEAE8;
     --arrangement-remote: #2D6FB0;
@@ -222,14 +213,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --paper: #10151A; --ink: #E9EDEF; --ink-soft: #A6B0B8; --surface: #171E24; --line: #2A333A;
-      --accent: #3FC1D4; --accent-soft: #17323A; --tier-exceptional: #3FCC8C; --tier-exceptional-soft: #163829;
+      --accent: #3FC1D4; --accent-soft: #17323A;
+      --score-fair: #7FA3C4; --score-moderate: #3FC1D4; --score-promising: #E3B24A; --score-strong: #E8875A; --score-exceptional: #3FCC8C;
+      --status-good: #3FCC8C; --status-good-soft: #163829;
       --danger: #E2695E; --danger-soft: #3A1F1C; --arrangement-remote: #6FB1EE; --arrangement-remote-soft: #17293A;
       --arrangement-hybrid: #C0A3EA; --arrangement-hybrid-soft: #2A2038; --muted: #8A95A0; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
   }
   :root[data-theme="dark"] {
     --paper: #10151A; --ink: #E9EDEF; --ink-soft: #A6B0B8; --surface: #171E24; --line: #2A333A;
-    --accent: #3FC1D4; --accent-soft: #17323A; --tier-exceptional: #3FCC8C; --tier-exceptional-soft: #163829;
+    --accent: #3FC1D4; --accent-soft: #17323A;
+    --score-fair: #7FA3C4; --score-moderate: #3FC1D4; --score-promising: #E3B24A; --score-strong: #E8875A; --score-exceptional: #3FCC8C;
+    --status-good: #3FCC8C; --status-good-soft: #163829;
     --danger: #E2695E; --danger-soft: #3A1F1C; --arrangement-remote: #6FB1EE; --arrangement-remote-soft: #17293A;
     --arrangement-hybrid: #C0A3EA; --arrangement-hybrid-soft: #2A2038; --muted: #8A95A0; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
@@ -246,14 +241,26 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   section { margin: 32px 0; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
   .row { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow); padding: 12px 16px; }
-  .row-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-  .job-title { font-weight: 600; font-size: 15px; }
-  .job-company { font-size: 13px; color: var(--muted); }
+  .row-top { display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 14px; }
+  .score { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 20px; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-soft); }
+  .score-nr { color: var(--muted); font-size: 13px; letter-spacing: 0.02em; }
+  .row.tier-exceptional .score { color: var(--score-exceptional); }
+  .row.tier-strong .score { color: var(--score-strong); }
+  .row.tier-promising .score { color: var(--score-promising); }
+  .row.tier-moderate .score { color: var(--score-moderate); }
+  .row.tier-fair .score { color: var(--score-fair); }
+  .job { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .job-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .job-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .job-title-line .tag-new { flex: none; }
+  .job-company { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-salary { color: var(--accent); font-weight: 600; }
   .job-date { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row-end { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 220px; }
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 2px; white-space: nowrap; }
-  .tag-sponsor-yes { background: var(--tier-exceptional-soft); color: var(--tier-exceptional); }
+  .tag-sponsor-yes { background: var(--status-good-soft); color: var(--status-good); }
   .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
   .tag-long-standing { background: var(--line); color: var(--muted); }
   .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
@@ -264,8 +271,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .apply-link { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; white-space: nowrap; }
   .apply-link:hover, .apply-link:focus-visible { border-bottom-color: var(--accent); }
   .row-meta { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  @media (max-width: 560px) {
+    .row-top { grid-template-columns: 36px 1fr auto auto; }
+    .tags { max-width: 90px; }
+    .job-date { display: none; }
+  }
   .empty { color: var(--muted); font-style: italic; }
-  .row-feedback { margin-top: 8px; }
   .feedback-buttons { display: flex; gap: 4px; align-items: center; }
   .fb-btn { font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
   .fb-btn:hover { border-color: var(--accent); }
@@ -408,15 +419,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def _assessment_note(job: Job) -> str:
-    """`_active_jobs` only ever attaches `prior_assessment` when its content_hash still
-    matches — so its mere presence already means "valid", unlike diff_profile.py's version
-    which has to check staleness itself against a separately-loaded assessments dict."""
-    if job.prior_assessment is None:
-        return "no assessment on record"
-    return f"has a valid prior assessment (score {job.prior_assessment.score})"
-
-
 def _render_job_rows(
     jobs: list[Job], *, now: datetime, empty_message: str, undated_new_days: int, undated_stale_days: int
 ) -> str:
@@ -424,30 +426,55 @@ def _render_job_rows(
         return f'<p class="empty">{_e(empty_message)}</p>'
     parts = []
     for job in jobs:
+        new_badge = (
+            '<span class="tag tag-new">New</span>'
+            if _is_new(job, now=now, undated_new_days=undated_new_days)
+            else ""
+        )
         tags = _job_tags(job, now=now, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days)
         date_display = _fmt_posted_date(job.posted_at, job.first_seen_at)
+        # `raw_active_jobs` only ever attaches `prior_assessment` when its content_hash still
+        # matches the job's current one — so its mere presence already means "valid", unlike
+        # diff_profile.py's version which has to check staleness itself against a
+        # separately-loaded assessments dict.
+        score = job.prior_assessment.score if job.prior_assessment else None
+        if score is None:
+            score_html = '<span class="score score-nr" title="Not yet reviewed by the local model">NR</span>'
+            tier_class = ""
+        else:
+            score_html = f'<span class="score">{score}</span>'
+            tier_class = f" tier-{_tier(score)}"
+        meta_html = _job_meta_html(job.location_raw, job.salary_evidence)
+        job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
         feedback_buttons = f'''<span class="feedback-buttons"
               data-source-key="{_e(job.source_key)}" data-job-id="{_e(job.job_id)}"
               data-company="{_e(job.company)}" data-title="{_e(job.title)}"
-              data-department="{_e(job.department)}" data-score=""
+              data-department="{_e(job.department)}" data-score="{score if score is not None else ''}"
               data-db-label="">
               <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
               <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
               <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
             </span>'''
         parts.append(f"""
-        <div class="row">
+        <div class="row{tier_class}">
           <div class="row-top">
-            <span class="tags">{tags}</span>
+            {score_html}
             <span class="job">
-              <span class="job-title">{_e(job.title)}</span>
+              <span class="job-title-line">
+                {new_badge}
+                <span class="job-title">{_e(job.title)}</span>
+              </span>
               <span class="job-company">{_e(job.company)}</span>
+              {job_meta}
             </span>
-            <span class="job-date">{_e(date_display)}</span>
-            <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            <span class="tags">{tags}</span>
+            <span class="row-end">
+              <span class="job-date">{_e(date_display)}</span>
+              {feedback_buttons}
+              <a class="apply-link" href="{html.escape(job.url, quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+            </span>
           </div>
-          <div class="row-meta">{_e(_assessment_note(job))}</div>
-          <div class="row-feedback">{feedback_buttons}</div>
+          <div class="row-meta">last seen {_e(str(_local(job.last_seen_at)))}</div>
         </div>""")
     return "".join(parts)
 
@@ -483,8 +510,7 @@ def render_archive_diff_html(
             ),
         )
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
 
 
 def main() -> int:
@@ -493,7 +519,21 @@ def main() -> int:
     parser.add_argument("--keyword", default=None, help="resolve --search by keyword, and use as the positive-match override (same as job-hunter search --keyword)")
     parser.add_argument("--output", type=Path, default=None, help="write here instead of overwriting the input archive in place")
     parser.add_argument("--no-report", action="store_true", help="skip writing the HTML gained/lost report")
+    parser.add_argument(
+        "--result-json", type=Path, default=None,
+        help=(
+            "also write {\"gained\": N, \"lost\": N, \"diff_report\": \"...\"|null, "
+            "\"refiltered_at\": \"...\"} to this path on success — a structured result for a "
+            "caller (job-hunter pipeline) to read instead of parsing this script's own "
+            "human-readable stdout. \"refiltered_at\" is provenance only (when this refilter "
+            "ran, against whatever SQLite state existed at that instant) — never a cache key or "
+            "invalidation signal, same principle as profile_fingerprint/resume_fingerprint "
+            "elsewhere in this pipeline (see CLAUDE.md). Purely additive: stdout is unchanged."
+        ),
+    )
+    add_project_argument(parser)
     args = parser.parse_args()
+    chdir_to_project_root(args.project)
 
     search_path = resolve_search_path(search=args.search, keyword=args.keyword)
     keywords = [term.strip() for term in args.keyword.split(",") if term.strip()] if args.keyword else None
@@ -510,38 +550,75 @@ def main() -> int:
     retained = len(after_by_key.keys() & before_by_key.keys())
 
     output_path = args.output or search_path
-    output_path.write_text(json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        # Shared with `job-hunter pipeline`/`job-hunter cleanup --apply`/
+        # `scripts/review_with_lm_studio.py` (see docs/agent-runtime-audit.md's pipeline-lock
+        # finding) — this rewrites `output_path` in place (by default, the same archive a
+        # concurrent pipeline run could be reading or about to write), so it must never overlap
+        # with any of those. `run_lock_or_inherited` (not `run_lock`) because `job-hunter
+        # pipeline` already holds this exact lock for the whole run before spawning this script
+        # as its REFILTER stage — reacquiring it here would deadlock against that parent
+        # (confirmed live).
+        with run_lock_or_inherited("job-hunter"):
+            atomic_write_text(
+                output_path, json.dumps(new_data, indent=2, default=str, ensure_ascii=False) + "\n"
+            )
 
-    print(
-        f"Re-filtered {search_path} -> {output_path}: {after_count} candidate(s) "
-        f"(was {before_count}, {len(lost_keys)} removed, {len(gained_keys)} gained)"
-    )
+            print(
+                f"Re-filtered {search_path} -> {output_path}: {after_count} candidate(s) "
+                f"(was {before_count}, {len(lost_keys)} removed, {len(gained_keys)} gained)"
+            )
 
-    if not args.no_report:
-        # Reconstructs Job objects from the archive dicts directly (both before_by_key's and
-        # after_by_key's entries are exactly job.model_dump_json() output — see refilter()
-        # above) rather than re-querying SQLite, so the report always matches what was just
-        # written to output_path, not a second, potentially-inconsistent snapshot.
-        gained_jobs = [Job(**after_by_key[key]) for key in gained_keys]
-        lost_jobs = [Job(**before_by_key[key]) for key in lost_keys]
-        gained_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
-        lost_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
+            diff_report_path: Path | None = None
+            if not args.no_report:
+                # Reconstructs Job objects from the archive dicts directly (both before_by_key's
+                # and after_by_key's entries are exactly job.model_dump_json() output — see
+                # refilter() above) rather than re-querying SQLite, so the report always matches
+                # what was just written to output_path, not a second, potentially-inconsistent
+                # snapshot.
+                gained_jobs = [Job(**after_by_key[key]) for key in gained_keys]
+                lost_jobs = [Job(**before_by_key[key]) for key in lost_keys]
+                gained_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
+                lost_jobs.sort(key=lambda job: (-(job.posted_at.timestamp() if job.posted_at else 0), job.title))
 
-        settings = load_settings()
-        source_scope = _successful_source_scope(data)
-        active_pool = len(_active_jobs(settings.database_path, source_scope))
+                settings = load_settings()
+                source_scope = _successful_source_scope(data)
+                active_pool = len(raw_active_jobs(settings.database_path, source_scope))
 
-        report_path = Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
-        render_archive_diff_html(
-            gained=gained_jobs, lost=lost_jobs, retained=retained,
-            before_count=before_count, after_count=after_count, active_pool=active_pool,
-            max_age_days=settings.search.max_posting_age_days,
-            undated_new_days=settings.search.undated_new_days,
-            undated_stale_days=settings.search.undated_stale_days,
-            output_path=report_path,
-            title=f"Archive Refilter: {search_path.stem}", now=now,
+                diff_report_path = (
+                    Path("data/profile-diff") / f"archive-{search_path.stem}-{_report_timestamp(now)}.html"
+                )
+                render_archive_diff_html(
+                    gained=gained_jobs, lost=lost_jobs, retained=retained,
+                    before_count=before_count, after_count=after_count, active_pool=active_pool,
+                    max_age_days=settings.search.max_posting_age_days,
+                    undated_new_days=settings.search.undated_new_days,
+                    undated_stale_days=settings.search.undated_stale_days,
+                    output_path=diff_report_path,
+                    title=f"Archive Refilter: {search_path.stem}", now=now,
+                )
+                print(f"Wrote {diff_report_path}")
+
+            if args.result_json is not None:
+                atomic_write_text(
+                    args.result_json,
+                    json.dumps(
+                        {
+                            "gained": len(gained_keys),
+                            "lost": len(lost_keys),
+                            "diff_report": str(diff_report_path) if diff_report_path else None,
+                            "refiltered_at": now.isoformat(),
+                        }
+                    )
+                    + "\n",
+                )
+    except RunLockHeld as exc:
+        print(
+            f"job-hunter: {exc} — another job-hunter run is already in progress for this "
+            "project. Wait for it to finish, or remove the lock file if you're sure it's stale.",
+            file=sys.stderr,
         )
-        print(f"Wrote {report_path}")
+        return 2
 
     return 0
 

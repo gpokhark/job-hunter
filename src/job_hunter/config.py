@@ -65,6 +65,26 @@ class RetentionConfig(BaseModel):
     )
 
 
+class PipelineConfig(BaseModel):
+    """`job-hunter pipeline`'s child-process supervision knob (docs/agent-runtime-audit.md's
+    "Pipeline child supervision is incomplete" finding). `None` (the default) preserves the
+    original no-timeout behavior — a stage can legitimately run for a long time (a large
+    sequential local-model review), so this is opt-in, not a default SLA. When set, it bounds
+    how long any single stage's subprocess (refilter/review/radar) may run before pipeline.py
+    kills it and finalizes the manifest as TIMED_OUT rather than hanging at RUNNING forever."""
+
+    stage_timeout_seconds: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "kill a pipeline stage's subprocess (refilter/review/radar) if it runs longer than "
+            "this many seconds; unset means no timeout. Size this to comfortably exceed your "
+            "largest real review run, not as a tight SLA -- it exists to catch a genuinely hung "
+            "child, not to bound normal runtime."
+        ),
+    )
+
+
 class Settings(BaseModel):
     version: int = 1
     database_path: Path = Path("data/jobs.sqlite3")
@@ -73,6 +93,7 @@ class Settings(BaseModel):
     recommendation: RecommendationConfig = RecommendationConfig()
     logging: LoggingConfig = LoggingConfig()
     retention: RetentionConfig = RetentionConfig()
+    pipeline: PipelineConfig = PipelineConfig()
 
 
 class CompanyConfig(BaseModel):

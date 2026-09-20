@@ -18,6 +18,7 @@ from job_hunter.adapters.html_paginated import HtmlPaginatedAdapter
 from job_hunter.adapters.lever import LeverAdapter
 from job_hunter.adapters.oracle_hcm import OracleHcmAdapter
 from job_hunter.adapters.paycom import PaycomAdapter
+from job_hunter.adapters.paylocity import PaylocityAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
 from job_hunter.adapters.smartrecruiters import SmartRecruitersAdapter
 from job_hunter.adapters.successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
@@ -1697,3 +1698,73 @@ async def test_successfactors_rmk_v2_pagination_and_label_matched_detail():
     assert jobs[0].url == "https://rmk.example/job/Manufacturing-Engineer/111-en_US"
     assert jobs[0].posted_at.strftime("%Y-%m-%d") == "2026-07-31"
     assert detail.description == "Build vehicles."
+
+
+_PAYLOCITY_LISTING_HTML = """<html><body><script>
+    window.pageData = {"Departments":["All Departments"],"Jobs":[{"JobId":42,"JobTitle":"Program Manager (Hybrid)","LocationName":"Plant A","ShouldDisplayLocation":true,"PublishedDate":"2026-09-10T15:30:11-05:00","Description":"Truncated preview...","IsInternal":false,"HiringDepartment":null,"JobLocation":{"LocationId":1,"ModuleId":99,"Name":"Plant A","Address":"1 Main St","City":"Plymouth","State":"MI","Zip":"48170","Country":"USA","County":null},"IsRemote":true,"IndeedRemoteType":1}],"ModuleId":"99","ModuleTitle":"Acme - Plymouth"};
+</script></body></html>"""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_paylocity_listing_parses_embedded_page_data():
+    """The entire job list is embedded server-side as a `window.pageData = {...};` JS
+    object literal, not a separate JSON API — regression: the non-greedy brace regex
+    must still find the true outer boundary despite the nested JobLocation object, and
+    structured City/State/Country must flow onto the summary directly (not just
+    location_raw) so evaluate_location gets high-confidence structured fields."""
+    list_url = "https://recruiting.example/recruiting/jobs/All/guid/Acme-Plymouth"
+    respx.get(list_url).mock(return_value=httpx.Response(200, text=_PAYLOCITY_LISTING_HTML))
+    company = CompanyConfig(
+        key="acme",
+        company="Acme",
+        adapter="paylocity",
+        config={"list_url": list_url},
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await PaylocityAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.job_id == "42"
+    assert job.title == "Program Manager (Hybrid)"
+    assert job.url == "https://recruiting.paylocity.com/Recruiting/Jobs/Details/42"
+    assert job.city == "Plymouth"
+    assert job.state == "MI"
+    assert job.country == "USA"
+    assert job.posted_at.strftime("%Y-%m-%d") == "2026-09-10"
+
+
+_PAYLOCITY_DETAIL_HTML = """<html><body>
+<script type="application/ld+json">{"@type":"JobPosting","description":"Stale JSON-LD description.","datePosted":"2026-09-11T20:30:22-05:00"}</script>
+<div class="job-listing-header">Job Type</div>
+<div>Full-time</div>
+<div class="job-listing-header">Description</div>
+<div><p>Real description.</p></div>
+<div class="job-listing-header">Requirements</div>
+<div data-bind="html: Job.Requirements"><p>Real requirements.</p></div>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_paylocity_detail_matches_by_label_not_json_ld():
+    """The detail page's JobPosting JSON-LD block is confirmed live to be silently
+    absent on some jobs (no listing-level city/state), so fetch_detail must not depend
+    on it — this fixture deliberately includes a JSON-LD block with different content
+    to prove the label-matched Description/Requirements divs win, and that posted_at is
+    never set from JSON-LD's datePosted (confirmed live to run a fixed ~5h after the
+    listing's own PublishedDate, not the true post time)."""
+    job_url = "https://recruiting.example/Recruiting/Jobs/Details/42"
+    respx.get(job_url).mock(return_value=httpx.Response(200, text=_PAYLOCITY_DETAIL_HTML))
+    company = CompanyConfig(key="acme", company="Acme", adapter="paylocity", config={})
+    summary = JobSummary(
+        source_key="acme", source_platform="paylocity", company="Acme", job_id="42",
+        title="Program Manager", url=job_url,
+    )
+    async with httpx.AsyncClient() as client:
+        detail = await PaylocityAdapter(company, client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+    assert "Real description." in detail.description
+    assert "Real requirements." in detail.description
+    assert "Stale JSON-LD" not in detail.description
+    assert detail.employment_type == "Full-time"
+    assert detail.posted_at is None

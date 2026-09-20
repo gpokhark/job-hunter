@@ -1,0 +1,236 @@
+"""A simple per-project run lock.
+
+Its job is to stop two job-hunter/agent processes from concurrently driving the same
+write-heavy stage — most importantly the sequential local-model review
+(`scripts/review_with_lm_studio.py`), where a second overlapping run would both burn real,
+sequential local-model time re-scoring jobs the first run is already scoring, and race the first
+run writing `data/assessments.json`/the `assessments` table.
+
+Not a distributed lock — one lock file per project, holding the holder's PID. A lock file whose
+PID no longer exists is treated as abandoned (the previous holder crashed or was killed without
+cleaning up) and is silently reclaimed, so a dead process never wedges future runs.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import secrets
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+#: Set in a stage subprocess's environment by `job-hunter pipeline` (`pipeline.py`) when it
+#: spawns `scripts/refilter_archive.py`/`scripts/review_with_lm_studio.py` — the pipeline process
+#: already holds `run_lock("job-hunter")` for the whole run, so a stage script trying to acquire
+#: the identically-named lock again would deadlock against its own parent (confirmed live: a real
+#: `job-hunter pipeline --no-scrape` run failed immediately this way before
+#: `run_lock_or_inherited` existed). Unset for a standalone invocation of either script, which
+#: then locks exactly as before.
+#:
+#: The value is a per-run capability token (`secrets.token_hex`), not a bare `"1"` — a bare
+#: boolean would let *any* standalone caller set this var in their own shell and skip the lock
+#: entirely, with no verification a real parent pipeline process is actually holding it right now
+#: (docs/agent-runtime-audit.md's "lock bypass is caller-controlled" finding). `run_lock` writes
+#: the same token into the lock file's own content when it acquires the lock; `run_lock_or_inherited`
+#: only treats the lock as inherited when the env var's token matches what the *live* lock file
+#: currently records — an unverifiable or stale claim falls back to acquiring the lock normally
+#: (fail closed), rather than being trusted on the env var's presence alone.
+LOCK_INHERITED_ENV = "JOB_HUNTER_LOCK_INHERITED"
+
+#: How many times to retry the "stale lock found -> unlink -> re-create" sequence before giving
+#: up. More than one attempt is needed because that sequence is itself a race: two processes can
+#: both decide the same lock is stale and both try to reclaim it, and only one `O_CREAT|O_EXCL`
+#: open can win. A retry lets the loser re-check who actually holds it now (either the winner of
+#: the reclaim race, or a third process that acquired cleanly in between) instead of crashing on
+#: an unhandled FileExistsError.
+_RECLAIM_ATTEMPTS = 3
+
+#: `_read_holder` retries this many times, `_READ_HOLDER_RETRY_DELAY` apart, before concluding a
+#: lock file's content is genuinely stale rather than mid-write. `os.open(O_CREAT|O_EXCL)`
+#: atomically claims the lock, but the holder's own PID isn't written until the very next
+#: `os.write` call -- a second process's exclusive-create can fail (file exists) and then read
+#: that file in the brief window while it's still empty. Treating "empty" as "stale" immediately
+#: (the pre-hardening behavior) let a loser reclaim a lock a winner had *just* created but hadn't
+#: finished writing yet, confirmed live via a 5-process race that intermittently produced multiple
+#: "successful" acquisitions of the same lock. ~200ms of total retry budget is far longer than the
+#: real gap between `os.open` and `os.write` ever takes, so this costs nothing in the common case
+#: and only ever matters when a lock file is momentarily empty.
+_READ_HOLDER_RETRIES = 20
+_READ_HOLDER_RETRY_DELAY = 0.01
+
+
+class RunLockHeld(Exception):
+    def __init__(
+        self,
+        lock_path: Path,
+        holder_pid: int,
+        *,
+        holder_command: str | None = None,
+        holder_started_at: str | None = None,
+    ):
+        self.lock_path = lock_path
+        self.holder_pid = holder_pid
+        self.holder_command = holder_command
+        self.holder_started_at = holder_started_at
+        detail = f"pid {holder_pid}"
+        if holder_command:
+            detail += f", running `{holder_command}`"
+        if holder_started_at:
+            detail += f", since {holder_started_at}"
+        super().__init__(f"another job-hunter process ({detail}) already holds {lock_path}")
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists, just isn't ours to signal
+    except OSError:
+        return True  # unknown platform behavior -- fail safe, assume alive
+    return True
+
+
+def process_start_time(pid: int) -> str | None:
+    """`ps -o lstart= -p <pid>`'s raw output for one process -- a process-*identity* signal, not
+    just liveness, used to detect PID reuse (docs/agent-runtime-audit.md's "PID reuse can make an
+    abandoned manifest look live" finding): the OS can reassign a dead process's PID to a later,
+    completely unrelated process, and `pid_alive(pid)` alone can't tell the two apart. Works on
+    both macOS and Linux (though `ps`'s exact `lstart` format differs between them) -- there's no
+    portable stdlib equivalent to a Linux-only `/proc/<pid>/stat` read, and this project's actual
+    deployment context (single-operator machines) doesn't call for a cross-platform process-
+    identity library. The returned string is never parsed or interpreted, only ever compared for
+    exact equality against a value recorded earlier for the *same* pid, so the format difference
+    between platforms never matters. Returns `None` (never raises) whenever it can't get a
+    trustworthy answer -- `ps` missing, timing out, or the pid not existing right now -- and
+    callers must treat `None` as "can't verify," falling back to PID-only liveness, never as
+    "confirmed reused" or "confirmed the same process." """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _read_holder(lock_path: Path) -> tuple[int, str | None, str | None, str | None]:
+    """(pid, command, started_at, token) from a lock file's contents. `command`/`started_at`/
+    `token` are `None` for a lock file written before those extra lines existed, or for
+    unparseable content — only the first line (the PID) is load-bearing for correctness; the rest
+    is diagnostic detail (`token` additionally backs `current_lock_token`/`run_lock_or_inherited`'s
+    inheritance check).
+
+    Retries briefly on empty/unparseable content (see `_READ_HOLDER_RETRIES`) before concluding
+    there's genuinely no valid PID — a fresh lock file is briefly empty between its holder's
+    `O_CREAT|O_EXCL` create and the `os.write` that fills it in, and a reader landing in that
+    window must not mistake "not written yet" for "stale, abandoned by a dead process."
+    """
+    for attempt in range(_READ_HOLDER_RETRIES):
+        try:
+            lines = lock_path.read_text().splitlines()
+        except OSError:
+            return -1, None, None, None
+        if lines:
+            try:
+                pid = int(lines[0].strip())
+            except ValueError:
+                pid = -1
+            if pid > 0:
+                command = lines[1] if len(lines) > 1 and lines[1] else None
+                started_at = lines[2] if len(lines) > 2 and lines[2] else None
+                token = lines[3] if len(lines) > 3 and lines[3] else None
+                return pid, command, started_at, token
+        if attempt < _READ_HOLDER_RETRIES - 1:
+            time.sleep(_READ_HOLDER_RETRY_DELAY)
+    return -1, None, None, None
+
+
+def _try_create(lock_path: Path) -> int | None:
+    """Attempts one `O_CREAT|O_EXCL` create. Returns the open fd on success, `None` if the path
+    already exists (caller decides whether that's a live holder or a stale lock to reclaim)."""
+    try:
+        return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+
+
+@contextmanager
+def run_lock(name: str, *, lock_dir: Path | str = Path("data/locks")) -> Iterator[Path]:
+    lock_dir = Path(lock_dir)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{name}.lock"
+
+    fd = _try_create(lock_path)
+    for _ in range(_RECLAIM_ATTEMPTS):
+        if fd is not None:
+            break
+        holder_pid, holder_command, holder_started_at, _holder_token = _read_holder(lock_path)
+        if holder_pid > 0 and pid_alive(holder_pid):
+            raise RunLockHeld(
+                lock_path, holder_pid, holder_command=holder_command, holder_started_at=holder_started_at
+            )
+        # Stale lock (dead PID, or unparseable content): reclaim it. Another process may win the
+        # race to recreate it between our unlink and our own open — retrying re-checks who holds
+        # it now rather than assuming we always win.
+        lock_path.unlink(missing_ok=True)
+        fd = _try_create(lock_path)
+    if fd is None:
+        holder_pid, holder_command, holder_started_at, _holder_token = _read_holder(lock_path)
+        raise RunLockHeld(
+            lock_path, holder_pid, holder_command=holder_command, holder_started_at=holder_started_at
+        )
+
+    try:
+        command = " ".join(sys.argv)
+        started_at = datetime.now(UTC).isoformat(timespec="seconds")
+        # The token is regenerated on every acquisition (never reused across runs) — see
+        # LOCK_INHERITED_ENV's docstring for why a fixed/predictable value would defeat the point.
+        token = secrets.token_hex(16)
+        os.write(fd, f"{os.getpid()}\n{command}\n{started_at}\n{token}\n".encode())
+        os.close(fd)
+        yield lock_path
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def current_lock_token(name: str, *, lock_dir: Path | str = Path("data/locks")) -> str | None:
+    """The token this process's own live `run_lock(name)` currently has recorded in its lock
+    file, or `None` if that lock isn't actually held right now (no lock file, or one whose
+    content doesn't parse). Lets a caller that's already inside a `with run_lock(...):` block
+    (e.g. `job-hunter pipeline`) hand a genuine, verifiable inheritance token to a child stage
+    subprocess without threading the token through every intervening function signature — the
+    lock file on disk is itself the shared state, so re-reading it here is simpler than plumbing
+    the value `run_lock` already yielded (as a bare `Path`, unchanged, so every existing
+    `with run_lock(...):` caller keeps working) through several layers of stage-sequencing calls."""
+    lock_path = Path(lock_dir) / f"{name}.lock"
+    _pid, _command, _started_at, token = _read_holder(lock_path)
+    return token
+
+
+def run_lock_or_inherited(
+    name: str, *, lock_dir: Path | str = Path("data/locks")
+) -> contextlib.AbstractContextManager[Path]:
+    """Like `run_lock`, but a no-op when `LOCK_INHERITED_ENV` carries a token that matches what
+    the *live* `name` lock file currently has recorded — see that constant's docstring for why a
+    bare "is the env var set" check isn't trusted. A caller that might run either standalone (must
+    lock) or as a `job-hunter pipeline` stage subprocess (lock already held by its parent) should
+    use this instead of `run_lock` directly.
+
+    Any mismatch — no env var, no lock file, or a token that doesn't match the lock file's
+    current one (stale env copied from an old run, or no real parent pipeline holding the lock at
+    all) — fails closed: falls back to acquiring the lock normally, exactly as if the env var were
+    unset."""
+    claimed_token = os.environ.get(LOCK_INHERITED_ENV)
+    lock_path = Path(lock_dir) / f"{name}.lock"
+    if claimed_token and claimed_token == current_lock_token(name, lock_dir=lock_dir):
+        return contextlib.nullcontext(lock_path)
+    return run_lock(name, lock_dir=lock_dir)

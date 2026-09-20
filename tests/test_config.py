@@ -11,13 +11,17 @@ def test_project_configs_validate():
     settings = load_settings(root / "config/settings.yaml")
     assert settings.version == 1
     companies = load_companies(root / "config/companies.yaml")
-    assert len(companies) == 63 and len({item.key for item in companies}) == 63
+    assert len(companies) == 65 and len({item.key for item in companies}) == 65
     # config/settings.yaml's own committed retention: values, not just the model defaults.
     assert settings.retention.closed_job_after_days == 10
     assert settings.retention.report_after_days == 15
     assert settings.retention.keep_latest_reports_per_slug == 2
     assert settings.search.undated_new_days == 15
     assert settings.search.undated_stale_days == 45
+    # A fresh clone must ship a safe pipeline stage-timeout default (docs/agent-runtime-audit.md's
+    # "timeout is still opt-in" finding) — the Python-level PipelineConfig default stays None/no
+    # timeout (see its own docstring), but this file's shipped value must not be commented out.
+    assert settings.pipeline.stage_timeout_seconds == 28800
 
 
 def test_search_config_undated_defaults_when_key_absent():

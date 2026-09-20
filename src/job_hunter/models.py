@@ -127,6 +127,7 @@ class Job(JobSummary):
     salary_min: float | None = None
     salary_max: float | None = None
     salary_currency: str | None = None
+    salary_evidence: str | None = None
     first_seen_at: datetime = Field(default_factory=utcnow)
     last_seen_at: datetime = Field(default_factory=utcnow)
     content_hash: str | None = None
@@ -174,9 +175,125 @@ class SearchSummary(BaseModel):
     partial_failure: bool = False
 
 
+def format_search_summary(summary: SearchSummary) -> list[str]:
+    """The two one-line, deterministic (no LLM involved) progress lines a search run reports on
+    completion — shared so `cli.py`'s standalone `job-hunter search` and `pipeline.py`'s
+    orchestrated run print the identical text instead of two copies that could drift. Returned as
+    a list of lines rather than one pre-joined string so a caller can print each with its own
+    `print()` call (matching how both callers already emit their other progress lines)."""
+    return [
+        f"Sources: {summary.sources_attempted} attempted / {summary.sources_succeeded} succeeded / "
+        f"{summary.sources_failed} failed",
+        f"Jobs: {summary.jobs_observed} observed / {summary.us_eligible} U.S.-eligible / "
+        f"{summary.stale_excluded} excluded as stale / {summary.prefilter_candidates} candidates",
+    ]
+
+
 class RunInfo(BaseModel):
     run_id: str
     started_at: datetime
+    completed_at: datetime | None = None
+
+
+class PipelineStage(StrEnum):
+    SEARCH = "search"
+    # `--no-scrape` mode's own first stage, replacing SEARCH — see pipeline.py's `run_pipeline`
+    # and docs/pipeline-refilter-stale-source-plan.md section 4.2. Distinct from SEARCH rather
+    # than reusing it because it runs a different subprocess (scripts/refilter_archive.py, not
+    # a live Collector.search()) and populates different manifest fields (`gained`/`lost`/
+    # `diff_report` instead of a freshly-collected job count) — collapsing the two into one
+    # stage name would hide which of two very different operations actually produced a run's
+    # `candidates` count.
+    REFILTER = "refilter"
+    REVIEW = "review"
+    RADAR = "radar"
+    DONE = "done"
+
+
+class PipelineStatus(StrEnum):
+    """Distinguishes *why* a pipeline run ended, mirroring the review step's own possible
+    outcomes rather than collapsing everything into a bare success/failure exit code — see
+    docs/agent-runtime-audit.md's "Partial review exit status" note."""
+
+    RUNNING = "running"
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    NO_CANDIDATES = "no_candidates"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    # Another job-hunter process already held the shared `run_lock("job-hunter")` (see
+    # pipeline.py/cleanup.py/scripts/refilter_archive.py) — this run never started any stage.
+    LOCK_HELD = "lock_held"
+    # A stage's subprocess exceeded `settings.pipeline.stage_timeout_seconds` and was killed —
+    # see pipeline.py's per-stage `subprocess.run(..., timeout=...)`.
+    TIMED_OUT = "timed_out"
+
+
+#: `job-hunter pipeline`/`pipeline-status`'s non-success exit-code set — `PARTIAL`/`NO_CANDIDATES`
+#: exit 0 (both are documented, expected outcomes: a candidate list with some review failures, or
+#: a genuinely empty one), everything else here exits 2. Shared between the two CLI call sites
+#: (`cli.py`) so the contract can't drift between "just ran" and "polled later" the same run.
+PIPELINE_NON_SUCCESS_STATUSES = frozenset(
+    {
+        PipelineStatus.FAILED,
+        PipelineStatus.MODEL_UNAVAILABLE,
+        PipelineStatus.LOCK_HELD,
+        PipelineStatus.TIMED_OUT,
+    }
+)
+
+
+class PipelineManifest(BaseModel):
+    """The durable record of one `job-hunter pipeline` run, at `data/runs/<run_id>/manifest.json`
+    — a machine-readable stage contract an agent (or a human) can poll instead of re-parsing
+    command prose/stdout. Written by `pipeline.py`, never by a skill."""
+
+    run_id: str
+    project_root: str
+    # Set once at run start (`os.getpid()`) — `pipeline-status` uses this to distinguish a
+    # manifest genuinely still `RUNNING` from one whose process has died without updating it
+    # (reported as `abandoned`; see cli.py's `pipeline-status` handling). `None` only for a
+    # manifest written before this field existed.
+    pid: int | None = None
+    # `runlock.process_start_time(pid)`'s raw `ps -o lstart=` output at the moment `pid` was
+    # recorded above -- a process-*identity* check, not just liveness, so `pipeline-status` can
+    # tell "this exact process is still running" from "the OS reused this pid number for a
+    # different, unrelated process after the original one died" (docs/agent-runtime-audit.md's
+    # "PID reuse" finding). `None` for a manifest written before this field existed, or one
+    # written where `ps` wasn't available -- `pipeline-status` falls back to PID-only liveness in
+    # either case, never treating a missing value as evidence of anything.
+    pid_start_time: str | None = None
+    keyword: str | None = None
+    stage: PipelineStage = PipelineStage.SEARCH
+    status: PipelineStatus = PipelineStatus.RUNNING
+    archive: str | None = None
+    radar: str | None = None
+    candidates: int | None = None
+    # Populated only by --no-scrape mode's REFILTER stage, read from
+    # scripts/refilter_archive.py's own structured `--result-json` output (not stdout parsing —
+    # see pipeline.py's `_run_pipeline_body`). `gained`/`lost` name the exact vocabulary
+    # refilter_archive.py's own HTML diff report already uses (not "added"/"removed" or some
+    # other synonym), so a human reading a manifest and that report side by side sees the same
+    # two words for the same two counts. All four stay None for a live-search (non-`--no-scrape`)
+    # run, since nothing was refiltered — there was nothing to diff against.
+    diff_report: str | None = None
+    gained: int | None = None
+    lost: int | None = None
+    # When this refilter actually ran (refilter_archive.py's own `now`, ISO-8601) — provenance
+    # only, same as profile_fingerprint/resume_fingerprint below: a refiltered report's contents
+    # depend on *when* it ran and against what live SQLite state, which the archive file on disk
+    # alone can't reveal (docs/agent-runtime-audit.md's "provenance fields" finding). Never used
+    # for cache invalidation or any other logic — read-only, human/agent-facing context.
+    refiltered_at: str | None = None
+    reviewed: int | None = None
+    skipped_cached: int | None = None
+    failed: int = 0
+    profile_fingerprint: str | None = None
+    resume_fingerprint: str | None = None
+    model: str | None = None
+    error: str | None = None
+    started_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = None
 
 

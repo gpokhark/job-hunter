@@ -27,15 +27,19 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import httpx
-import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
+from job_hunter.lm_studio_health import check_lm_studio, load_lm_studio_config
 from job_hunter.models import Assessment
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
+from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
@@ -121,23 +125,6 @@ Description:
 """
 
 
-def _load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        example = path.parent / "lm_studio.example.yaml"
-        if not example.exists():
-            raise FileNotFoundError(
-                f"{path} not found and no {example} to fall back to — see this script's "
-                "docstring for setup."
-            )
-        print(
-            f"job-hunter: {path} not found, falling back to {example} — its placeholder "
-            "base_url will not work; copy it to config/lm_studio.yaml and edit it.",
-            file=sys.stderr,
-        )
-        path = example
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
-
 def _extract_json(text: str) -> dict[str, Any]:
     """Local models don't always follow "JSON only" instructions perfectly — try a
     straight parse first, then fall back to pulling the first {...} block out of
@@ -206,7 +193,7 @@ def review_one(
 def _refresh_export(storage: Storage, database_path: Path) -> None:
     rows = storage.export_assessments()
     path = database_path.parent / "assessments.json"
-    path.write_text(json.dumps(rows, indent=2, default=str, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(rows, indent=2, default=str, ensure_ascii=False) + "\n")
 
 
 def main() -> int:
@@ -232,11 +219,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--companies",
+        default=None,
+        help=(
+            "disambiguate --keyword resolution among archives sharing that keyword by "
+            "--companies scope (same value originally passed to job-hunter search/pipeline "
+            "--companies) — omit to resolve only among unscoped archives; ignored if --input "
+            "is given"
+        ),
+    )
+    parser.add_argument(
         "--config", type=Path, default=Path("config/lm_studio.yaml"), help="LM Studio connection config"
     )
     parser.add_argument(
         "--limit",
-        type=int,
+        type=nonneg_int,
         default=None,
         help=(
             "max NEW reviews this run (default: no cap — review every eligible candidate; "
@@ -255,11 +252,36 @@ def main() -> int:
             "still to review, then exit — no model calls, no changes made"
         ),
     )
+    parser.add_argument(
+        "--result-json",
+        type=Path,
+        default=None,
+        help=(
+            "also write {\"reviewed\": N, \"skipped_cached\": N, \"failed\": N} to this path on "
+            "a successful run — a structured result for a caller (job-hunter pipeline) to read "
+            "instead of parsing this script's own human-readable stdout. Purely additive: stdout "
+            "is unchanged either way."
+        ),
+    )
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        default=None,
+        help=(
+            "also mirror every progress line (start-of-run count, per-job start/done, live "
+            "ETA) to this path as it's written, one line at a time, flushed immediately — for "
+            "a caller (job-hunter pipeline) that runs this script as a subprocess with its own "
+            "stdout fully buffered until exit: tail -f this path to see live progress during "
+            "that run instead of only the final summary. Purely additive: stdout is unchanged."
+        ),
+    )
+    add_project_argument(parser)
     args = parser.parse_args()
-    args.input = resolve_search_path(search=args.input, keyword=args.keyword)
+    chdir_to_project_root(args.project)
+    args.input = resolve_search_path(search=args.input, keyword=args.keyword, companies=args.companies)
 
     settings = load_settings()
-    config = _load_config(args.config)
+    config = load_lm_studio_config(args.config)
     rubric = _SCORING_RUBRIC_PATH.read_text(encoding="utf-8")
 
     profile = load_profile()
@@ -272,18 +294,11 @@ def main() -> int:
     candidates = [c for c in data.get("candidates", []) if c.get("us_eligible")]
     if not candidates:
         print(f"No U.S.-eligible candidates in {args.input}.")
+        _write_result_json(args.result_json, reviewed=0, skipped_cached=0, failed=0)
         return 0
 
-    skipped_cached = 0
     with Storage(settings.database_path) as storage:
-        to_review = []
-        for candidate in candidates:
-            source_key, job_id = candidate["source_key"], candidate["job_id"]
-            content_hash = candidate.get("content_hash")
-            if not args.force and storage.get_valid_assessment(source_key, job_id, content_hash):
-                skipped_cached += 1
-                continue
-            to_review.append(candidate)
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates, force=args.force)
     if args.limit is not None:
         to_review = to_review[: args.limit]
 
@@ -294,27 +309,102 @@ def main() -> int:
         )
         return 0
 
-    base_url = config["base_url"].rstrip("/")
-    with httpx.Client() as client:
-        try:
-            client.get(f"{base_url}/models", timeout=5)
-        except httpx.HTTPError as exc:
-            print(
-                f"job-hunter: can't reach LM Studio at {base_url} ({exc}). "
-                "Is the server running (LM Studio > Developer > Start Server) and is "
-                "config/lm_studio.yaml's base_url correct?",
-                file=sys.stderr,
+    try:
+        # Shared with `job-hunter pipeline`/`job-hunter cleanup --apply`/`refilter_archive.py`'s
+        # in-place rewrite (see docs/agent-runtime-audit.md's pipeline-lock finding) — one lock
+        # name so a review run and any of those can never race the same SQLite/assessments state.
+        # `run_lock_or_inherited` (not `run_lock`) because `job-hunter pipeline` already holds
+        # this exact lock for the whole run before spawning this script as a subprocess —
+        # reacquiring it here would deadlock against that parent (confirmed live).
+        with run_lock_or_inherited("job-hunter"):
+            return _run_review(
+                to_review, skipped_cached, config, settings, profile, resume, rubric,
+                result_json=args.result_json, progress_log=args.progress_log,
             )
-            return 2
+    except RunLockHeld as exc:
+        print(
+            f"job-hunter: {exc} — another job-hunter run is already in progress for this "
+            "project (data/assessments.json, the sequential local model, and other shared "
+            "state can only be driven by one run at a time). Wait for it to finish, or remove "
+            "the lock file if you're sure it's stale.",
+            file=sys.stderr,
+        )
+        return 2
 
+
+def _write_result_json(path: Path | None, *, reviewed: int, skipped_cached: int, failed: int) -> None:
+    if path is None:
+        return
+    atomic_write_text(
+        path, json.dumps({"reviewed": reviewed, "skipped_cached": skipped_cached, "failed": failed}) + "\n"
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    """Human-readable duration for a progress/ETA line — never fed anything but a live-measured
+    elapsed/average/remaining value from this run, never a hardcoded guess (a fixed "N min/job"
+    constant would be wrong in either direction depending on the model/hardware actually loaded)."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _eta_suffix(started: float, done: int, total: int) -> str:
+    """A live-measured (not guessed) average-per-job and ETA, once at least one job in this run
+    has actually completed — before that there's no real timing data to extrapolate from, so no
+    suffix is shown rather than a fabricated one."""
+    if done <= 0:
+        return ""
+    avg = (time.monotonic() - started) / done
+    remaining = max(0, total - done)
+    return f" [avg {_format_duration(avg)}/job, ~{_format_duration(avg * remaining)} remaining]"
+
+
+def _run_review(
+    to_review, skipped_cached, config, settings, profile, resume, rubric, *,
+    result_json: Path | None = None, progress_log: Path | None = None,
+) -> int:
+    reachable, detail = check_lm_studio(config)
+    if not reachable:
+        print(f"job-hunter: {detail}", file=sys.stderr)
+        return 2
+
+    progress_file: TextIO | None = None
+    if progress_log is not None:
+        progress_log.parent.mkdir(parents=True, exist_ok=True)
+        progress_file = progress_log.open("w", encoding="utf-8")
+
+    def _announce(message: str, *, err: bool = False) -> None:
+        # `job-hunter pipeline` runs this whole script as a subprocess with its stdout/stderr
+        # fully buffered until exit (no live streaming — see pipeline.py's `_run_stage_subprocess`
+        # docstring), so a caller watching only the terminal would otherwise see nothing until
+        # the entire review finishes. `progress_log` is a side-channel file mirroring every line
+        # here, written and flushed immediately, so `tail -f` on it shows real live progress
+        # during that kind of run; this script's own stdout/stderr behavior is unchanged either way.
+        print(message, file=sys.stderr if err else None)
+        if progress_file is not None:
+            print(message, file=progress_file, flush=True)
+
+    total = len(to_review)
+    try:
+        if total:
+            _announce(f"Starting local LLM review of {total} job(s); {skipped_cached} already cached.")
         reviewed = 0
-        with Storage(settings.database_path) as storage:
+        failed = 0
+        started = time.monotonic()
+        with httpx.Client() as client, Storage(settings.database_path) as storage:
             for candidate in to_review:
                 source_key, job_id = candidate["source_key"], candidate["job_id"]
                 content_hash = candidate.get("content_hash")
-                print(
-                    f"Reviewing [{reviewed + 1}/{len(to_review)}] "
-                    f"{candidate['company']} — {candidate['title']} ..."
+                done = reviewed + failed
+                _announce(
+                    f"Reviewing [{done + 1}/{total}] {candidate['company']} — "
+                    f"{candidate['title']} ...{_eta_suffix(started, done, total)}"
                 )
                 try:
                     verdict = review_one(
@@ -330,7 +420,8 @@ def main() -> int:
                         threshold=profile.minimum_recommendation_score,
                     )
                 except Exception as exc:  # a bad response must not stop the remaining jobs
-                    print(f"  skipped: {exc}", file=sys.stderr)
+                    _announce(f"  skipped: {exc}", err=True)
+                    failed += 1
                     continue
                 assessment = Assessment(
                     source_key=source_key,
@@ -345,9 +436,18 @@ def main() -> int:
                 storage.upsert_assessment(assessment)
                 _refresh_export(storage, settings.database_path)
                 reviewed += 1
-                print(f"  score={assessment.score} recommended={assessment.recommended}")
+                remaining = total - reviewed - failed
+                _announce(
+                    f"  done [{reviewed + failed}/{total}, {remaining} remaining]: "
+                    f"score={assessment.score} recommended={assessment.recommended}"
+                )
 
-    print(f"Reviewed {reviewed} job(s); skipped {skipped_cached} already-assessed (unchanged) job(s).")
+        _announce(f"Reviewed {reviewed} job(s); skipped {skipped_cached} already-assessed (unchanged) job(s).")
+    finally:
+        if progress_file is not None:
+            progress_file.close()
+
+    _write_result_json(result_json, reviewed=reviewed, skipped_cached=skipped_cached, failed=failed)
     return 0
 
 

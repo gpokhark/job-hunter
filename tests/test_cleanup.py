@@ -2,14 +2,25 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from job_hunter.cleanup import classify_report, run_cleanup, scan_reports, select_reports_to_delete
 from job_hunter.config import Settings
 from job_hunter.models import Job, LocationConfidence
 from job_hunter.normalizer import description_hash
+from job_hunter.runlock import RunLockHeld, run_lock
 from job_hunter.storage import Storage
 
 
 def _touch(path, *, age_days: float, content: str = "x") -> None:
+    """Creates `path` with a back-dated mtime — but `age_days` no longer affects report-file age
+    for cleanup purposes, only ever used here for creating a file at all (with parent dirs).
+    `classify_report()` reads each report's own filename-embedded timestamp/date, not
+    `path.stat().st_mtime` (see its docstring). A test that needs a report of a specific age must
+    encode it in the filename itself; `age_days` here is otherwise vestigial for that purpose,
+    kept where the filename's own date already happens to be old/new enough to match intent
+    without needing to be computed relative to "now" (e.g. a hardcoded 2026-01-01 is unambiguously
+    ancient relative to this project's real usage window, with or without a specific age_days)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     mtime = (datetime.now(UTC) - timedelta(days=age_days)).timestamp()
@@ -93,22 +104,29 @@ def test_select_reports_to_delete_keeps_latest_n_per_group_regardless_of_age(tmp
 
 
 def test_select_reports_to_delete_deletes_beyond_the_floor_only_if_also_old(tmp_path):
+    """Regression test for docs/agent-runtime-audit.md's "cleanup.py's report age comes from
+    mtime, not the report's own filename" finding: age (and therefore ranking within a group) is
+    now driven entirely by each report's own filename-embedded date, never by when the file was
+    last *written to disk* — confirmed live as a real bug, a `data/` tree materialized fresh on a
+    machine (a checkout restore, a repo copy) made every report look equally "recent" to mtime-
+    based ranking regardless of real age. These three filenames are constructed with no mtime
+    manipulation at all, deliberately, so this test can't accidentally pass by relying on it."""
     now = datetime.now(UTC)
-    newest = tmp_path / "adas_2026-09-06.html"
-    middle = tmp_path / "adas_2026-09-01.html"
-    oldest_but_recent = tmp_path / "adas_2026-08-25.html"
-    _touch(newest, age_days=1)
-    _touch(middle, age_days=20)
-    _touch(oldest_but_recent, age_days=5)  # 3rd-newest by mtime, but not old enough itself
+    newest = tmp_path / f"adas_{(now - timedelta(days=1)).strftime('%Y-%m-%d')}.html"
+    middle = tmp_path / f"adas_{(now - timedelta(days=10)).strftime('%Y-%m-%d')}.html"
+    oldest = tmp_path / f"adas_{(now - timedelta(days=20)).strftime('%Y-%m-%d')}.html"
+    for path in (newest, middle, oldest):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
     files = [
         classify_report(newest, role="radar"),
         classify_report(middle, role="radar"),
-        classify_report(oldest_but_recent, role="radar"),
+        classify_report(oldest, role="radar"),
     ]
     to_delete = select_reports_to_delete(files, cutoff=now - timedelta(days=15), keep_latest_per_group=2)
-    # newest + oldest_but_recent are the 2 most-recently-modified -> protected by the floor.
-    # middle is 3rd by mtime (outside the floor) AND older than the 15-day cutoff -> deleted.
-    assert [f.path for f in to_delete] == [middle]
+    # newest + middle are the 2 most-recently-*generated* (by filename date) -> protected by the
+    # floor. oldest is 3rd (outside the floor) AND older than the 15-day cutoff -> deleted.
+    assert [f.path for f in to_delete] == [oldest]
 
 
 def test_select_reports_to_delete_groups_independently_by_kind_and_slug(tmp_path):
@@ -131,6 +149,26 @@ def test_select_reports_to_delete_keep_latest_zero_disables_the_floor(tmp_path):
     files = [classify_report(path, role="radar")]
     to_delete = select_reports_to_delete(files, cutoff=now - timedelta(days=15), keep_latest_per_group=0)
     assert [f.path for f in to_delete] == [path]
+
+
+def test_classify_report_ignores_mtime_entirely_even_when_it_contradicts_the_filename(tmp_path):
+    """The exact real-world scenario that surfaced this bug, reproduced directly: a report
+    genuinely generated months ago, but whose file on disk has a *fresh* mtime -- e.g. a repo
+    checkout materializing every existing file at clone/copy time regardless of the content's
+    real age. Before this fix, classify_report()'s use of path.stat().st_mtime made this file
+    look brand new to retention logic no matter how old its filename said it was, silently
+    defeating report_after_days for it forever. generated_at must come from the filename alone,
+    completely independent of a file's real, current mtime."""
+    old_report = tmp_path / "adas_2026-01-01.html"
+    old_report.write_text("x")
+    fresh_mtime = datetime.now(UTC).timestamp()
+    os.utime(old_report, (fresh_mtime, fresh_mtime))  # simulates a just-materialized checkout
+
+    result = classify_report(old_report, role="radar")
+
+    expected = datetime.strptime("2026-01-01", "%Y-%m-%d").astimezone().timestamp()
+    assert result.generated_at == expected
+    assert result.generated_at != fresh_mtime
 
 
 def test_scan_reports_ignores_files_outside_known_directories_by_construction(tmp_path):
@@ -209,6 +247,23 @@ def test_run_cleanup_apply_deletes_and_writes_export(tmp_path):
     payload = json.loads(result.export_path.read_text())
     assert payload["deleted_jobs"][0]["job_id"] == "stale"
     assert payload["deleted_reports"] == [str(stale_report)]
+
+
+def test_run_cleanup_apply_raises_when_job_hunter_lock_already_held(tmp_path):
+    """`apply=True` shares the `run_lock("job-hunter")` lock with `job-hunter pipeline` (see
+    pipeline.py) so cleanup can never delete rows/files a concurrent pipeline run is reading or
+    about to write."""
+    settings = _settings(tmp_path)
+    with run_lock("job-hunter"), pytest.raises(RunLockHeld):
+        run_cleanup(settings, apply=True, now=datetime.now(UTC))
+
+
+def test_run_cleanup_dry_run_does_not_take_the_lock(tmp_path):
+    """A dry run only reads -- it must not contend with a real pipeline/cleanup run for the lock."""
+    settings = _settings(tmp_path)
+    with run_lock("job-hunter"):
+        result = run_cleanup(settings, apply=False, now=datetime.now(UTC))
+    assert result.applied is False
 
 
 def test_run_cleanup_keep_latest_protects_reports_apply_mode(tmp_path):

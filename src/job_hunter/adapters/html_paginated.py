@@ -38,8 +38,14 @@ class HtmlPaginatedAdapter(JobAdapter):
             response = await self.request("GET", url)
             tree = HTMLParser(response.text)
             cards = tree.css(cfg.get("card_selector", "[data-job-id]"))
-            if not cards and not jobs:
-                raise SchemaError("no job cards matched configured selector")
+            if not cards:
+                # No cards on this page — if we already have jobs, this is
+                # graceful end-of-pagination (WAF timeout, last page, etc.).
+                # Only raise if we have zero jobs total (meaning the very
+                # first page had no cards — real config error).
+                if not jobs:
+                    raise SchemaError("no job cards matched configured selector")
+                break
             for card in cards:
                 # link_selector: "self" is opt-in for sites (e.g. Wayve's "First" ATS)
                 # whose card_selector already matches the anchor itself with no wrapping

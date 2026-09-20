@@ -1,12 +1,38 @@
 ---
 name: onboard-source
+version: 1.0.0
 description: Onboard a new employer career site into job-hunter — identify its real scraping mechanism, wire it up in config/companies.yaml (reusing an existing adapter whenever possible), test it, verify it live, and update docs/SPEC.md/CLAUDE.md. Use when the user gives a careers listing URL and a sample job URL and asks to add/onboard a new company or source.
+compatibility: Requires uv and Python 3.11+; no LM Studio dependency. Repo-maintenance skill — needs live network access to the target career site during discovery, and a working checkout of this repo (it edits config/companies.yaml, adapter code, and docs directly).
+metadata:
+  job_hunter:
+    stage: maintenance
+  hermes:
+    tags: [jobs, adapters, repo-maintenance]
 ---
 
 # Onboard a new source
 
 This is a repo-maintenance skill for `job-hunter` itself, not the end-user job-search skill
 (that one is `skills/job-hunter`). Use it when asked to add a new employer/company as a source.
+
+## Contract
+
+Input:
+- the employer's careers **listing/search** page URL
+- one real **sample job detail** page URL from that same site (never a guess — ask for it if
+  missing, per "Required inputs" below)
+
+Output:
+- a new (or corrected) entry in `config/companies.yaml`, reusing an existing adapter via config
+  when possible, or new adapter code under `src/job_hunter/adapters/` only when genuinely needed
+- passing tests (`uv run pytest -q`, `uv run ruff check .`) — a new fixture test in
+  `tests/test_adapters.py` if new adapter code was written, an updated company-count assertion in
+  `tests/test_config.py` if a new company key was added
+- a live verification result (`job-hunter source-test <key>` output, a spot-checked sample job)
+- updated docs (`docs/SPEC.md`'s §5 company/adapter table always; `CLAUDE.md` only if a new,
+  reusable technique was discovered — never a per-company entry there)
+- a plain-language report: what backend was actually found, which adapter/config was used, the
+  live job count, and any caveats (partial coverage, ToS exposure, an unstable date field, etc.)
 
 ## Required inputs
 

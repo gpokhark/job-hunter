@@ -2,13 +2,55 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth
+from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
+
+
+def _migrate_v1_add_sponsorship_columns(connection: sqlite3.Connection) -> None:
+    """`jobs.visa_sponsorship`/`sponsorship_evidence`, added when `sponsorship.py` shipped —
+    `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already exists, so a
+    database created before these columns existed needs them added explicitly. Column-presence-
+    guarded (safe to run against a database that already has them, from `CREATE TABLE`'s own
+    current definition or a prior un-versioned run of this same check) — existing rows backfill
+    the next time each job is successfully re-fetched, same as any other collected field."""
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    if "visa_sponsorship" not in existing:
+        connection.execute(
+            "ALTER TABLE jobs ADD COLUMN visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned'"
+        )
+    if "sponsorship_evidence" not in existing:
+        connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
+
+
+def _migrate_v2_add_salary_evidence_column(connection: sqlite3.Connection) -> None:
+    """`jobs.salary_evidence`, added when `salary.py` shipped — same column-presence-guarded
+    shape as migration 1, for the same reason."""
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    if "salary_evidence" not in existing:
+        connection.execute("ALTER TABLE jobs ADD COLUMN salary_evidence TEXT")
+
+
+#: Ordered, 1-indexed migration steps — entry `N` (1-based) upgrades a database from schema
+#: version `N-1` to version `N`. Tracked via SQLite's own built-in `PRAGMA user_version` integer
+#: (docs/agent-runtime-audit.md's "no explicit schema-version marker" finding) rather than a
+#: separate table — `_migrate()` applies only the entries a given database's current
+#: `user_version` hasn't seen yet, then advances `user_version` to `len(_MIGRATIONS)`. These first
+#: two entries are a *refactor* of the mechanism, not a behavior change: they're the exact same
+#: column-presence checks `_migrate()` already ran unconditionally on every call before this —
+#: wrapping them in numbered, skippable steps is what lets a *future* migration (a rename, a type
+#: change, a data backfill with side effects — something that can't just be re-run harmlessly)
+#: rely on an accurate "has this database already seen this specific change" instead of
+#: re-deriving it from scratch each time.
+_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migrate_v1_add_sponsorship_columns,
+    _migrate_v2_add_salary_evidence_column,
+]
 
 
 class Storage:
@@ -17,6 +59,11 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
+        # Two job-hunter/agent processes (e.g. a search run and a concurrent review run) can
+        # legitimately hit the same SQLite file at once; without a busy_timeout, a writer that
+        # loses the race to WAL/lock contention fails immediately with "database is locked"
+        # instead of waiting briefly for the other transaction to finish.
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         self.initialize()
 
     def close(self) -> None:
@@ -39,7 +86,8 @@ class Storage:
                 us_eligible INTEGER NOT NULL, location_confidence TEXT, location_evidence TEXT,
                 visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned', sponsorship_evidence TEXT,
                 department TEXT, employment_type TEXT, posted_at TEXT, description TEXT,
-                salary_min REAL, salary_max REAL, salary_currency TEXT, content_hash TEXT,
+                salary_min REAL, salary_max REAL, salary_currency TEXT, salary_evidence TEXT,
+                content_hash TEXT,
                 first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active', missing_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(source_key, job_id)
@@ -75,17 +123,22 @@ class Storage:
         self.connection.commit()
 
     def _migrate(self) -> None:
-        """CREATE TABLE IF NOT EXISTS never adds a column to a table that already exists —
-        an existing database predates visa_sponsorship/sponsorship_evidence, so add them
-        explicitly if missing. Existing rows backfill the next time each job is
-        successfully re-fetched, same as any other collected field."""
-        existing = {row["name"] for row in self.connection.execute("PRAGMA table_info(jobs)")}
-        if "visa_sponsorship" not in existing:
-            self.connection.execute(
-                "ALTER TABLE jobs ADD COLUMN visa_sponsorship TEXT NOT NULL DEFAULT 'unmentioned'"
-            )
-        if "sponsorship_evidence" not in existing:
-            self.connection.execute("ALTER TABLE jobs ADD COLUMN sponsorship_evidence TEXT")
+        """Applies every `_MIGRATIONS` entry a database's own `PRAGMA user_version` (SQLite's
+        built-in integer schema-version pragma, defaulting to `0` for a database that's never
+        set it) hasn't seen yet, then advances `user_version` to `len(_MIGRATIONS)` — see
+        `_MIGRATIONS`' own docstring for why this is a mechanism refactor, not a behavior change,
+        for the two migrations that exist today. Idempotent by construction: a database already
+        at the current version runs zero migrations on a second call (confirmed in
+        `tests/test_storage.py`)."""
+        current_version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        for version, migration in enumerate(_MIGRATIONS, start=1):
+            if version <= current_version:
+                continue
+            migration(self.connection)
+        if current_version < len(_MIGRATIONS):
+            # PRAGMA doesn't accept bound parameters for its value -- safe here since
+            # len(_MIGRATIONS) is a fixed, program-controlled integer, never user input.
+            self.connection.execute(f"PRAGMA user_version = {len(_MIGRATIONS)}")
 
     def begin_run(self, run_id: str, started_at: datetime) -> None:
         self.connection.execute(
@@ -156,6 +209,7 @@ class Storage:
             "salary_min": job.salary_min,
             "salary_max": job.salary_max,
             "salary_currency": job.salary_currency,
+            "salary_evidence": job.salary_evidence,
             "content_hash": job.content_hash,
             "first_seen_at": job.first_seen_at.isoformat(),
             "last_seen_at": job.last_seen_at.isoformat(),
@@ -197,6 +251,36 @@ class Storage:
                     "UPDATE jobs SET visa_sponsorship=?, sponsorship_evidence=? "
                     "WHERE source_key=? AND job_id=?",
                     (decision.status.value, decision.evidence, row["source_key"], row["job_id"]),
+                )
+                changed += 1
+        self.connection.commit()
+        return changed
+
+    def reevaluate_salary(self) -> int:
+        """Re-run salary.evaluate_salary against every stored job's *existing*
+        description — same rationale and shape as reevaluate_sponsorship above: a job's
+        salary_evidence column is only ever set by upsert_job (on a fresh successful
+        collection), so this is what backfills every already-stored job collected
+        before salary_evidence existed, or picks up a salary.py pattern improvement,
+        with no network involved."""
+        rows = self.connection.execute(
+            "SELECT source_key, job_id, description, salary_evidence FROM jobs"
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            decision = evaluate_salary(row["description"])
+            if decision.evidence != row["salary_evidence"]:
+                self.connection.execute(
+                    "UPDATE jobs SET salary_min=?, salary_max=?, salary_currency=?, salary_evidence=? "
+                    "WHERE source_key=? AND job_id=?",
+                    (
+                        decision.min_value,
+                        decision.max_value,
+                        "USD" if decision.evidence else None,
+                        decision.evidence,
+                        row["source_key"],
+                        row["job_id"],
+                    ),
                 )
                 changed += 1
         self.connection.commit()
@@ -360,6 +444,25 @@ class Storage:
         if row is None or row["content_hash"] != content_hash:
             return None
         return self._row_to_assessment(row)
+
+    def partition_candidates_for_review(
+        self, candidates: list[dict[str, Any]], *, force: bool = False
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Splits an archive's candidate dicts (each needing at least `source_key`/`job_id`/
+        `content_hash` keys) into (to_review, skipped_cached), applying the identical
+        `get_valid_assessment` cache-hit rule `scripts/review_with_lm_studio.py` applies before
+        ever calling the model. Shared so a caller that only wants a cheap pre-flight count —
+        `job-hunter pipeline`'s "N need review" status line, printed before spawning the review
+        subprocess — doesn't have to duplicate this loop or actually run a review to get it."""
+        to_review: list[dict[str, Any]] = []
+        skipped_cached = 0
+        for candidate in candidates:
+            content_hash = candidate.get("content_hash")
+            if not force and self.get_valid_assessment(candidate["source_key"], candidate["job_id"], content_hash):
+                skipped_cached += 1
+                continue
+            to_review.append(candidate)
+        return to_review, skipped_cached
 
     def export_assessments(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(

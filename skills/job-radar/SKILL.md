@@ -1,7 +1,13 @@
 ---
 name: job-radar
-version: 1.0.0
+version: 1.2.0
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
+compatibility: Requires uv and Python 3.11+. No LM Studio dependency — pure presentation over already-recorded assessments, no scoring happens here.
+metadata:
+  job_hunter:
+    stage: render
+  hermes:
+    tags: [jobs, report, radar]
 ---
 
 # Job Radar
@@ -12,7 +18,8 @@ the full search→review→radar pipeline in one go, use the `job-hunter` orches
 it calls this same command.
 
 This is pure presentation: it never re-derives, adjusts, or overrides a score. Every number comes
-from `data/assessments.json` as it stands right now.
+from `data/assessments.json` as it stands right now — with one deliberate, disclosed exception,
+see step 6's stale-source fallback note below.
 
 ## Examples
 
@@ -25,33 +32,60 @@ from `data/assessments.json` as it stands right now.
   `soft_exclude_terms` entry from `suggest_exclusions.py`) and want the report to reflect it
   against jobs already collected today, with no new search/scraper call
 
+## Contract
+
+Input:
+- project path (`--project`, defaults to `$JOB_HUNTER_ROOT`/cwd)
+- keyword or archive path (`--keyword` / `--search`, defaults to the newest archive overall)
+- optional `--refilter` mode (via `job-hunter pipeline --no-scrape`, not a `render_radar.py` flag
+  itself — see step 3) when the profile changed and the existing archive needs re-evaluating first
+- optional `--new-days`/`--undated-new-days`/`--undated-stale-days` (tag-window tuning) and
+  `--no-collection-fallback` (disable the failed-source stale-job merge)
+
+Output:
+- an HTML report at `data/radar/{slug}_{date}.html` (printed as `Wrote <path> | strong=N
+  review=N below_50=N never_reviewed=N source_issues=N (failed=N)`)
+- a chat-facing text summary compiled from the same data: Strong (score ≥ 75) and For-review
+  (50–74) sections, `[90+]`/`[80+]`/`[New]` tags, and a below-50 excluded count
+- a leading Collection Issues note for any non-`ok` source (failed/warning/unsupported), including
+  the stale-source fallback sentence when a failed source's last-known-good jobs were merged in
+- next command: none required to see results — this is the final presentation stage; `job-feedback`
+  is the follow-up once the user has reviewed the report and wants to tag/adjust the profile
+
 ## Procedure
 
-1. Work from the project directory containing `pyproject.toml`.
+1. Every command below takes `--project "$CLAUDE_PROJECT_DIR"` (Claude Code) — or the equivalent
+   workspace path for another runtime, e.g. Hermes — so this skill works regardless of whether the
+   calling process already `cd`'d into the repo.
 2. Decide which archive to render — the same resolution rule as `job-reviewer`: if you already
    know the keyword, pass `--keyword` explicitly; the no-arg default (newest archive overall) is a
    cold-start convenience only, not a substitute for a known keyword. See
    `docs/skill-split-plan.md` section 4.
 3. If `candidate_profile.yaml` changed since this archive was collected (a new `exclude_terms`/
    `soft_exclude_terms`/`strong_relevance_terms` entry, most often from `suggest_exclusions.py`)
-   and the user wants the *existing* archive/report to reflect it — explicitly asked to "re-filter",
-   "without invoking the scraper", or similar — re-apply the current profile offline first:
+   and the user wants the *existing* archive/report to reflect it — explicitly asked to
+   "re-filter", "without invoking the scraper", or similar — use the pipeline orchestrator's
+   dedicated mode rather than chaining scripts by hand:
    ```bash
-   uv run python scripts/refilter_archive.py [--keyword "ADAS,Robotics"]
+   uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" --no-scrape [--keyword "ADAS,Robotics"]
    ```
-   This makes no network/adapter calls at all — it rebuilds `candidates` from SQLite's current
-   active/US-eligible job pool (scoped to that archive's own sources), re-filtered by
-   `passes_prefilter`/`passes_recency` against the current profile (same archive path, same
-   resolution rule as above), and prints `Re-filtered <path> -> <path>: N candidate(s) (was M, K
-   removed, J gained)`. Report both counts — a profile edit can tighten and loosen at the same
-   time (e.g. a new `soft_exclude_terms` entry alongside a new `strong_relevance_terms` override),
-   and only rebuilding from SQLite (rather than narrowing the archive's own previous output) lets
-   a loosening edit actually restore a job a prior run already dropped. Skip this step entirely
-   for a normal render where nothing about the profile changed — it's an explicit opt-in, not part
-   of every render.
+   This makes no network/adapter calls at all — it re-runs `scripts/refilter_archive.py` (rebuilds
+   `candidates` from SQLite's current active/US-eligible job pool, scoped to that archive's own
+   sources, re-filtered by `passes_prefilter`/`passes_recency` against the current profile) and
+   then this same render step (step 6 below), in one command, recording `gained`/`lost`/
+   `diff_report` on `data/runs/<run_id>/manifest.json` — `uv run job-hunter pipeline-status
+   --project "$CLAUDE_PROJECT_DIR"` to read it back. Report both counts to the user: a profile edit
+   can tighten and loosen at the same time (e.g. a new `soft_exclude_terms` entry alongside a new
+   `strong_relevance_terms` override), and only rebuilding from SQLite (rather than narrowing the
+   archive's own previous output) lets a loosening edit actually restore a job a prior run already
+   dropped. Add `--review` if the user also wants whatever the refilter surfaces reviewed — off by
+   default in this mode, the opposite of normal pipeline mode's `--skip-review` opt-out; see
+   `job-hunter`'s `SKILL.md` for why. Skip this step entirely for a normal render where nothing
+   about the profile changed — it's an explicit opt-in, not part of every render.
 4. If compiling a text summary yourself (not just the HTML report), read the resolved archive's
    `candidates` plus `data/assessments.json` — or run `uv run job-hunter resolve-search
-   [--keyword "..."]` first to get the exact archive path, then read both files directly.
+   --project "$CLAUDE_PROJECT_DIR" [--keyword "..."]` first to get the exact archive path, then
+   read both files directly.
 5. Compile the final list from verdicts — **no cap on how many are shown**. Include every
    candidate scoring **50 or above**, split into two score-descending groups, each clearly
    labeled:
@@ -64,10 +98,11 @@ from `data/assessments.json` as it stands right now.
    unrelated to `is_new`/`is_changed`, which only mean "not previously seen by this tool," not
    "recently posted" — do not conflate them. Include strengths, gaps, first-party URL, and posting
    date for every listed job. Mention visa-sponsorship stance when explicitly stated
-   (`available`/`not_available`) — never invent one for a posting that doesn't mention it.
+   (`available`/`not_available`) and salary range when explicitly stated (`salary_evidence`) —
+   never invent either for a posting that doesn't mention it.
 6. Render the standalone HTML report:
    ```bash
-   uv run python scripts/render_radar.py [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run python scripts/render_radar.py --project "$CLAUDE_PROJECT_DIR" [--keyword "ADAS,Robotics,Product Technical Leader"]
    ```
    It prints `Wrote <path> | strong=N review=N below_50=N never_reviewed=N source_issues=N
    (failed=N)`; sanity-check those counts against what you just compiled. The HTML report itself
@@ -81,11 +116,28 @@ from `data/assessments.json` as it stands right now.
    name and message; mention any non-zero `failed`/`source_issues` count in your chat-facing
    summary too, since a company silently missing from candidates because its collection failed is
    exactly the kind of thing worth surfacing, not just leaving for the report to show.
+
+   A `failed` source's row can also carry a second sentence: the stale-source-collection fallback
+   (`docs/pipeline-refilter-stale-source-plan.md` section 4.3). Rather than showing zero jobs for
+   a source that failed to scrape *this* run, the report merges in that source's last active,
+   still-recency-passing jobs straight from SQLite (the archive file on disk is never rewritten by
+   this — only the rendered HTML changes) and extends the message with `Failed to scrape today —
+   showing N job(s) from the last successful scrape on <date>` — or, for a source that has never
+   once succeeded, `Failed to scrape — no prior successful data available for this source`, with
+   nothing merged. Mention this exactly the way you already mention a bare failure: the jobs
+   shown are real, just not freshly re-verified today, and a source down long enough eventually
+   shows zero fallback jobs here too (all aged past the recency window) while still carrying the
+   note — that's expected, not a bug. Merged jobs land in the normal Strong/For-review/Below-50
+   sections with no special badge. This is `render_radar.py`'s own disclosed exception to being
+   pure presentation (see its module docstring) — it still never touches a *score*.
+   `--no-collection-fallback` disables it and restores today's plain no-jobs behavior, rarely
+   needed.
 7. **Safe to re-run at any point, including mid-review** — it reflects exactly whatever's been
    reviewed so far each time it runs, nothing cached or stale. Re-running against the same archive
    always writes to the same output path (`data/radar/{same-stem}.html`), so "update the radar" is
    just "call this again" — no separate sync/refresh mechanism needed. Re-running after step 3's
-   offline re-filter works the same way — same output path, now reflecting fewer candidates.
+   offline re-filter works the same way — same output path, now reflecting fewer or more
+   candidates.
 8. If your runtime has an artifact-publishing capability (e.g. Claude Code's Artifact tool),
    publish the rendered file — load whatever design-guidance skill that capability requires first.
    A same-day rerun of the same keyword should update the *same* published link (pass its existing

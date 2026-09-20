@@ -2,10 +2,13 @@
 """Render a `job-hunter search` output (the default profile-driven run, or a
 --keyword-scoped one) plus `data/assessments.json`'s verdicts into a single-page HTML
 report — grouped and tagged exactly as the job-hunter skill's step 9 describes: Strong
-matches (score >= 75) and For review (score 50-74) as two separate groups, [90+]/[80+]
-tags within Strong, and a [New] tag on anything posted within the last --new-days
-(default 10) days. A job with no discoverable posted_at at all falls back to first_seen_at
-(when job-hunter's own collector first observed it) for the same [New] tag, display-only and
+matches (score >= 75) and For review (score 50-74) as two separate groups. The score
+number itself carries a five-step color gradient across the whole 50-100 range (50s
+through 90s+) rather than a separate text tag — Strong and For review both get it, since
+the gradient is about the score's own value, not which group it landed in; below 50
+stays uncolored. A [New] tag on anything posted within the last --new-days
+(default 10) days. A job with no discoverable posted_at at all falls back to
+first_seen_at (when job-hunter's own collector first observed it) for the same [New] tag, display-only and
 using a separate window (settings.yaml's search.undated_new_days, default 15) — and gets a
 "Long-standing" tag instead once past search.undated_stale_days (default 45). Never a filter:
 every candidate the local model scored still appears in its normal section regardless of
@@ -13,11 +16,32 @@ either tag. A third group lists every candidate scored below 50 — every job th
 local model actually evaluated appears somewhere on the page. A fourth group, "Not LLM
 Reviewed", lists every candidate the review step hasn't gotten to at all (an LM Studio
 error skipped it, `--limit` capped the run, or it's a job newly surfaced by a refilter that
-hasn't been scored yet) — title/company/link/date/tags only, no score/matches/gaps since
-there's no verdict to show; feedback buttons still work on these rows.
+hasn't been scored yet) — same row layout as every other section (an "NR" placeholder
+sits where the score would go, uncolored, so the whole page reads as one consistent
+grid rather than a visually different fallback), title/company/location/salary/date/tags,
+just no score/matches/gaps since there's no verdict to show; feedback buttons still work
+on these rows.
 
 This is pure presentation: it never re-derives, adjusts, or overrides a score — every
 number here is exactly what's already in data/assessments.json.
+
+One deliberate, disclosed exception to "pure presentation": this module also implements the
+stale-source-collection fallback (`docs/pipeline-refilter-stale-source-plan.md` section 4.3) — a
+source whose live collection genuinely `failed` this run (not `warning`, which already produced
+real live data this run just fewer jobs than expected, and not `unsupported`, which never has
+cached data to fall back to) still has its last-known-good jobs sitting in SQLite untouched by
+that failure. `build()` merges that source's current active/US-eligible/prefilter-passing/
+recency-passing jobs (via `job_hunter.active_pool.source_jobs()`, deduped against whatever's
+already in `candidates`) straight into the same candidate pool everything else in this module
+already renders, and extends that source's Collection Issues row with a note naming how many
+jobs came from the fallback and when they were last actually collected. This is why `build()`
+now takes a `database_path` for the first time — the one new dependency this module didn't have
+before — but it still never touches a *score*: a merged job is scored (or shown as "NR") exactly
+like any other candidate, using whatever's already in `data/assessments.json`, and the archive
+file on disk is never rewritten by this — only the rendered HTML changes, so re-running this
+script against the same archive stays idempotent. `--no-collection-fallback` (default: fallback
+on) disables this and restores today's plain "no jobs, just the note" behavior, mirroring the
+escape-hatch style of `cleanup.py`'s `--no-vacuum`/`--no-export` flags.
 
 Usage:
     uv run python scripts/render_radar.py                              # newest archive, any keyword
@@ -34,8 +58,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from job_hunter.config import load_settings
+from job_hunter.active_pool import source_jobs as _pool_source_jobs
+from job_hunter.atomic import atomic_write_text
+from job_hunter.config import CandidateProfile, load_profile, load_settings
+from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.search_archive import resolve_search_path
+from job_hunter.storage import Storage
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
 
@@ -68,6 +96,17 @@ def _fmt_first_seen(iso: str | None) -> str | None:
     return f"First seen {moment.strftime('%b %-d, %Y')}"
 
 
+def _fmt_local_date(iso: str | None) -> str | None:
+    """Same "Sep 10, 2026"-style day formatting as `_fmt_first_seen`, for
+    `source_health.last_success_at` — a genuine instant (not a date-only value the way
+    `posted_at` often is), so converting it to the device's local timezone before display is
+    correct here for the same reason it's correct for first_seen_at."""
+    if not iso:
+        return None
+    moment = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    return moment.strftime("%b %-d, %Y")
+
+
 def _undated_tags(
     posted_at: str | None, first_seen_at: str | None, *, now: datetime, new_days: int,
     undated_new_days: int, undated_stale_days: int,
@@ -90,19 +129,24 @@ def _undated_tags(
 
 
 def _tier(score: int) -> str:
+    """A five-step color gradient for every score from 50 up (50s/60s/70s/80s/90s+) —
+    below 50 stays "plain" (muted/uncolored), matching those rows' own already-lower
+    priority (state the count, don't list them individually, per the job-radar skill).
+    Below 50 was deliberately not given its own sub-gradient: those postings are
+    excluded from the chat-facing summary entirely, so a reader has no reason to be
+    comparing shades of "not it" the way they do across the 50-100 range that's
+    actually worth their attention."""
     if score >= 90:
         return "exceptional"
     if score >= 80:
         return "strong"
+    if score >= 70:
+        return "promising"
+    if score >= 60:
+        return "moderate"
+    if score >= 50:
+        return "fair"
     return "plain"
-
-
-def _tier_tag(score: int) -> str:
-    if score >= 90:
-        return '<span class="tag tag-exceptional">90+</span>'
-    if score >= 80:
-        return '<span class="tag tag-strong">80+</span>'
-    return ""
 
 
 def _sponsorship_tag(status: str | None) -> str:
@@ -139,15 +183,39 @@ def _filter_data_attrs(*, sponsorship: str | None, arrangement: str | None, is_n
     )
 
 
-def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
-    tier = _tier(row["score"]) if show_tier_tag else "plain"
-    tags = _tier_tag(row["score"]) if show_tier_tag else ""
-    if row["new"]:
-        tags += '<span class="tag tag-new">New</span>'
+def _job_meta_html(location: str | None, salary_evidence: str | None) -> str:
+    """Location and salary, shown directly in the always-visible summary row rather
+    than only inside the click-to-expand detail — a report reader shouldn't have to
+    open every single row just to see where a job is or what it pays. `·`-joined onto
+    one line (not two separate tags) since both are free-text and can run long, left to
+    the same single-line ellipsis truncation as job-title/job-company rather than
+    wrapping, so every row keeps a consistent height. Salary gets its own accent color,
+    distinct from location's muted default — a reader scanning down the list should be
+    able to spot which rows even mention pay without having to read every word. Returns
+    ready-to-embed HTML (each piece escaped individually), not plain text — the caller
+    must not re-escape it."""
+    parts = []
+    if location:
+        parts.append(f'<span class="job-location">{_e(location)}</span>')
+    if salary_evidence:
+        parts.append(f'<span class="job-salary">{_e(salary_evidence)}</span>')
+    return " · ".join(parts)
+
+
+def _row_html(row: dict[str, Any]) -> str:
+    tier = _tier(row["score"])
+    # "New" is the one signal worth interrupting the title for — it sits right before
+    # the title text itself (still inside .job, so the job column's own start position
+    # never moves), while the rest are secondary and sit in their own column to the
+    # right of the title instead, between it and the date/feedback stack. Neither
+    # placement reintroduces the original bug: a variable-width column only misaligns
+    # whatever comes *after* it, and nothing variable-width sits before .job any more.
+    new_badge = '<span class="tag tag-new">New</span>' if row["new"] else ""
+    other_tags = ""
     if row.get("long_standing"):
-        tags += '<span class="tag tag-long-standing">Long-standing</span>'
-    tags += _sponsorship_tag(row.get("visa_sponsorship"))
-    tags += _arrangement_tag(row.get("work_arrangement"))
+        other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _sponsorship_tag(row.get("visa_sponsorship"))
+    other_tags += _arrangement_tag(row.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
         sponsorship=row.get("visa_sponsorship"), arrangement=row.get("work_arrangement"),
         is_new=row["new"], is_long_standing=row.get("long_standing", False),
@@ -160,6 +228,14 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
         if row.get("sponsorship_evidence")
         else ""
     )
+    meta_html = _job_meta_html(row.get("location"), row.get("salary_evidence"))
+    job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
+    # Always emit .tags as its own grid child, even empty — summary's grid tracks are
+    # positional (auto-placement fills them in DOM order), so omitting this element
+    # entirely on a row with no secondary tags would shift .row-end into .tags' own
+    # track instead of its intended one, misaligning the date/feedback column exactly
+    # the way the title column used to be misaligned.
+    tags_col = f'<span class="tags">{other_tags}</span>'
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
           data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
@@ -172,13 +248,20 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
     <details class="row tier-{tier}" {filter_attrs}>
       <summary>
         <span class="score">{row["score"]}</span>
-        <span class="tags">{tags}</span>
         <span class="job">
-          <span class="job-title">{_e(row["title"])}</span>
+          <span class="job-title-line">
+            {new_badge}
+            <span class="job-title">{_e(row["title"])}</span>
+          </span>
           <span class="job-company">{_e(row["company"])}</span>
+          {job_meta}
         </span>
-        <span class="job-date">{date_display}</span>
-        {feedback_buttons}
+        {tags_col}
+        <span class="row-end">
+          <span class="job-date">{date_display}</span>
+          {feedback_buttons}
+          <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
       </summary>
       <div class="row-detail">
         <div class="detail-col">
@@ -189,45 +272,46 @@ def _row_html(row: dict[str, Any], *, show_tier_tag: bool) -> str:
           <h3>Gaps</h3>
           <ul>{gaps_html}</ul>
         </div>
-        <div class="detail-meta">
-          <div>
-            <p class="loc">{_e(row.get("location"))}</p>
-            {sponsorship_note}
-          </div>
-          <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
-        </div>
+        {f'<div class="detail-meta">{sponsorship_note}</div>' if sponsorship_note else ""}
       </div>
     </details>'''
 
 
-def _rows_html(rows: list[dict[str, Any]], *, show_tier_tag: bool, empty_message: str) -> str:
+def _rows_html(rows: list[dict[str, Any]], *, empty_message: str) -> str:
     if not rows:
         return f'<p class="empty-state">{_e(empty_message)}</p>'
-    return "".join(_row_html(row, show_tier_tag=show_tier_tag) for row in rows)
+    return "".join(_row_html(row) for row in rows)
 
 
 def _never_reviewed_row_html(
     candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
 ) -> str:
-    """A candidate with no assessment at all — no score, so no <details>/matches/gaps/tier
-    tag, just the same at-a-glance signal (link/date/[New]/sponsorship/arrangement tags) every
-    other report already shows, plus feedback buttons so it can still be tagged before review."""
+    """A candidate with no assessment at all — no matches/gaps to expand into, so this
+    stays a plain (non-expandable) row rather than a <details> with nothing to reveal —
+    but otherwise mirrors _row_html's layout exactly (an uncolored "NR" placeholder
+    where the score goes, the New badge before the title, other tags in their own
+    column, location/salary/date/feedback all shown the same way) so this section reads
+    as the same report, not a visually different fallback. The group's own heading and
+    note already say what "NR" means, so it isn't repeated on every row."""
     posted_at = candidate.get("posted_at")
     first_seen_at = candidate.get("first_seen_at")
     is_new, is_long_standing = _undated_tags(
         posted_at, first_seen_at, now=now, new_days=new_days,
         undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
     )
-    tags = '<span class="tag tag-new">New</span>' if is_new else ""
+    new_badge = '<span class="tag tag-new">New</span>' if is_new else ""
+    other_tags = ""
     if is_long_standing:
-        tags += '<span class="tag tag-long-standing">Long-standing</span>'
-    tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
-    tags += _arrangement_tag(candidate.get("work_arrangement"))
+        other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
+    other_tags += _arrangement_tag(candidate.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
         sponsorship=candidate.get("visa_sponsorship"), arrangement=candidate.get("work_arrangement"),
         is_new=is_new, is_long_standing=is_long_standing,
     )
     date_display = _fmt_date(posted_at) or _fmt_first_seen(first_seen_at) or "Date unknown"
+    meta_html = _job_meta_html(candidate.get("location_raw"), candidate.get("salary_evidence"))
+    job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
     feedback_buttons = f'''<span class="feedback-buttons"
           data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
           data-company="{_attr(candidate.get("company"))}" data-title="{_attr(candidate.get("title"))}"
@@ -239,16 +323,22 @@ def _never_reviewed_row_html(
     return f'''
     <div class="plain-row" {filter_attrs}>
       <div class="plain-row-top">
-        <span class="tags">{tags}</span>
+        <span class="score score-nr" title="Not yet reviewed by the local model">NR</span>
         <span class="job">
-          <span class="job-title">{_e(candidate.get("title"))}</span>
+          <span class="job-title-line">
+            {new_badge}
+            <span class="job-title">{_e(candidate.get("title"))}</span>
+          </span>
           <span class="job-company">{_e(candidate.get("company"))}</span>
+          {job_meta}
         </span>
-        <span class="job-date">{date_display}</span>
-        <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        <span class="tags">{other_tags}</span>
+        <span class="row-end">
+          <span class="job-date">{date_display}</span>
+          {feedback_buttons}
+          <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
       </div>
-      <div class="row-meta">Not yet reviewed by the local model.</div>
-      {feedback_buttons}
     </div>'''
 
 
@@ -292,6 +382,98 @@ def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
     return "".join(_source_issue_row_html(h) for h in entries)
 
 
+def _apply_collection_fallback(
+    *,
+    source_issues: list[dict[str, Any]],
+    candidates: dict[tuple[str, str], dict[str, Any]],
+    database_path: Path,
+    profile: CandidateProfile,
+    max_age_days: int,
+    keywords: list[str] | None,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Ability 3 from docs/pipeline-refilter-stale-source-plan.md section 4.3: a source whose
+    live collection genuinely `failed` this run still has its last-known-good jobs sitting in
+    SQLite, completely untouched by that failure — this is what actually surfaces them in the
+    rendered report (with a note explaining why they're there) instead of a `failed` source
+    silently showing zero jobs even though real, recently-collected data for it exists on disk.
+
+    Deliberately scoped to `status == "failed"` only, never `warning` or `unsupported` — see the
+    plan's section 4.3 for the reasoning: a `warning` source already produced real live data this
+    run (health.py's count-anomaly check just flagged the count as suspiciously low), so mixing
+    in old jobs on top of a partial-but-real result would blur what actually happened this run
+    rather than clarify it; `unsupported` is a permanent, already-disclosed config.py state that
+    never fetches jobs at all, so it never has cached data to fall back to regardless.
+
+    Returns `(updated_source_issues, fallback_provenance)`: `updated_source_issues` is the same
+    shape as before — every `failed` entry's own `message` extended with the fallback note,
+    everything else passed through unchanged — and merges any qualifying, not-already-present job
+    straight into the `candidates` dict *in place*, so the caller's own scoring/tiering loop over
+    `candidates` picks them up exactly as if they were part of this run's live search output. The
+    archive file on disk is never touched by this — only the in-memory `candidates` dict this one
+    render pass builds its HTML from, which is what keeps re-running this script against the same
+    archive idempotent. `fallback_provenance` is new (docs/agent-runtime-audit.md's "provenance
+    fields for stale-source fallback" finding): one `{"source_key", "merged_count",
+    "last_success_at"}` record per `failed` source, structured rather than folded only into the
+    human-readable `message` prose — a caller reading `--result-json` (`job-hunter pipeline`,
+    an agent) can tell which sources in a given report came from the live run vs. this fallback,
+    and exactly when that fallback data was last actually collected, without parsing HTML.
+
+    Opens exactly one `Storage` connection for the whole call (not one per failed source) and
+    reads `health_rows()` once into a dict keyed by `source_key` — `source_health` is a small,
+    one-row-per-configured-company table, so this was never the expensive part the way the
+    `jobs` table scan `source_jobs()` used to be, but there's no reason a run with several
+    concurrently-failing sources (this project's own docs note `stealth_html` sources like
+    astemo/google failing together as a real, recurring case) should reopen the connection and
+    re-scan that table once per failure either."""
+    updated: list[dict[str, Any]] = []
+    fallback_provenance: list[dict[str, Any]] = []
+    failed_keys = [h.get("source_key") for h in source_issues if h.get("status") == "failed"]
+    last_success_by_key: dict[str, str | None] = {}
+    if failed_keys:
+        with Storage(database_path) as storage:
+            health_by_key = {row["source_key"]: row for row in storage.health_rows()}
+        last_success_by_key = {
+            key: (health_by_key[key]["last_success_at"] if key in health_by_key else None)
+            for key in failed_keys
+        }
+    for health in source_issues:
+        if health.get("status") != "failed":
+            updated.append(health)
+            continue
+        health = dict(health)
+        source_key = health.get("source_key")
+        last_success_at = last_success_by_key.get(source_key)
+        base_message = health.get("message") or "No error message recorded."
+        merged = 0
+        if not last_success_at:
+            note = "Failed to scrape — no prior successful data available for this source."
+        else:
+            fallback_jobs = _pool_source_jobs(
+                database_path, source_key, profile, max_age_days, keywords=keywords, now=now
+            )
+            for job in fallback_jobs:
+                key = (job.source_key, job.job_id)
+                if key in candidates:
+                    continue
+                candidates[key] = json.loads(job.model_dump_json())
+                merged += 1
+            note = (
+                f"Failed to scrape today — showing {merged} job(s) from the last successful "
+                f"scrape on {_fmt_local_date(last_success_at)}."
+            )
+        health["message"] = f"{base_message} {note}"
+        updated.append(health)
+        fallback_provenance.append(
+            {
+                "source_key": source_key,
+                "merged_count": merged,
+                "last_success_at": last_success_at,
+            }
+        )
+    return updated, fallback_provenance
+
+
 def build(
     *,
     search_path: Path,
@@ -303,7 +485,12 @@ def build(
     undated_new_days: int = 15,
     undated_stale_days: int = 45,
     now: datetime | None = None,
-) -> dict[str, int]:
+    database_path: Path | None = None,
+    profile: CandidateProfile | None = None,
+    max_age_days: int | None = None,
+    keywords: list[str] | None = None,
+    collection_fallback: bool = True,
+) -> dict[str, Any]:
     search = json.loads(search_path.read_text(encoding="utf-8"))
     candidates = {(c["source_key"], c["job_id"]): c for c in search["candidates"]}
     assessments = json.loads(assessments_path.read_text(encoding="utf-8"))
@@ -314,6 +501,22 @@ def build(
     # is what the "eyebrow" date string below is formatted from, so a late-night run displays
     # the date as it was actually experienced, not tomorrow's UTC date.
     now = now or datetime.now().astimezone()
+
+    # Ability 3's stale-source-collection fallback (see this module's docstring and
+    # docs/pipeline-refilter-stale-source-plan.md section 4.3) — deliberately run *before* the
+    # scoring loop below, not after, so a merged-in job is scored/tiered exactly like any other
+    # candidate rather than needing a second, separate pass over just the merged ones. Callers
+    # that never pass `database_path` (every existing test, and any other embedder of this
+    # function) get exactly today's behavior — this whole block is a no-op without it, by
+    # design, not merely by accident of argument defaults.
+    source_issues_raw = [h for h in search.get("source_health", []) if h.get("status") != "ok"]
+    fallback_provenance: list[dict[str, Any]] = []
+    if collection_fallback and database_path is not None and profile is not None and max_age_days is not None:
+        source_issues_raw, fallback_provenance = _apply_collection_fallback(
+            source_issues=source_issues_raw, candidates=candidates, database_path=database_path,
+            profile=profile, max_age_days=max_age_days, keywords=keywords, now=now,
+        )
+
     rows: list[dict[str, Any]] = []
     never_reviewed_candidates: list[dict[str, Any]] = []
     for key, candidate in candidates.items():
@@ -355,6 +558,7 @@ def build(
                 "gaps": assessment["gaps"],
                 "visa_sponsorship": candidate.get("visa_sponsorship"),
                 "sponsorship_evidence": candidate.get("sponsorship_evidence"),
+                "salary_evidence": candidate.get("salary_evidence"),
                 "work_arrangement": candidate.get("work_arrangement"),
             }
         )
@@ -368,8 +572,34 @@ def build(
     )
     never_reviewed = len(never_reviewed_candidates)
 
+    # "New" here means the same posting-recency flag as every row's own [New] tag
+    # (`is_new`, computed above per scored row / via `_undated_tags` below for an
+    # unreviewed one) — never `is_new`/`is_changed`'s "not previously seen by this
+    # tool" meaning. Counted across every candidate regardless of review status,
+    # since posting recency and sponsorship are candidate-level facts that don't
+    # require a verdict — an unreviewed candidate can still be new or sponsored.
+    never_reviewed_new = 0
+    never_reviewed_sponsorship_new = 0
+    for candidate in never_reviewed_candidates:
+        is_new, _ = _undated_tags(
+            candidate.get("posted_at"), candidate.get("first_seen_at"), now=now, new_days=new_days,
+            undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+        )
+        if is_new:
+            never_reviewed_new += 1
+            if candidate.get("visa_sponsorship") == "available":
+                never_reviewed_sponsorship_new += 1
+    strong_new = sum(1 for r in strong if r["new"])
+    review_new = sum(1 for r in review if r["new"])
+    below_50_new = sum(1 for r in below_50_rows if r["new"])
+    total_new = strong_new + review_new + below_50_new + never_reviewed_new
+    sponsorship_new = (
+        sum(1 for r in rows if r["new"] and r.get("visa_sponsorship") == "available")
+        + never_reviewed_sponsorship_new
+    )
+
     source_issues = sorted(
-        (h for h in search.get("source_health", []) if h.get("status") != "ok"),
+        source_issues_raw,
         key=lambda h: (_SOURCE_ISSUE_ORDER.get(h.get("status"), 99), h.get("company") or h.get("source_key") or ""),
     )
     failed_count = sum(1 for h in source_issues if h.get("status") == "failed")
@@ -395,6 +625,7 @@ def build(
         .replace("__H1__", _e(title))
         .replace("__EYEBROW__", _e(eyebrow))
         .replace("__SUBHEAD__", _e(subhead))
+        .replace("__TOTAL_JOBS__", str(len(candidates)))
         .replace("__TOTAL_SCORED__", str(len(rows)))
         .replace("__STRONG_COUNT__", str(len(strong)))
         .replace("__REVIEW_COUNT__", str(len(review)))
@@ -403,19 +634,22 @@ def build(
         .replace("__FAILED_COUNT__", str(failed_count))
         .replace("__SOURCE_ISSUES_COUNT__", str(len(source_issues)))
         .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
+        .replace("__TOTAL_NEW__", str(total_new))
+        .replace("__STRONG_NEW__", str(strong_new))
+        .replace("__REVIEW_NEW__", str(review_new))
+        .replace("__BELOW_50_NEW__", str(below_50_new))
+        .replace("__SPONSORSHIP_NEW__", str(sponsorship_new))
         .replace(
             "__STRONG_ROWS__",
-            _rows_html(strong, show_tier_tag=True, empty_message="No candidates scored 75 or above for this search."),
+            _rows_html(strong, empty_message="No candidates scored 75 or above for this search."),
         )
         .replace(
             "__REVIEW_ROWS__",
-            _rows_html(review, show_tier_tag=False, empty_message="No candidates scored 50-74 for this search."),
+            _rows_html(review, empty_message="No candidates scored 50-74 for this search."),
         )
         .replace(
             "__BELOW_50_ROWS__",
-            _rows_html(
-                below_50_rows, show_tier_tag=False, empty_message="No candidates scored below 50 for this search."
-            ),
+            _rows_html(below_50_rows, empty_message="No candidates scored below 50 for this search."),
         )
         .replace(
             "__NEVER_REVIEWED_ROWS__",
@@ -426,8 +660,7 @@ def build(
         )
         .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(out, encoding="utf-8")
+    atomic_write_text(output_path, out)
     return {
         "strong": len(strong),
         "review": len(review),
@@ -435,6 +668,11 @@ def build(
         "never_reviewed": never_reviewed,
         "source_issues": len(source_issues),
         "failed": failed_count,
+        # Structured stale-source-fallback provenance (docs/agent-runtime-audit.md's "provenance
+        # fields" finding) -- one entry per `failed` source, machine-readable rather than only
+        # ever folded into the HTML report's prose note. Empty whenever collection_fallback=False
+        # or no source failed this run.
+        "stale_source_fallback": fallback_provenance,
     }
 
 
@@ -474,17 +712,49 @@ def main() -> int:
         "--keyword", default=None,
         help="the --keyword string used for this search, if any (drives the subhead/eyebrow/default title; omit for a default profile-driven search)",
     )
-    parser.add_argument("--new-days", type=int, default=10, help="posting-age window for the [New] tag (default 10)")
     parser.add_argument(
-        "--undated-new-days", type=int, default=None,
+        "--companies", default=None,
+        help=(
+            "disambiguate --keyword resolution among archives sharing that keyword by "
+            "--companies scope (same value originally passed to job-hunter search/pipeline "
+            "--companies) — omit to resolve only among unscoped archives; ignored if --search "
+            "is given"
+        ),
+    )
+    parser.add_argument(
+        "--new-days", type=nonneg_int, default=10, help="posting-age window for the [New] tag (default 10)"
+    )
+    parser.add_argument(
+        "--undated-new-days", type=nonneg_int, default=None,
         help="for jobs with no posted_at, first-seen-age window for the [New] tag (default: settings.yaml's search.undated_new_days)",
     )
     parser.add_argument(
-        "--undated-stale-days", type=int, default=None,
+        "--undated-stale-days", type=nonneg_int, default=None,
         help='for jobs with no posted_at, first-seen-age past which they\'re tagged "Long-standing" (default: settings.yaml\'s search.undated_stale_days)',
     )
+    parser.add_argument(
+        "--no-collection-fallback", action="store_true",
+        help=(
+            "disable the failed-source stale-job fallback merge (section 4.3/4.5 of "
+            "docs/pipeline-refilter-stale-source-plan.md) — falls back to today's plain "
+            "note-with-no-jobs behavior for a source that failed to scrape this run"
+        ),
+    )
+    parser.add_argument(
+        "--result-json", type=Path, default=None,
+        help=(
+            "also write {\"report_path\": \"...\", \"stale_source_fallback\": "
+            "[{\"source_key\", \"merged_count\", \"last_success_at\"}, ...]} to this path on "
+            "success — a structured result for a caller (job-hunter pipeline) to read instead "
+            "of parsing this script's own human-readable stdout, and to know which sources in "
+            "this report came from the live run vs. the stale-source fallback (empty list when "
+            "--no-collection-fallback or no source failed). Purely additive: stdout is unchanged."
+        ),
+    )
+    add_project_argument(parser)
     args = parser.parse_args()
-    args.search = resolve_search_path(search=args.search, keyword=args.keyword)
+    chdir_to_project_root(args.project)
+    args.search = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
 
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
     title = args.title or _default_title(args.keyword)
@@ -494,6 +764,7 @@ def main() -> int:
     undated_stale_days = (
         args.undated_stale_days if args.undated_stale_days is not None else settings.search.undated_stale_days
     )
+    keywords = [term.strip() for term in args.keyword.split(",") if term.strip()] if args.keyword else None
 
     stats = build(
         search_path=args.search,
@@ -504,12 +775,28 @@ def main() -> int:
         new_days=args.new_days,
         undated_new_days=undated_new_days,
         undated_stale_days=undated_stale_days,
+        database_path=settings.database_path,
+        profile=load_profile(),
+        max_age_days=settings.search.max_posting_age_days,
+        keywords=keywords,
+        collection_fallback=not args.no_collection_fallback,
     )
     print(
         f"Wrote {output_path} | strong={stats['strong']} review={stats['review']} "
         f"below_50={stats['below_50']} never_reviewed={stats['never_reviewed']} "
         f"source_issues={stats['source_issues']} (failed={stats['failed']})"
     )
+    if args.result_json is not None:
+        atomic_write_text(
+            args.result_json,
+            json.dumps(
+                {
+                    "report_path": str(output_path),
+                    "stale_source_fallback": stats["stale_source_fallback"],
+                }
+            )
+            + "\n",
+        )
     return 0
 
 
