@@ -1,6 +1,6 @@
 ---
 name: job-hunter
-version: 1.2.0
+version: 1.3.0
 description: Run the full job-hunter pipeline — search, local-LLM review, and radar report — end to end for a keyword/title search or the candidate profile's standing criteria.
 compatibility: Requires uv and Python 3.11+; LM Studio required (this orchestrator's review stage delegates to it).
 metadata:
@@ -92,7 +92,11 @@ Output:
    ```
    Report `status` plainly: `complete`/`partial` both succeeded (`partial` means some individual
    reviews failed — name how many); `no_candidates` means say so and stop, don't manufacture
-   results; `model_unavailable` means LM Studio wasn't reachable, lead with that; `failed` means
+   results; `model_unavailable` means LM Studio wasn't reachable — before reporting that to the
+   user as "the server is down," run `uv run python scripts/check_lm_studio.py --project
+   "$CLAUDE_PROJECT_DIR"` (see `job-reviewer`'s `SKILL.md` step 4) — a runtime's own network path
+   to `base_url` can be broken while LM Studio itself runs fine, confirmed live with Hermes, and
+   that's a different problem to report than the server actually being down; `failed` means
    relay `error` verbatim. Report `candidates`, and — once review ran — `reviewed`/
    `skipped_cached`/`failed`; for a `--no-scrape` run, also report `gained`/`lost`/`diff_report`
    from the refilter stage (the same vocabulary `refilter_archive.py`'s own HTML diff report uses).

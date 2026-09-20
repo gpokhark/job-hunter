@@ -92,6 +92,7 @@ uv run job-hunter source-status         # per-source health from SQLite
 uv run job-hunter source-test honda     # healthcheck one adapter live
 uv run job-hunter db-stats
 uv run job-hunter export --format json
+uv run python scripts/check_lm_studio.py  # is the configured LM Studio server actually reachable right now?
 
 uv run pytest                           # full suite (fixtures only, no network)
 uv run pytest tests/test_adapters.py::test_name   # single test
@@ -458,8 +459,9 @@ before most commands will find a profile (falls back to the example file otherwi
   load-bearing file and every lock-holder in this codebase goes through them, hook scripts
   included. `rootutil.py`'s `--project`/`add_project_argument()` is used by the CLI and every
   **operational** `scripts/*.py` entry point (`apply_radar_feedback.py`, `assessments_to_csv.py`,
-  `diff_profile.py`, `refilter_archive.py`, `render_radar.py`, `review_with_lm_studio.py`,
-  `suggest_exclusions.py`) — not literally every script in the directory: `endpoint_probe.py`
+  `check_lm_studio.py`, `diff_profile.py`, `refilter_archive.py`, `render_radar.py`,
+  `review_with_lm_studio.py`, `suggest_exclusions.py`) — not literally every script in the
+  directory: `endpoint_probe.py`
   (diagnostic), `prototype_tfidf_broad_match.py` (prototype), and `search_to_csv.py` (a pure
   stdin/stdout converter) have no operational `--project` contract, and
   `claude_profile_hook.py`/`hermes_profile_hook.py`/`install_hermes_hook.py` take the project root
@@ -627,6 +629,18 @@ before most commands will find a profile (falls back to the example file otherwi
   is already resumable by re-invoking it with the same `--keyword`/`--input` — no separate resume
   logic needed. `job-reviewer/references/scoring.md` defines the rubric embedded into that
   script's prompt; `job-scout/references/troubleshooting.md` covers source-health diagnosis.
+  When a review run reports it can't reach LM Studio (`model_unavailable`, or
+  `review_with_lm_studio.py`'s own "can't reach LM Studio at ..." stderr line), the calling agent
+  should run `scripts/check_lm_studio.py` (`uv run python scripts/check_lm_studio.py --project
+  ...`) before concluding the server itself is down — confirmed live that an agent runtime
+  (Hermes) can misreport "LM Studio is down" when the real fault is its own network path to the
+  configured `base_url` (a different container/host than the one LM Studio actually runs on, a
+  stale LAN IP in `config/lm_studio.yaml`, a firewall) rather than the server. This script makes
+  the exact same `GET {base_url}/models` call `review_with_lm_studio.py` does as its own
+  pre-flight check, in isolation — no archive, no resume, no review — and prints a single
+  `OK`/`FAIL LM Studio: ...` line (exit 0/1). Both share one implementation,
+  `src/job_hunter/lm_studio_health.py`'s `check_lm_studio()`/`load_lm_studio_config()`, so the
+  standalone check and the real review run can never disagree about the same server state.
   `job-feedback` is deliberately the one skill whose own `SKILL.md` mandates two explicit
   stop-and-confirm points with the user — which suggested terms to write into
   `candidate_profile.yaml`, and whether to accept a shown diff as the new baseline — never

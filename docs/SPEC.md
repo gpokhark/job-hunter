@@ -1048,8 +1048,8 @@ config/data path is touched, the same convention `git -C <path>` uses. Falls bac
 `$JOB_HUNTER_ROOT`, then the current directory (unchanged behavior for anyone already running from
 the repo root). Every **operational** `scripts/*.py` entry point accepts the identical flag via
 `rootutil.add_project_argument()` — `apply_radar_feedback.py`, `assessments_to_csv.py`,
-`diff_profile.py`, `refilter_archive.py`, `render_radar.py`, `review_with_lm_studio.py`,
-`suggest_exclusions.py`. Confirmed exceptions, by design, not oversight: `endpoint_probe.py`
+`check_lm_studio.py`, `diff_profile.py`, `refilter_archive.py`, `render_radar.py`,
+`review_with_lm_studio.py`, `suggest_exclusions.py`. Confirmed exceptions, by design, not oversight: `endpoint_probe.py`
 (diagnostic probing tool), `prototype_tfidf_broad_match.py` (prototype, no operational contract),
 `search_to_csv.py` (a pure stdin/stdout-shaped converter with no project-relative path to
 resolve); and the hook/installer plumbing — `claude_profile_hook.py`, `hermes_profile_hook.py`,

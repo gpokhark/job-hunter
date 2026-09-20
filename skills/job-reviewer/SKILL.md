@@ -1,6 +1,6 @@
 ---
 name: job-reviewer
-version: 1.1.0
+version: 1.2.0
 description: Score job-hunter's archived candidates against the user's resume using a local LLM (LM Studio) — resumes automatically from wherever a prior run left off, never spends cloud/agent tokens.
 compatibility: Requires uv and Python 3.11+; LM Studio required (local model scoring via its OpenAI-compatible API).
 metadata:
@@ -81,6 +81,20 @@ Output:
    processes what's actually left — never redo the whole thing, never lose partial progress.
    It does **not** cap how many jobs get reviewed by default — review all of them. Only pass
    `--limit` if the user explicitly asks to review fewer than all eligible candidates this run.
+
+   If this step reports it can't reach LM Studio (exit 2, a "can't reach LM Studio at ..." stderr
+   line, or `job-hunter pipeline`'s `model_unavailable` status), don't take that at face value as
+   "the server is down" — run the standalone connectivity check first:
+   ```bash
+   uv run python scripts/check_lm_studio.py --project "$CLAUDE_PROJECT_DIR"
+   ```
+   This makes the identical `GET {base_url}/models` call in isolation and prints one `OK`/`FAIL
+   LM Studio: ...` line. Confirmed live with Hermes: the calling agent runtime's own network path
+   to `config/lm_studio.yaml`'s `base_url` can be broken (a different container/host than LM
+   Studio actually runs on, a stale LAN IP, a firewall) while LM Studio itself is running fine —
+   this is a false "server is down" report, not a real one, and reporting it as the latter to the
+   user is misleading. Report the check's actual OK/FAIL line and its `base_url`/model-list detail
+   to the user rather than guessing.
 5. Report to the user how many were newly reviewed versus already cached from a prior run (the
    script's final line: `Reviewed N job(s); skipped M already-assessed (unchanged) job(s).`). No
    Claude/agent tokens are spent scoring anything — the only LLM involved in this step is the

@@ -31,11 +31,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import load_profile, load_settings
+from job_hunter.lm_studio_health import check_lm_studio, load_lm_studio_config
 from job_hunter.models import Assessment
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
@@ -122,23 +122,6 @@ URL: {url}
 Description:
 {description}
 """
-
-
-def _load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        example = path.parent / "lm_studio.example.yaml"
-        if not example.exists():
-            raise FileNotFoundError(
-                f"{path} not found and no {example} to fall back to — see this script's "
-                "docstring for setup."
-            )
-        print(
-            f"job-hunter: {path} not found, falling back to {example} — its placeholder "
-            "base_url will not work; copy it to config/lm_studio.yaml and edit it.",
-            file=sys.stderr,
-        )
-        path = example
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -285,7 +268,7 @@ def main() -> int:
     args.input = resolve_search_path(search=args.input, keyword=args.keyword, companies=args.companies)
 
     settings = load_settings()
-    config = _load_config(args.config)
+    config = load_lm_studio_config(args.config)
     rubric = _SCORING_RUBRIC_PATH.read_text(encoding="utf-8")
 
     profile = load_profile()
@@ -355,19 +338,12 @@ def _write_result_json(path: Path | None, *, reviewed: int, skipped_cached: int,
 def _run_review(
     to_review, skipped_cached, config, settings, profile, resume, rubric, *, result_json: Path | None = None
 ) -> int:
-    base_url = config["base_url"].rstrip("/")
-    with httpx.Client() as client:
-        try:
-            client.get(f"{base_url}/models", timeout=5)
-        except httpx.HTTPError as exc:
-            print(
-                f"job-hunter: can't reach LM Studio at {base_url} ({exc}). "
-                "Is the server running (LM Studio > Developer > Start Server) and is "
-                "config/lm_studio.yaml's base_url correct?",
-                file=sys.stderr,
-            )
-            return 2
+    reachable, detail = check_lm_studio(config)
+    if not reachable:
+        print(f"job-hunter: {detail}", file=sys.stderr)
+        return 2
 
+    with httpx.Client() as client:
         reviewed = 0
         failed = 0
         with Storage(settings.database_path) as storage:
