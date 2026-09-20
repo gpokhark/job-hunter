@@ -54,9 +54,12 @@ class JobAdapter(ABC):
         return self.company.key
 
     async def _pace(self) -> None:
-        interval = float(self.company.config.get("min_request_interval_seconds", 0) or 0)
-        if interval <= 0:
+        import random
+        min_interval = float(self.company.config.get("min_request_interval_seconds", 0) or 0)
+        if min_interval <= 0:
             return
+        max_interval = float(self.company.config.get("max_request_interval_seconds", min_interval) or min_interval)
+        interval = random.uniform(min_interval, max_interval)
         async with self._request_lock:
             loop = asyncio.get_event_loop()
             now = loop.time()
