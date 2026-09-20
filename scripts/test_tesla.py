@@ -1,5 +1,7 @@
 import asyncio
+
 from scrapling.fetchers import AsyncStealthySession
+
 
 async def main():
     async with AsyncStealthySession(headless=True) as session:

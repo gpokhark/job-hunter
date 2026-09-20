@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .base import AdapterError
 from .html_paginated import HtmlPaginatedAdapter, _page_url
+
+logger = logging.getLogger(__name__)
 
 
 class _StealthResponse:
@@ -196,6 +199,19 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
             # the entire run.  The parent's fetch_summaries checks
             # "if not cards and not jobs" — if we already have jobs
             # from earlier pages, an empty page just returns what we have.
+            # The exception itself is still logged rather than silently
+            # discarded — this except is broad by necessity (Scrapling
+            # raises different exception types for a timeout vs. a WAF
+            # challenge vs. a browser-launch failure), so a genuine bug here
+            # (not just an expected timeout/WAF block) would otherwise be
+            # invisible, surfacing only as a confusing "0 jobs, no error".
+            logger.warning(
+                "%s: stealth fetch of %s failed, treating as empty page (%s: %s)",
+                self.source_key,
+                url,
+                type(exc).__name__,
+                exc,
+            )
             return _StealthResponse("")
         return _StealthResponse(response.html_content)
 
