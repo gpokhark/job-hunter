@@ -27,8 +27,9 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
@@ -262,6 +263,18 @@ def main() -> int:
             "is unchanged either way."
         ),
     )
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        default=None,
+        help=(
+            "also mirror every progress line (start-of-run count, per-job start/done, live "
+            "ETA) to this path as it's written, one line at a time, flushed immediately — for "
+            "a caller (job-hunter pipeline) that runs this script as a subprocess with its own "
+            "stdout fully buffered until exit: tail -f this path to see live progress during "
+            "that run instead of only the final summary. Purely additive: stdout is unchanged."
+        ),
+    )
     add_project_argument(parser)
     args = parser.parse_args()
     chdir_to_project_root(args.project)
@@ -284,16 +297,8 @@ def main() -> int:
         _write_result_json(args.result_json, reviewed=0, skipped_cached=0, failed=0)
         return 0
 
-    skipped_cached = 0
     with Storage(settings.database_path) as storage:
-        to_review = []
-        for candidate in candidates:
-            source_key, job_id = candidate["source_key"], candidate["job_id"]
-            content_hash = candidate.get("content_hash")
-            if not args.force and storage.get_valid_assessment(source_key, job_id, content_hash):
-                skipped_cached += 1
-                continue
-            to_review.append(candidate)
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates, force=args.force)
     if args.limit is not None:
         to_review = to_review[: args.limit]
 
@@ -314,7 +319,7 @@ def main() -> int:
         with run_lock_or_inherited("job-hunter"):
             return _run_review(
                 to_review, skipped_cached, config, settings, profile, resume, rubric,
-                result_json=args.result_json,
+                result_json=args.result_json, progress_log=args.progress_log,
             )
     except RunLockHeld as exc:
         print(
@@ -335,24 +340,71 @@ def _write_result_json(path: Path | None, *, reviewed: int, skipped_cached: int,
     )
 
 
+def _format_duration(seconds: float) -> str:
+    """Human-readable duration for a progress/ETA line — never fed anything but a live-measured
+    elapsed/average/remaining value from this run, never a hardcoded guess (a fixed "N min/job"
+    constant would be wrong in either direction depending on the model/hardware actually loaded)."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _eta_suffix(started: float, done: int, total: int) -> str:
+    """A live-measured (not guessed) average-per-job and ETA, once at least one job in this run
+    has actually completed — before that there's no real timing data to extrapolate from, so no
+    suffix is shown rather than a fabricated one."""
+    if done <= 0:
+        return ""
+    avg = (time.monotonic() - started) / done
+    remaining = max(0, total - done)
+    return f" [avg {_format_duration(avg)}/job, ~{_format_duration(avg * remaining)} remaining]"
+
+
 def _run_review(
-    to_review, skipped_cached, config, settings, profile, resume, rubric, *, result_json: Path | None = None
+    to_review, skipped_cached, config, settings, profile, resume, rubric, *,
+    result_json: Path | None = None, progress_log: Path | None = None,
 ) -> int:
     reachable, detail = check_lm_studio(config)
     if not reachable:
         print(f"job-hunter: {detail}", file=sys.stderr)
         return 2
 
-    with httpx.Client() as client:
+    progress_file: TextIO | None = None
+    if progress_log is not None:
+        progress_log.parent.mkdir(parents=True, exist_ok=True)
+        progress_file = progress_log.open("w", encoding="utf-8")
+
+    def _announce(message: str, *, err: bool = False) -> None:
+        # `job-hunter pipeline` runs this whole script as a subprocess with its stdout/stderr
+        # fully buffered until exit (no live streaming — see pipeline.py's `_run_stage_subprocess`
+        # docstring), so a caller watching only the terminal would otherwise see nothing until
+        # the entire review finishes. `progress_log` is a side-channel file mirroring every line
+        # here, written and flushed immediately, so `tail -f` on it shows real live progress
+        # during that kind of run; this script's own stdout/stderr behavior is unchanged either way.
+        print(message, file=sys.stderr if err else None)
+        if progress_file is not None:
+            print(message, file=progress_file, flush=True)
+
+    total = len(to_review)
+    try:
+        if total:
+            _announce(f"Starting local LLM review of {total} job(s); {skipped_cached} already cached.")
         reviewed = 0
         failed = 0
-        with Storage(settings.database_path) as storage:
+        started = time.monotonic()
+        with httpx.Client() as client, Storage(settings.database_path) as storage:
             for candidate in to_review:
                 source_key, job_id = candidate["source_key"], candidate["job_id"]
                 content_hash = candidate.get("content_hash")
-                print(
-                    f"Reviewing [{reviewed + 1}/{len(to_review)}] "
-                    f"{candidate['company']} — {candidate['title']} ..."
+                done = reviewed + failed
+                _announce(
+                    f"Reviewing [{done + 1}/{total}] {candidate['company']} — "
+                    f"{candidate['title']} ...{_eta_suffix(started, done, total)}"
                 )
                 try:
                     verdict = review_one(
@@ -368,7 +420,7 @@ def _run_review(
                         threshold=profile.minimum_recommendation_score,
                     )
                 except Exception as exc:  # a bad response must not stop the remaining jobs
-                    print(f"  skipped: {exc}", file=sys.stderr)
+                    _announce(f"  skipped: {exc}", err=True)
                     failed += 1
                     continue
                 assessment = Assessment(
@@ -384,9 +436,17 @@ def _run_review(
                 storage.upsert_assessment(assessment)
                 _refresh_export(storage, settings.database_path)
                 reviewed += 1
-                print(f"  score={assessment.score} recommended={assessment.recommended}")
+                remaining = total - reviewed - failed
+                _announce(
+                    f"  done [{reviewed + failed}/{total}, {remaining} remaining]: "
+                    f"score={assessment.score} recommended={assessment.recommended}"
+                )
 
-    print(f"Reviewed {reviewed} job(s); skipped {skipped_cached} already-assessed (unchanged) job(s).")
+        _announce(f"Reviewed {reviewed} job(s); skipped {skipped_cached} already-assessed (unchanged) job(s).")
+    finally:
+        if progress_file is not None:
+            progress_file.close()
+
     _write_result_json(result_json, reviewed=reviewed, skipped_cached=skipped_cached, failed=failed)
     return 0
 

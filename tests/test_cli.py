@@ -9,9 +9,21 @@ import pytest
 
 from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_path, main, parser
 from job_hunter.config import CompanyConfig
-from job_hunter.models import PipelineManifest, PipelineStatus
+from job_hunter.models import PipelineManifest, PipelineStatus, SearchSummary, format_search_summary
 from job_hunter.pipeline import write_manifest
 from job_hunter.search_archive import resolve_search_path
+
+
+def test_format_search_summary_reports_sources_and_jobs():
+    summary = SearchSummary(
+        sources_attempted=65, sources_succeeded=61, sources_failed=4,
+        jobs_observed=1200, us_eligible=900, prefilter_candidates=483, stale_excluded=50,
+    )
+    lines = format_search_summary(summary)
+    assert lines == [
+        "Sources: 65 attempted / 61 succeeded / 4 failed",
+        "Jobs: 1200 observed / 900 U.S.-eligible / 50 excluded as stale / 483 candidates",
+    ]
 
 
 def test_archive_path_defaults_to_default_slug_without_keyword():

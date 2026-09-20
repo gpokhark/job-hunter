@@ -40,7 +40,7 @@ from pathlib import Path
 from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings, load_companies, load_profile
-from .models import PipelineManifest, PipelineStage, PipelineStatus
+from .models import PipelineManifest, PipelineStage, PipelineStatus, format_search_summary
 from .runlock import (
     LOCK_INHERITED_ENV,
     RunLockHeld,
@@ -49,6 +49,7 @@ from .runlock import (
     run_lock,
 )
 from .search_archive import archive_path, resolve_search_path
+from .storage import Storage
 
 RUNS_DIR = Path("data/runs")
 
@@ -171,6 +172,14 @@ def _result_json_path(run_id: str, stage_name: str, *, runs_dir: Path = RUNS_DIR
     return runs_dir / run_id / f"{stage_name}.result.json"
 
 
+def _progress_log_path(run_id: str, stage_name: str, *, runs_dir: Path = RUNS_DIR) -> Path:
+    """A per-run, tail-able live-progress file — see `_run_review_stage`'s docstring for why
+    this exists alongside `_result_json_path` rather than instead of it: the result JSON is the
+    final structured outcome read back once, this is the running, human-readable narration of
+    getting there."""
+    return runs_dir / run_id / f"{stage_name}.log"
+
+
 def _read_result_json(path: Path) -> dict | None:
     """The structured `--result-json` a stage's subprocess wrote on success, or `None` if it's
     missing or not valid JSON — a stage that exits 0 but leaves no readable result file is treated
@@ -258,7 +267,7 @@ def _load_model_name(project_root: Path) -> str | None:
 
 def _run_review_stage(
     manifest: PipelineManifest, *, project_root: Path, archive: Path, keyword: str | None, limit: int | None,
-    stage_timeout_seconds: int | None,
+    stage_timeout_seconds: int | None, database_path: Path,
 ) -> bool:
     """Runs `scripts/review_with_lm_studio.py` against `archive` as a subprocess and updates
     `manifest`'s reviewed/skipped_cached/failed/status fields from its own `--result-json` output
@@ -273,7 +282,28 @@ def _run_review_stage(
     caller knows to stop immediately rather than proceed to the radar stage. On success it sets
     `manifest.status` (PARTIAL if any individual job failed, COMPLETE otherwise) but deliberately
     leaves `stage`/`completed_at`/the actual `write_manifest()` call to the caller, since what
-    stage comes next (radar, or straight to done) differs between the two call sites."""
+    stage comes next (radar, or straight to done) differs between the two call sites.
+
+    Also prints one deterministic, no-LLM-involved status line before spawning the subprocess —
+    how many of `archive`'s candidates are already cached vs. actually need a model call this run
+    — using the identical `Storage.partition_candidates_for_review` cache-hit rule the subprocess
+    itself applies (so the two numbers can never disagree), read directly off disk rather than
+    re-deriving it from the in-memory search result, since a `--no-scrape` caller has no such
+    in-memory result to read from — only the archive file `refilter_archive.py` already rewrote.
+    When there's at least one job to review, this also passes `--progress-log` pointing at a
+    per-run log file and tells the caller where it is: `_run_stage_subprocess` buffers the
+    subprocess's own stdout entirely until it exits (no live streaming — see its own docstring),
+    so without this side channel a caller watching only the terminal sees nothing at all until the
+    whole review finishes, no matter how long that takes."""
+    candidates = json.loads(archive.read_text(encoding="utf-8")).get("candidates", [])
+    eligible = [c for c in candidates if c.get("us_eligible")]
+    with Storage(database_path) as storage:
+        to_review, skipped_cached = storage.partition_candidates_for_review(eligible)
+    print(
+        f"Found {len(eligible)} relevant candidate(s): {skipped_cached} already reviewed (cached), "
+        f"{len(to_review)} need local LLM review."
+    )
+
     result_json = _result_json_path(manifest.run_id, "review")
     review_cmd = [
         sys.executable, "scripts/review_with_lm_studio.py",
@@ -283,6 +313,10 @@ def _run_review_stage(
         review_cmd += ["--keyword", keyword]
     if limit is not None:
         review_cmd += ["--limit", str(limit)]
+    if to_review:
+        progress_log = _progress_log_path(manifest.run_id, "review")
+        review_cmd += ["--progress-log", str(progress_log)]
+        print(f"Starting local LLM review of {len(to_review)} job(s) — live progress: tail -f {progress_log}")
     try:
         proc = _run_stage_subprocess(
             review_cmd, project_root=project_root, timeout=stage_timeout_seconds, lock_inherited=True
@@ -314,6 +348,10 @@ def _run_review_stage(
     manifest.skipped_cached = result.get("skipped_cached", 0)
     manifest.failed = result.get("failed", 0)
     manifest.status = PipelineStatus.PARTIAL if manifest.failed else PipelineStatus.COMPLETE
+    print(
+        f"Review stage complete: {manifest.reviewed} reviewed, {manifest.skipped_cached} cached, "
+        f"{manifest.failed} failed."
+    )
     return True
 
 
@@ -558,7 +596,7 @@ async def _run_pipeline_body(
             write_manifest(manifest)
             if not _run_review_stage(
                 manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit,
-                stage_timeout_seconds=stage_timeout_seconds,
+                stage_timeout_seconds=stage_timeout_seconds, database_path=settings.database_path,
             ):
                 return manifest
         else:
@@ -592,6 +630,8 @@ async def _run_pipeline_body(
         max_candidates=max_candidates,
         keywords=keywords,
     )
+    for line in format_search_summary(result.summary):
+        print(line)
     archive = archive_path(keyword, companies=companies_filter)
     rendered = json.dumps(result.model_dump(mode="json"), indent=2, default=str, ensure_ascii=False)
     atomic_write_text(archive, rendered + "\n")
@@ -614,7 +654,7 @@ async def _run_pipeline_body(
         write_manifest(manifest)
         if not _run_review_stage(
             manifest, project_root=project_root, archive=archive, keyword=keyword, limit=limit,
-            stage_timeout_seconds=stage_timeout_seconds,
+            stage_timeout_seconds=stage_timeout_seconds, database_path=settings.database_path,
         ):
             return manifest
         manifest.stage = PipelineStage.RADAR if not skip_radar else PipelineStage.DONE

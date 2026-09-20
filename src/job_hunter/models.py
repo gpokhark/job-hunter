@@ -175,6 +175,20 @@ class SearchSummary(BaseModel):
     partial_failure: bool = False
 
 
+def format_search_summary(summary: SearchSummary) -> list[str]:
+    """The two one-line, deterministic (no LLM involved) progress lines a search run reports on
+    completion — shared so `cli.py`'s standalone `job-hunter search` and `pipeline.py`'s
+    orchestrated run print the identical text instead of two copies that could drift. Returned as
+    a list of lines rather than one pre-joined string so a caller can print each with its own
+    `print()` call (matching how both callers already emit their other progress lines)."""
+    return [
+        f"Sources: {summary.sources_attempted} attempted / {summary.sources_succeeded} succeeded / "
+        f"{summary.sources_failed} failed",
+        f"Jobs: {summary.jobs_observed} observed / {summary.us_eligible} U.S.-eligible / "
+        f"{summary.stale_excluded} excluded as stale / {summary.prefilter_candidates} candidates",
+    ]
+
+
 class RunInfo(BaseModel):
     run_id: str
     started_at: datetime

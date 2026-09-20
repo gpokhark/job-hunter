@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from job_hunter.config import CandidateProfile, Settings
-from job_hunter.models import PipelineManifest, PipelineStage, PipelineStatus
+from job_hunter.models import Assessment, PipelineManifest, PipelineStage, PipelineStatus
 from job_hunter.pipeline import (
     _decode_timeout_output,
     _fingerprint,
@@ -23,6 +23,7 @@ from job_hunter.pipeline import (
     write_manifest,
 )
 from job_hunter.runlock import RunLockHeld, run_lock
+from job_hunter.storage import Storage
 
 
 def test_new_run_id_is_stable_for_the_same_instant_up_to_its_random_suffix():
@@ -181,10 +182,16 @@ def _fake_popen(fake_run):
     return _FakeProc
 
 
-def _write_archive(path, prefilter_candidates: int) -> None:
+def _write_archive(path, prefilter_candidates: int, candidates: list[dict] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"summary": {"prefilter_candidates": prefilter_candidates}, "candidates": [], "source_health": []})
+        json.dumps(
+            {
+                "summary": {"prefilter_candidates": prefilter_candidates},
+                "candidates": candidates or [],
+                "source_health": [],
+            }
+        )
     )
 
 
@@ -464,6 +471,108 @@ async def test_no_scrape_first_stage_is_refilter_not_search(tmp_path, monkeypatc
     await run_pipeline(Settings(), tmp_path, no_scrape=True)
 
     assert seen_stages[0] == PipelineStage.REFILTER
+
+
+async def test_review_stage_prints_preflight_status_and_wires_progress_log(tmp_path, monkeypatch, capsys):
+    """The one-line, deterministic (no LLM involved) status `_run_review_stage` prints before
+    spawning the review subprocess: how many of the archive's candidates are already cached vs.
+    actually need a model call, using the identical cache-hit rule the subprocess itself applies.
+    Also confirms `--progress-log` is only added to the subprocess command when there's at least
+    one job to review — see `_run_review_stage`'s docstring for why this side channel exists at
+    all (the subprocess's own stdout is fully buffered until it exits, so without this a caller
+    watching the terminal sees nothing live during a real review)."""
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    candidates = [
+        {"source_key": "acme", "job_id": "1", "content_hash": "h1", "us_eligible": True},
+        {"source_key": "acme", "job_id": "2", "content_hash": "h2", "us_eligible": True},
+        {"source_key": "acme", "job_id": "3", "content_hash": "h3", "us_eligible": False},
+    ]
+    _write_archive(archive, prefilter_candidates=2, candidates=candidates)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3")
+    with Storage(settings.database_path) as storage:
+        storage.upsert_assessment(
+            Assessment(
+                source_key="acme", job_id="1", company="Acme", title="Eng",
+                url="https://example.com/1", content_hash="h1", score=80, recommended=True,
+                matches=["a", "b"], gaps=["c"],
+            )
+        )
+
+    seen_cmd: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            seen_cmd.extend(cmd)
+            _write_result_json_for(cmd, {"reviewed": 1, "skipped_cached": 1, "failed": 0})
+            return _fake_proc()
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
+
+    manifest = await run_pipeline(settings, tmp_path, no_scrape=True, review=True, skip_radar=True)
+
+    out = capsys.readouterr().out
+    assert (
+        "Found 2 relevant candidate(s): 1 already reviewed (cached), 1 need local LLM review." in out
+    )
+    assert "Starting local LLM review of 1 job(s) — live progress: tail -f" in out
+    assert "Review stage complete: 1 reviewed, 1 cached, 0 failed." in out
+    assert "--progress-log" in seen_cmd
+    assert manifest.status == PipelineStatus.COMPLETE
+
+
+async def test_review_stage_omits_progress_log_when_everything_is_cached(tmp_path, monkeypatch, capsys):
+    """The inverse of the above: when every eligible candidate already has a valid cached
+    assessment, there's nothing for the subprocess to report progress on, so `--progress-log`
+    (and its "Starting local LLM review..." announcement) is skipped entirely."""
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    candidates = [{"source_key": "acme", "job_id": "1", "content_hash": "h1", "us_eligible": True}]
+    _write_archive(archive, prefilter_candidates=1, candidates=candidates)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3")
+    with Storage(settings.database_path) as storage:
+        storage.upsert_assessment(
+            Assessment(
+                source_key="acme", job_id="1", company="Acme", title="Eng",
+                url="https://example.com/1", content_hash="h1", score=80, recommended=True,
+                matches=["a", "b"], gaps=["c"],
+            )
+        )
+
+    seen_cmd: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(cmd, {"gained": 0, "lost": 0, "diff_report": None})
+            return _fake_proc()
+        if "scripts/review_with_lm_studio.py" in cmd:
+            seen_cmd.extend(cmd)
+            _write_result_json_for(cmd, {"reviewed": 0, "skipped_cached": 1, "failed": 0})
+            return _fake_proc()
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
+
+    await run_pipeline(settings, tmp_path, no_scrape=True, review=True, skip_radar=True)
+
+    out = capsys.readouterr().out
+    assert "Found 1 relevant candidate(s): 1 already reviewed (cached), 0 need local LLM review." in out
+    assert "Starting local LLM review" not in out
+    assert "--progress-log" not in seen_cmd
 
 
 async def test_no_scrape_search_is_passed_through_to_resolve_search_path(tmp_path, monkeypatch):

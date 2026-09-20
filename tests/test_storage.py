@@ -88,6 +88,31 @@ def test_upsert_assessment_roundtrips_and_updates(tmp_path):
         assert updated.gaps == []
 
 
+def test_partition_candidates_for_review_splits_cached_from_needed(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment(source_key="acme", job_id="42", content_hash="hash-1"))
+        candidates = [
+            {"source_key": "acme", "job_id": "42", "content_hash": "hash-1"},  # cached, unchanged
+            {"source_key": "acme", "job_id": "42", "content_hash": "hash-2"},  # cached but content changed
+            {"source_key": "acme", "job_id": "99", "content_hash": "hash-3"},  # never assessed
+        ]
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates)
+
+    assert skipped_cached == 1
+    assert [c["job_id"] for c in to_review] == ["42", "99"]
+    assert to_review[0]["content_hash"] == "hash-2"
+
+
+def test_partition_candidates_for_review_force_ignores_cache(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_assessment(make_assessment(source_key="acme", job_id="42", content_hash="hash-1"))
+        candidates = [{"source_key": "acme", "job_id": "42", "content_hash": "hash-1"}]
+        to_review, skipped_cached = storage.partition_candidates_for_review(candidates, force=True)
+
+    assert skipped_cached == 0
+    assert len(to_review) == 1
+
+
 def test_export_assessments_matches_all_assessments(tmp_path):
     with Storage(tmp_path / "jobs.sqlite3") as storage:
         storage.upsert_assessment(make_assessment())

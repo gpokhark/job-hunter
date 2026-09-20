@@ -18,7 +18,7 @@ from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import load_companies, load_profile, load_settings
 from .logging_config import configure_logging
-from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus
+from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus, format_search_summary
 from .pipeline import latest_run_id, read_manifest, run_pipeline
 from .rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from .runlock import RunLockHeld, pid_alive, process_start_time
@@ -586,14 +586,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(rendered)
         else:
-            summary = result.summary
-            print(
-                f"Sources: {summary.sources_attempted} attempted / {summary.sources_succeeded} succeeded / {summary.sources_failed} failed"
-            )
-            print(
-                f"Jobs: {summary.jobs_observed} observed / {summary.us_eligible} U.S.-eligible / "
-                f"{summary.stale_excluded} excluded as stale / {summary.prefilter_candidates} candidates"
-            )
+            for line in format_search_summary(result.summary):
+                print(line)
             for health in result.source_health:
                 print(
                     f"{health.source_key}: {health.status.value} ({health.job_count}){': ' + health.message if health.message else ''}"

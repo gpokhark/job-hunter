@@ -445,6 +445,25 @@ class Storage:
             return None
         return self._row_to_assessment(row)
 
+    def partition_candidates_for_review(
+        self, candidates: list[dict[str, Any]], *, force: bool = False
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Splits an archive's candidate dicts (each needing at least `source_key`/`job_id`/
+        `content_hash` keys) into (to_review, skipped_cached), applying the identical
+        `get_valid_assessment` cache-hit rule `scripts/review_with_lm_studio.py` applies before
+        ever calling the model. Shared so a caller that only wants a cheap pre-flight count —
+        `job-hunter pipeline`'s "N need review" status line, printed before spawning the review
+        subprocess — doesn't have to duplicate this loop or actually run a review to get it."""
+        to_review: list[dict[str, Any]] = []
+        skipped_cached = 0
+        for candidate in candidates:
+            content_hash = candidate.get("content_hash")
+            if not force and self.get_valid_assessment(candidate["source_key"], candidate["job_id"], content_hash):
+                skipped_cached += 1
+                continue
+            to_review.append(candidate)
+        return to_review, skipped_cached
+
     def export_assessments(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             "SELECT * FROM assessments ORDER BY assessed_at DESC"
