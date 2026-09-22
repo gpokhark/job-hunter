@@ -95,3 +95,45 @@ def test_not_available_checked_before_available_to_avoid_double_match():
     sponsorship' positive pattern."""
     decision = evaluate_sponsorship("The company does not offer support or sponsorship for this role.")
     assert decision.status == SponsorshipStatus.NOT_AVAILABLE
+
+
+def test_export_control_licensing_implies_not_available():
+    """Real live case: MBRDNA's Lever posting never uses the word 'sponsorship' at all —
+    the ITAR/EAR export-control clause is the only signal, but it's the industry-standard
+    way of saying the role is restricted to U.S. persons absent extra licensing."""
+    decision = evaluate_sponsorship(
+        "This position may involve access to export-controlled technology, hardware, or "
+        "software under the Export Administration Regulations (EAR), 15 C.F.R. Parts "
+        "730-774 and possibly technical data, defense articles and defense services "
+        "subject to the International Traffic in Arms Regulations (ITAR), 22 C.F.R. Parts "
+        "120-130. As such, the Company may be required to obtain an export license or "
+        "authorization in accordance with United States law."
+    )
+    assert decision.status == SponsorshipStatus.NOT_AVAILABLE
+    assert decision.evidence
+
+
+def test_export_control_mention_alone_stays_unmentioned():
+    """A bare ITAR/EAR disclosure with no export-license-required clause doesn't by itself
+    mean sponsorship is unavailable — some postings disclose export-control exposure
+    without restricting hiring on it. Only the narrower combined phrase should match."""
+    decision = evaluate_sponsorship(
+        "This role may involve access to technology subject to the International Traffic "
+        "in Arms Regulations (ITAR) and the Export Administration Regulations (EAR)."
+    )
+    assert decision.status == SponsorshipStatus.UNMENTIONED
+
+
+def test_sponsorship_restricted_to_existing_employees_implies_not_available():
+    """Real live case: Daimler Truck North America's Workday posting reads as offering
+    sponsorship at a glance, but it's only a same-employer visa transfer for people already
+    sponsored, not available to a new external applicant."""
+    examples = [
+        "Visa sponsorship will only be open to current Daimler Truck North America "
+        "employees working under an existing U.S. Daimler Truck North America Visa.",
+        "Sponsorship is restricted to existing Acme Corp employees.",
+    ]
+    for text in examples:
+        decision = evaluate_sponsorship(text)
+        assert decision.status == SponsorshipStatus.NOT_AVAILABLE, text
+        assert decision.evidence
