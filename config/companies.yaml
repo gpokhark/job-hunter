@@ -212,7 +212,13 @@ companies:
     platform: lever
     config:
       list_url: https://api.lever.co/v0/postings/tri?mode=json
-      listing_description_path: description
+      # Lever's listing payload splits a posting across three fields: "description" (the
+      # opening paragraph only), "lists" (Responsibilities/Qualifications, structured as
+      # [{text, content}] entries), and "additional" (salary range plus legal/benefits
+      # boilerplate — including any visa-sponsorship or export-control statement, e.g.
+      # MBRDNA's ITAR/EAR clause below). Reading "description" alone silently dropped the
+      # other two for every job on this platform, confirmed live.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text
@@ -227,7 +233,12 @@ companies:
     platform: lever
     config:
       list_url: https://api.lever.co/v0/postings/MBRDNA?mode=json
-      listing_description_path: description
+      # See tri's identical comment above: Lever splits a posting across description/
+      # lists/additional. MBRDNA's "additional" field is where its ITAR/EAR export-control
+      # clause and salary range actually live — "description" alone (the prior config)
+      # never surfaced either, which is why sponsorship.py's export-control detection
+      # never fired on these jobs despite the clause being present on the live posting.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text
@@ -249,7 +260,9 @@ companies:
       # unauthenticated Lever tenant, same platform/shape as TRI/MBRDNA. ~143 postings,
       # mostly Tokyo/Japan with a smaller US contingent (Ann Arbor MI, Palo Alto CA).
       list_url: https://api.lever.co/v0/postings/woven-by-toyota?mode=json
-      listing_description_path: description
+      # See tri's identical comment above: Lever splits a posting across description/
+      # lists/additional.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text

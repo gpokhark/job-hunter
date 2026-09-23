@@ -89,10 +89,11 @@ class ConfigurableJsonAdapter(JobAdapter):
         cfg = self.company.config
         description_path = cfg.get("detail_description_path")
         if not description_path:
-            listing_description = nested(
-                summary.raw, cfg.get("listing_description_path", "description")
+            return JobDetail(
+                description=_concat_description(
+                    summary.raw, cfg.get("listing_description_path", "description")
+                )
             )
-            return JobDetail(description=stringify(listing_description))
         api_url = summary.url
         if cfg.get("public_url_template"):
             # summary.url is the display page, not the API — rebuild the real detail
@@ -102,14 +103,22 @@ class ConfigurableJsonAdapter(JobAdapter):
             api_url = urljoin(cfg.get("detail_base_url", summary.url), raw_url)
         response = await self.request("GET", api_url)
         payload = response.json()
-        # detail_description_path may be a single dot-path (most platforms put the full
-        # posting in one field) or a list of them — needed because some Oracle HCM
-        # tenants (confirmed: Ford) split a posting across three separate fields
-        # (ExternalDescriptionStr/ExternalResponsibilitiesStr/ExternalQualificationsStr);
-        # reading only the first one silently dropped Qualifications entirely, including
-        # each job's visa-sponsorship statement. Concatenating is safe even for a tenant
-        # that puts everything in the first field alone (DENSO): the rest are just empty.
-        paths = description_path if isinstance(description_path, list) else [description_path]
-        parts = [text for path in paths if (text := stringify(nested(payload, path)))]
-        return JobDetail(description="\n\n".join(parts) or None)
+        return JobDetail(description=_concat_description(payload, description_path))
+
+
+def _concat_description(data: dict, path_or_paths: str | list[str]) -> str | None:
+    """path_or_paths may be a single dot-path (most platforms put the full posting in one
+    field) or a list of them, concatenated in order — needed because some platforms split
+    a posting across several separate fields, e.g. Oracle HCM tenants (confirmed: Ford:
+    ExternalDescriptionStr/ExternalResponsibilitiesStr/ExternalQualificationsStr) and
+    Lever's listing payload (confirmed: MBRDNA's "description" field alone omits both
+    "lists" — Responsibilities/Qualifications — and "additional", where Lever tenants
+    commonly put salary range and boilerplate legal text, e.g. MBRDNA's ITAR/EAR
+    export-control clause). Reading only the first field silently dropped that content
+    entirely, including each job's visa-sponsorship-relevant statement. Concatenating is
+    safe even for a tenant that puts everything in the first field alone (DENSO/most Lever
+    tenants) — the rest are just empty and filtered out."""
+    paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
+    parts = [text for path in paths if (text := stringify(nested(data, path)))]
+    return "\n\n".join(parts) or None
 

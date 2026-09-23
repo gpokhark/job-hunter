@@ -137,3 +137,15 @@ def test_sponsorship_restricted_to_existing_employees_implies_not_available():
         decision = evaluate_sponsorship(text)
         assert decision.status == SponsorshipStatus.NOT_AVAILABLE, text
         assert decision.evidence
+
+
+def test_not_open_for_sponsorship_phrasing():
+    """Real live case: Daimler Truck North America's Workday postings (a different
+    boilerplate than the 'existing employees' one above) use 'not open for' rather than
+    'not available'/'does not offer' — confirmed verbatim via the CXS API's jobDescription
+    field: 'This position is not open for Visa sponsorship or to existing Visa holders.'"""
+    decision = evaluate_sponsorship(
+        "This position is not open for Visa sponsorship or to existing Visa holders."
+    )
+    assert decision.status == SponsorshipStatus.NOT_AVAILABLE
+    assert decision.evidence

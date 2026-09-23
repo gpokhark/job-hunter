@@ -67,6 +67,53 @@ async def test_lever_fixture():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_lever_listing_description_path_concatenates_lists_and_additional():
+    """Regression for a real bug: Lever's listing payload splits a posting across three
+    fields — 'description' (opening paragraph only), 'lists' (Responsibilities/
+    Qualifications), and 'additional' (salary range plus legal/benefits boilerplate). A
+    single-path listing_description_path of just 'description' silently dropped the other
+    two for every job — confirmed live on MBRDNA, where 'additional' is where the ITAR/EAR
+    export-control clause (the only signal that a role is sponsorship-restricted) actually
+    lives, so sponsorship.py's detection never fired despite the clause being present on
+    the real posting."""
+    url = "https://api.example/jobs"
+    payload = [
+        {
+            "id": "mbrdna-1",
+            "text": "Development Engineer",
+            "hostedUrl": "https://jobs.lever.co/MBRDNA/mbrdna-1",
+            "categories": {"location": "San Jose, CA"},
+            "description": "Build ADAS features.",
+            "lists": [{"text": "Minimum Qualifications:", "content": "<li>3+ years experience</li>"}],
+            "additional": "This position may involve access to export-controlled technology "
+            "under the International Traffic in Arms Regulations (ITAR). As such, the "
+            "Company may be required to obtain an export license or authorization in "
+            "accordance with United States law.",
+        }
+    ]
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="mbrdna",
+        company="MBRDNA",
+        adapter="lever",
+        config={
+            "list_url": url,
+            "items_path": "",
+            "fields": {"id": "id", "title": "text", "url": "hostedUrl", "location": "categories.location"},
+            "listing_description_path": ["description", "lists", "additional"],
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = LeverAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert "Build ADAS features." in detail.description
+    assert "Minimum Qualifications" in detail.description
+    assert "International Traffic in Arms Regulations" in detail.description
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_ashby_reads_structured_location_and_work_arrangement():
     """Confirmed live against api.ashbyhq.com/posting-api/job-board/openai: a single
     zero-auth request returns every job with clean (non-double-encoded) descriptionHtml

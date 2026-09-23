@@ -65,6 +65,11 @@ _NOT_AVAILABLE = [
         r"not authorized to sponsor",
         r"not require.{0,40}sponsorship",
         r"not need.{0,30}sponsorship",
+        # Real live case: Daimler Truck North America's Workday postings use "This
+        # position is not open for Visa sponsorship or to existing Visa holders" — a
+        # blanket denial phrased as "not open for", distinct from every "not
+        # available"/"does not offer" wording above.
+        r"not open (?:for|to)\b.{0,20}sponsorship",
         # Export-control licensing implies a "U.S. persons only" restriction in practice —
         # see module docstring. Requires both the regulation citation *and* a nearby
         # "export license/authorization required" clause, not a bare ITAR/EAR mention.
