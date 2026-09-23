@@ -18,6 +18,25 @@ of them match, exactly like `location.py`'s "never guess" philosophy for ambiguo
 Not-available phrases are checked first: they're the dominant, most consistent signal in
 practice, and checking them first means a sentence like "does not offer... sponsorship"
 can never be miscounted by a looser "offer sponsorship" positive pattern.
+
+Two further not-available categories cover postings that never say the word "sponsorship"
+is unavailable but state something that means the same thing in practice — confirmed live
+on MBRDNA (Lever) and Daimler Truck North America (Workday), and written generically since
+this boilerplate recurs across unrelated companies/roles, not just these two:
+
+- **Export-control licensing.** ITAR/EAR boilerplate ("subject to the International Traffic
+  in Arms Regulations (ITAR)... may be required to obtain an export license or authorization
+  in accordance with United States law") is the standard way employers disclose that a role
+  is restricted to "U.S. persons" (citizens/permanent residents/protected individuals) absent
+  extra licensing — in practice a no-sponsorship role even though "sponsorship" never
+  appears. Matched narrowly: the ITAR/EAR citation *and* a nearby "an export license/
+  authorization is/may be required" clause must both be present, not just any ITAR/EAR
+  mention (plenty of postings disclose export-control exposure without restricting hiring on
+  it).
+- **Sponsorship restricted to existing visa holders.** "Visa sponsorship will only be open to
+  current [Company] employees working under an existing U.S. [Company] Visa" reads as
+  available at a glance but is only a same-employer visa *transfer* for people already
+  sponsored — not available to a new external applicant, which is what this field describes.
 """
 
 from __future__ import annotations
@@ -46,6 +65,19 @@ _NOT_AVAILABLE = [
         r"not authorized to sponsor",
         r"not require.{0,40}sponsorship",
         r"not need.{0,30}sponsorship",
+        # Export-control licensing implies a "U.S. persons only" restriction in practice —
+        # see module docstring. Requires both the regulation citation *and* a nearby
+        # "export license/authorization required" clause, not a bare ITAR/EAR mention.
+        r"(?:international traffic in arms regulations|export administration regulations)"
+        r"\s*\((?:itar|ear)\).{0,400}?(?:may be required to obtain|must obtain|require[sd]?)"
+        r".{0,20}?(?:an )?export (?:licen[sc]e|authorization)",
+        # Sponsorship offered only to existing employees already holding a company visa —
+        # not available to an external applicant. See module docstring.
+        r"sponsorship (?:will only|is only) be (?:open|available|offered) to "
+        r"(?:current|existing|internal)\b.{0,60}\bemployees\b",
+        r"employees?\s+(?:currently\s+)?working under an existing\b.{0,40}\bvisa\b",
+        r"sponsorship (?:is|will be)?\s*(?:limited|restricted) to (?:current|existing|internal)"
+        r"\b.{0,60}\bemployees\b",
     ]
 ]
 

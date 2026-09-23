@@ -947,6 +947,62 @@ async def test_workday_native_detail_arrangement_none_when_remote_type_absent():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_workday_native_detail_reads_structured_country():
+    """Real live case (Magna): a job's 'location' text alone ("Maharashtra, IN") is
+    ambiguous with a U.S. "<City>, Indiana" posting — CXS's own structured "country"
+    field ("India") is what lets evaluate_location tell them apart. Confirms fetch_detail
+    actually surfaces it rather than only reading location_raw."""
+    list_url = "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "jobPostings": [
+                    {
+                        "title": "Validation Engineer",
+                        "externalPath": "/job/Maharashtra-IN/Validation-Engineer_R1",
+                        "jobId": "R1",
+                        "locationsText": "Maharashtra, IN",
+                        "postedOn": "Posted Today",
+                    }
+                ],
+            },
+        )
+    )
+    respx.get(
+        "https://tenant.wd1.myworkdayjobs.com/wday/cxs/tenant/site/job/Maharashtra-IN/Validation-Engineer_R1"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "jobPostingInfo": {
+                    "jobDescription": "Validate ECUs.",
+                    "location": "Maharashtra, IN",
+                    "country": {"descriptor": "India"},
+                }
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="tenant",
+        company="Tenant",
+        adapter="workday",
+        config={
+            "workday_native": True,
+            "list_url": list_url,
+            "public_base_url": "https://tenant.wd1.myworkdayjobs.com/en-US/site/",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = WorkdayAdapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    assert detail.country == "India"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_html_fixture():
     url = "https://jobs.example/search"
     respx.get(url).mock(
