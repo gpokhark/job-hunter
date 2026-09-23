@@ -214,10 +214,21 @@ class Collector:
                 )
                 jobs: list[Job] = []
                 for summary, prior, detail in zip(summaries, priors, details, strict=True):
+                    # A structured country/state a previous run's detail fetch already
+                    # resolved (e.g. Workday's per-job "India") is only ever available from
+                    # a detail fetch — the listing endpoint has no per-item country. When
+                    # this run skips the detail fetch (already-cached description), reuse
+                    # that prior resolution instead of silently discarding it and falling
+                    # back to summary-only text matching, which is ambiguous for codes like
+                    # "IN" (Indiana vs. India) with nothing else to disambiguate it. Same
+                    # reuse-what-a-prior-detail-fetch-already-resolved pattern as
+                    # `description` below.
+                    prior_country = prior["country"] if prior else None
+                    prior_state = prior["state"] if prior else None
                     initial = evaluate_location(
                         summary.location_raw,
-                        country=summary.country,
-                        state=summary.state,
+                        country=summary.country or prior_country,
+                        state=summary.state or prior_state,
                         arrangement=summary.work_arrangement,
                     )
                     description = detail.description if detail else (prior["description"] if prior else None)
@@ -231,9 +242,15 @@ class Collector:
                                 else summary.location_raw
                             ),
                             country=(
-                                detail.country if detail and detail.country else summary.country
+                                detail.country
+                                if detail and detail.country
+                                else (summary.country or prior_country)
                             ),
-                            state=(detail.state if detail and detail.state else summary.state),
+                            state=(
+                                detail.state
+                                if detail and detail.state
+                                else (summary.state or prior_state)
+                            ),
                             description=description,
                             arrangement=(
                                 detail.work_arrangement if detail else summary.work_arrangement

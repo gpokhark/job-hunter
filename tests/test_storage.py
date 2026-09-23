@@ -206,6 +206,61 @@ def test_reevaluate_salary_backfills_from_stored_description(tmp_path):
         assert storage.reevaluate_salary() == 0
 
 
+def test_reevaluate_location_fixes_a_self_contained_ambiguous_code(tmp_path):
+    """Real live bug: Intuitive's listing renders an Indian posting's location as
+    'Chennai, TN, India' — an older location.py let the ambiguous 'TN' (Tennessee/Tunisia)
+    match as a U.S. state even though 'India' is spelled out in the very same string,
+    misclassifying it us_eligible=True. Once location.py's disambiguation is fixed,
+    reevaluate_location must backfill this from the already-stored location_raw alone, no
+    re-fetch required."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(
+            make_job(
+                location_raw="Chennai, TN, India",
+                state="TN",
+                country="US",
+                us_eligible=True,
+                location_confidence=LocationConfidence.HIGH,
+                location_evidence="recognized U.S. state: TN",
+            )
+        )
+
+        changed = storage.reevaluate_location()
+
+        assert changed == 1
+        row = storage.get_job("acme", "42")
+        assert not row["us_eligible"]
+        assert row["location_evidence"] == "recognized non-U.S. location"
+
+        # Idempotent: running it again with nothing changed reports zero.
+        assert storage.reevaluate_location() == 0
+
+
+def test_reevaluate_location_skips_a_code_not_present_in_its_own_location_raw(tmp_path):
+    """Safety guard, confirmed against a real production false-positive risk: some Workday
+    tenants (Johnson & Johnson, NVIDIA) store a generic 'N Locations' placeholder in
+    location_raw while a genuine U.S. state ('CA', an ambiguous code) was resolved from
+    richer detail-fetch text that was never persisted verbatim. Re-deriving purely from the
+    stored (placeholder) location_raw would wrongly flip these to non-U.S. — this job must
+    be left untouched since there's no local evidence to safely re-derive it from."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(
+            make_job(
+                location_raw="2 Locations",
+                state="CA",
+                country="US",
+                us_eligible=True,
+                location_confidence=LocationConfidence.HIGH,
+                location_evidence="recognized U.S. state: CA",
+            )
+        )
+
+        assert storage.reevaluate_location() == 0
+        row = storage.get_job("acme", "42")
+        assert row["us_eligible"]
+        assert row["state"] == "CA"
+
+
 def test_find_stale_closed_jobs_excludes_active_and_recently_closed(tmp_path):
     now = datetime.now(UTC)
     with Storage(tmp_path / "jobs.sqlite3") as storage:

@@ -120,9 +120,16 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
         # work_arrangement=None is what tells evaluate_location to fall back to parsing
         # location_raw text instead, the same fallback it had before remoteType was read at all.
         remote_type = stringify(info.get("remoteType"))
+        # CXS's own structured country (e.g. "India") is what lets evaluate_location tell
+        # "Maharashtra, IN" apart from a real U.S. "<City>, Indiana" posting — location_raw
+        # text alone is ambiguous between the two. Confirmed live on Magna: every one of its
+        # Indian postings' "location" field is a bare "<Region>, IN" with nothing else to
+        # text-match against.
+        country = stringify((info.get("country") or {}).get("descriptor"))
         return JobDetail(
             description=stringify(info.get("jobDescription")),
             location_raw=stringify(info.get("location")),
+            country=country,
             employment_type=stringify(info.get("timeType")),
             # startDate is an absolute date, more precise than the summary's relative postedOn text.
             posted_at=parse_flexible_date(info.get("startDate")) or parse_relative_posted(stringify(info.get("postedOn"))),

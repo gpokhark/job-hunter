@@ -18,7 +18,12 @@ class _FakeAdapter:
         self.max_posting_age_days = max_posting_age_days
 
     async def fetch_summaries(self) -> list[JobSummary]:
-        now = datetime(2026, 8, 29, tzinfo=UTC)
+        # Anchored to the real clock, not a hardcoded date: the collector's own recency
+        # check (is_recent) always compares against datetime.now(UTC), so a fixed fake
+        # "now" here silently drifts stale as real time passes it — confirmed as a real
+        # regression once "fresh-1" (originally 5 days old relative to a hardcoded
+        # 2026-08-29) aged past the 30-day cutoff for real.
+        now = datetime.now(UTC)
         return [
             JobSummary(
                 source_key="fake",

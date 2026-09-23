@@ -102,6 +102,17 @@ def parser() -> argparse.ArgumentParser:
             "collected before salary_evidence existed"
         ),
     )
+    sub.add_parser(
+        "reevaluate-location",
+        help=(
+            "re-run U.S.-eligibility detection against every stored job whose "
+            "classification came from an ambiguous state/country code (e.g. 'IN'/'DE'/'CA') "
+            "present in its own location_raw text (no network) — use after a location.py "
+            "disambiguation fix; deliberately skips a job whose ambiguous-looking stored "
+            "state instead came from a richer structured field never persisted verbatim, "
+            "since there's no local evidence to safely re-derive it from"
+        ),
+    )
     resolve = sub.add_parser(
         "resolve-search",
         help=(
@@ -453,6 +464,11 @@ def main(argv: list[str] | None = None) -> int:
             with Storage(settings.database_path) as storage:
                 changed = storage.reevaluate_salary()
             print(f"Re-evaluated salary for every stored job; {changed} changed.")
+            return 0
+        if args.command == "reevaluate-location":
+            with Storage(settings.database_path) as storage:
+                changed = storage.reevaluate_location()
+            print(f"Re-evaluated U.S. eligibility for every affected stored job; {changed} changed.")
             return 0
         if args.command == "resolve-search":
             resolved = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)

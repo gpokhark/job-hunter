@@ -97,27 +97,93 @@ def detect_arrangement(text: str | None) -> WorkArrangement:
 # multinational ATS feeds formatted as "City, Region, COUNTRY, Zip" (e.g. Volkswagen's
 # SuccessFactors listings: "Berlin, BE, DE, 10178", "Pickering, ON, CA, L1V 0C4"). Bare-abbreviation
 # matches for these codes require the code to not be sitting in that feed's country position.
+# A dict (code -> the colliding country's name), not a bare set: the name is used to confirm a
+# structured country field genuinely names *this* code's country (see
+# `_ambiguous_code_is_country_marker`'s structured_country check below).
 _AMBIGUOUS_STATE_COUNTRY_CODES = {
-    "AL",  # Albania
-    "CA",  # Canada
-    "DE",  # Germany
-    "GA",  # Georgia (country)
-    "IN",  # India
-    "LA",  # Laos
-    "MA",  # Morocco
-    "MD",  # Moldova
-    "ME",  # Montenegro
-    "MT",  # Malta
-    "PA",  # Panama
-    "SC",  # Seychelles
-    "TN",  # Tunisia
-    "VA",  # Vatican City
+    "AL": "Albania",
+    "CA": "Canada",
+    "DE": "Germany",
+    "GA": "Georgia",  # country
+    "IN": "India",
+    "LA": "Laos",
+    "MA": "Morocco",
+    "MD": "Moldova",
+    "ME": "Montenegro",
+    "MT": "Malta",
+    "PA": "Panama",
+    "SC": "Seychelles",
+    "TN": "Tunisia",
+    "VA": "Vatican City",
 }
 _TRAILING_MORE = re.compile(r"\s*\+\s*\d+\s*more[….]*\s*$", re.I)
+# Multi-location postings join several distinct locations with one of these — e.g.
+# Anthropic's "London, UK; San Francisco, CA", OpenAI's "San Francisco · London, UK",
+# "Plano, TX / Toronto, ON". The non-US-name check below must only ever look inside the one
+# location entry containing the ambiguous code, never across a separator into a sibling
+# entry — otherwise a foreign location listed *alongside* a genuine U.S. one would wrongly
+# disqualify the U.S. one too (confirmed: "London, UK; San Francisco, CA" naively read as a
+# whole would let "UK" veto "CA" as California, even though the posting plainly also offers
+# San Francisco).
+_LOCATION_SEPARATORS = re.compile(r"[;|·/]")
 
 
-def _ambiguous_code_is_country_marker(abbreviation: str, text: str) -> bool:
-    """True if an ambiguous code's position/context marks it as a country code, not a state."""
+def is_ambiguous_state_country_code(code: str) -> bool:
+    """True if `code` collides between a U.S. state abbreviation and a real country's own
+    code (see `_AMBIGUOUS_STATE_COUNTRY_CODES`) — used by `storage.reevaluate_location` to
+    scope its backfill to exactly this bug class."""
+    return code in _AMBIGUOUS_STATE_COUNTRY_CODES
+
+
+def code_appears_in_own_text(code: str, text: str | None) -> bool:
+    """True if `code` appears in `text` as the same punctuation-bounded token `_state_match`
+    requires for a bare two-letter code. Used by `storage.reevaluate_location` to tell a job
+    whose ambiguous state/country code was actually derived from its own stored
+    `location_raw` text (safe to fully re-derive from scratch, no network) apart from one
+    where it was supplied externally by a structured field never persisted verbatim (e.g. a
+    Workday detail fetch's richer location text, discarded after producing state="NJ", with
+    only a generic "N Locations" placeholder left in the stored location_raw column) — that
+    case has no local evidence to re-derive from and must be left untouched."""
+    if not text:
+        return False
+    return bool(re.search(rf"(?:,|/|\||\s-\s)\s*{re.escape(code)}(?:\s|,|/|\||$)", text, re.I))
+
+
+def _enclosing_chunk(text: str, position: int) -> str:
+    """The substring of `text` between the location separators immediately surrounding
+    `position` — the single location entry a match at that position belongs to."""
+    start = 0
+    for sep in _LOCATION_SEPARATORS.finditer(text):
+        if sep.start() >= position:
+            return text[start : sep.start()]
+        start = sep.end()
+    return text[start:]
+
+
+def _ambiguous_code_is_country_marker(
+    abbreviation: str, text: str, *, structured_country: str | None = None
+) -> bool:
+    """True if an ambiguous code's position/context marks it as a country code, not a state.
+    `text` must already be scoped to a single location entry (see `_enclosing_chunk`) — never
+    a whole multi-location string, which would let an unrelated sibling entry's country name
+    veto a genuine U.S. location listed alongside it."""
+    # A structured country field (e.g. Workday's CXS "country": {"descriptor": "India"})
+    # naming exactly this code's own country is decisive on its own, regardless of shape —
+    # confirmed live on Magna's Workday tenant, whose location text is a bare "Maharashtra,
+    # IN" with nothing else to text-match against.
+    if structured_country and _AMBIGUOUS_STATE_COUNTRY_CODES.get(
+        abbreviation, ""
+    ).lower() == structured_country.strip().lower():
+        return True
+    # The same location entry elsewhere spelling out a non-U.S. country/region name is just
+    # as decisive and must be checked regardless of segment shape — a bare ambiguous code
+    # must never win over an explicit country name sitting right next to it just because it
+    # happens to look like a U.S. state code. Real live misses, both letting a state-code
+    # match short-circuit before this module's own NON_US check ever ran: Magna's "Woodbridge,
+    # Ontario, CA" (Ontario, Canada, not California) and Intuitive's "Chennai, TN, India"
+    # (India, not Tennessee — "India" is spelled out in the very same string).
+    if NON_US.search(text) and not US_COUNTRY.search(text):
+        return True
     segments = [segment.strip() for segment in text.split(",")]
     if len(segments) < 2:
         return False
@@ -136,14 +202,19 @@ def _ambiguous_code_is_country_marker(abbreviation: str, text: str) -> bool:
     )
 
 
-def _state_match(text: str) -> tuple[str | None, str | None]:
+def _state_match(
+    text: str, *, structured_country: str | None = None
+) -> tuple[str | None, str | None]:
     for abbreviation, name in STATES.items():
         if re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", text, re.I):
             return abbreviation, name
         # Require punctuation before two-letter codes to avoid words such as "Remote US" or "IN".
-        if re.search(rf"(?:,|/|\||\s-\s)\s*{abbreviation}(?:\s|,|/|\||$)", text, re.I):
+        match = re.search(rf"(?:,|/|\||\s-\s)\s*{abbreviation}(?:\s|,|/|\||$)", text, re.I)
+        if match:
             if abbreviation in _AMBIGUOUS_STATE_COUNTRY_CODES and _ambiguous_code_is_country_marker(
-                abbreviation, text
+                abbreviation,
+                _enclosing_chunk(text, match.start()),
+                structured_country=structured_country,
             ):
                 continue
             return abbreviation, name
@@ -178,7 +249,7 @@ def evaluate_location(
     if (
         structured_country
         and structured_country not in {"US", "USA"}
-        and not _state_match(location_raw or "")[0]
+        and not _state_match(location_raw or "", structured_country=country)[0]
         and not US_COUNTRY.search(location_raw or "")
     ):
         return LocationDecision(
@@ -196,7 +267,7 @@ def evaluate_location(
             country="US",
             arrangement=WorkArrangement.REMOTE,
         )
-    abbr, _ = _state_match(location)
+    abbr, _ = _state_match(location, structured_country=country)
     if abbr:
         return LocationDecision(
             True,

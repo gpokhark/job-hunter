@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth
+from .location import code_appears_in_own_text, evaluate_location, is_ambiguous_state_country_code
+from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth, WorkArrangement
 from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
 
@@ -277,6 +278,74 @@ class Storage:
                         decision.min_value,
                         decision.max_value,
                         "USD" if decision.evidence else None,
+                        decision.evidence,
+                        row["source_key"],
+                        row["job_id"],
+                    ),
+                )
+                changed += 1
+        self.connection.commit()
+        return changed
+
+    def reevaluate_location(self) -> int:
+        """Re-run evaluate_location, purely locally (no network), against every stored job
+        whose current classification came from an ambiguous U.S. state/country code (e.g.
+        "IN"/"DE"/"CA", each also a real country's own code) — needed for the same reason
+        as reevaluate_sponsorship/reevaluate_salary above: us_eligible/state/country are
+        only ever set by upsert_job on a fresh successful collection, so a location.py
+        disambiguation fix never retroactively corrects a job already sitting in the
+        database with a stale classification.
+
+        Deliberately narrower than reevaluate_sponsorship/reevaluate_salary: only touches a
+        row when the stored ambiguous code is textually present in that job's own
+        location_raw (`location.code_appears_in_own_text`) — e.g. Magna's "Maharashtra, IN"
+        or Volkswagen's "München, DE, 80807", where the wrong classification is entirely
+        self-contained in the stored text. A row where an ambiguous-looking stored state
+        instead came from a richer structured field an adapter fetched but never persisted
+        verbatim (e.g. a Workday detail fetch resolving state="CA" from full detail text,
+        while location_raw stored only a generic "2 Locations" listing-level placeholder)
+        has no local evidence to safely re-derive from — re-running it without that
+        external context would wrongly flip a genuinely-U.S. job to non-U.S. Confirmed live
+        against production data: this scoping avoids flipping 84 real Johnson & Johnson/
+        NVIDIA/Dematic jobs while still correctly fixing every confirmed Magna/Volkswagen/
+        Google/Intuitive misclassification. Returns how many rows' classification actually
+        changed."""
+        rows = self.connection.execute(
+            "SELECT source_key, job_id, location_raw, state, country, work_arrangement, "
+            "description, us_eligible, location_confidence, location_evidence FROM jobs "
+            "WHERE location_evidence LIKE 'recognized U.S. state:%'"
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            stored_state = row["state"]
+            if not stored_state or not is_ambiguous_state_country_code(stored_state):
+                continue
+            if not code_appears_in_own_text(stored_state, row["location_raw"]):
+                continue
+            try:
+                arrangement = (
+                    WorkArrangement(row["work_arrangement"]) if row["work_arrangement"] else None
+                )
+            except ValueError:
+                arrangement = None
+            decision = evaluate_location(
+                row["location_raw"], description=row["description"], arrangement=arrangement
+            )
+            if (
+                decision.us_eligible != bool(row["us_eligible"])
+                or decision.evidence != row["location_evidence"]
+                or (decision.state or None) != row["state"]
+                or (decision.country or None) != row["country"]
+                or decision.confidence.value != row["location_confidence"]
+            ):
+                self.connection.execute(
+                    "UPDATE jobs SET state=?, country=?, us_eligible=?, location_confidence=?, "
+                    "location_evidence=? WHERE source_key=? AND job_id=?",
+                    (
+                        decision.state,
+                        decision.country,
+                        int(decision.us_eligible),
+                        decision.confidence.value,
                         decision.evidence,
                         row["source_key"],
                         row["job_id"],
