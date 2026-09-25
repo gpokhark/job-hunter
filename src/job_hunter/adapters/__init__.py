@@ -7,6 +7,7 @@ from .apple import AppleAdapter
 from .ashby import AshbyAdapter
 from .base import JobAdapter
 from .bosch import BoschAdapter
+from .brose import BroseAdapter
 from .csod import CsodAdapter
 from .dayforce import DayforceAdapter
 from .discovered_api import DiscoveredApiAdapter
@@ -51,6 +52,7 @@ ADAPTERS: dict[str, AdapterType] = {
     "apple": AppleAdapter,
     "eightfold": EightfoldAdapter,
     "bosch": BoschAdapter,
+    "brose": BroseAdapter,
     "csod": CsodAdapter,
     "zf": ZfAdapter,
     "dayforce": DayforceAdapter,

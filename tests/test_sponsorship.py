@@ -149,3 +149,28 @@ def test_not_open_for_sponsorship_phrasing():
     )
     assert decision.status == SponsorshipStatus.NOT_AVAILABLE
     assert decision.evidence
+
+
+def test_unavailable_wording_and_citizenship_only_are_not_available():
+    examples = [
+        "Indefinite U.S. work authorized individuals only.  Future sponsorship for work "
+        "authorization unavailable.",
+        "Security Requirements: Must be a U.S. Citizen. Must hold or be eligible to obtain "
+        "and maintain a U.S. security clearance",
+        "U.S. citizenship is required for this role.",
+    ]
+    for text in examples:
+        decision = evaluate_sponsorship(text)
+        assert decision.status == SponsorshipStatus.NOT_AVAILABLE, text
+        assert decision.evidence
+
+
+def test_citizenship_alternatives_or_preference_stay_unmentioned():
+    examples = [
+        "Must be a U.S. citizen or permanent resident.",
+        "Must be a U.S. citizen/green card holder.",
+        "U.S. citizenship preferred.",
+        "United States Citizenship required or permanent residency is required.",
+    ]
+    for text in examples:
+        assert evaluate_sponsorship(text).status == SponsorshipStatus.UNMENTIONED, text
