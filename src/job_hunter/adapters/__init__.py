@@ -24,6 +24,7 @@ from .smartrecruiters import SmartRecruitersAdapter
 from .stealth_html import StealthHtmlAdapter
 from .successfactors_rmk import SuccessFactorsRmkAdapter
 from .successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
+from .ultipro import UltiProAdapter
 from .unsupported import UnsupportedAdapter
 from .workday import WorkdayAdapter
 from .zf import ZfAdapter
@@ -41,6 +42,7 @@ ADAPTERS: dict[str, AdapterType] = {
     "smartrecruiters": SmartRecruitersAdapter,
     "paycom": PaycomAdapter,
     "paylocity": PaylocityAdapter,
+    "ultipro": UltiProAdapter,
     "html_paginated": HtmlPaginatedAdapter,
     "html_multi_index": HtmlMultiIndexAdapter,
     "discovered_api": DiscoveredApiAdapter,

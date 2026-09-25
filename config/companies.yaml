@@ -212,7 +212,13 @@ companies:
     platform: lever
     config:
       list_url: https://api.lever.co/v0/postings/tri?mode=json
-      listing_description_path: description
+      # Lever's listing payload splits a posting across three fields: "description" (the
+      # opening paragraph only), "lists" (Responsibilities/Qualifications, structured as
+      # [{text, content}] entries), and "additional" (salary range plus legal/benefits
+      # boilerplate — including any visa-sponsorship or export-control statement, e.g.
+      # MBRDNA's ITAR/EAR clause below). Reading "description" alone silently dropped the
+      # other two for every job on this platform, confirmed live.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text
@@ -227,7 +233,12 @@ companies:
     platform: lever
     config:
       list_url: https://api.lever.co/v0/postings/MBRDNA?mode=json
-      listing_description_path: description
+      # See tri's identical comment above: Lever splits a posting across description/
+      # lists/additional. MBRDNA's "additional" field is where its ITAR/EAR export-control
+      # clause and salary range actually live — "description" alone (the prior config)
+      # never surfaced either, which is why sponsorship.py's export-control detection
+      # never fired on these jobs despite the clause being present on the live posting.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text
@@ -249,7 +260,9 @@ companies:
       # unauthenticated Lever tenant, same platform/shape as TRI/MBRDNA. ~143 postings,
       # mostly Tokyo/Japan with a smaller US contingent (Ann Arbor MI, Palo Alto CA).
       list_url: https://api.lever.co/v0/postings/woven-by-toyota?mode=json
-      listing_description_path: description
+      # See tri's identical comment above: Lever splits a posting across description/
+      # lists/additional.
+      listing_description_path: [description, lists, additional]
       fields:
         id: id
         title: text
@@ -1526,3 +1539,294 @@ companies:
         location: location.name
         department: departments.0.name
         posted_at: first_published
+  - key: latitude_ai
+    company: Latitude AI
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # lat.ai/careers#open-roles is a styled shell; the sample job lives on
+      # job-boards.greenhouse.io/latitude/jobs/7895913, a standard Greenhouse job board, so
+      # no hidden backend to chase — same shape as anthropic/torc_robotics above. Board token
+      # is "latitude" (not "latitude-ai"). Greenhouse's public Job Board API mirrors it
+      # zero-auth (41 jobs). ?content=true inlines each job's full (double-encoded,
+      # unescaped centrally by greenhouse.py) description, so no detail fetch. Sample job
+      # 7895913 ("Integration & Test Engineer II - System Test Strategy & Execution",
+      # Greenville, SC) confirmed present. Many postings list several sites in one
+      # location.name string ("Pittsburgh, PA, Palo Alto, CA, Detroit, MI") — passed through
+      # as-is for evaluate_location.
+      list_url: https://boards-api.greenhouse.io/v1/boards/latitude/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: harley_davidson
+    company: Harley-Davidson
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      # jobs.harley-davidson.com is a plain server-rendered SuccessFactors RMK (Job2Web)
+      # table, identical in shape to volkswagen/paccar (career8.successfactors.com/careers
+      # ?company=HD is the same tenant's SF-native front door). Confirmed via curl, no
+      # cookies: `startrow` pagination is real (pages of 25 at startrow=0/25/50/75 gave 25/25/25/11
+      # distinct jobs, 86 unique total, and both sample jobs 1403804800 and 1433511300 appear).
+      # The list is small enough that no early-stop is used. Listing is not filtered to the
+      # U.S. (a couple of Singapore rows exist) — evaluate_location handles that. Detail
+      # pages expose no JSON-LD (only itemprop microdata `datePosted`), so posted_at comes
+      # from the listing's colDate.
+      list_url: https://jobs.harley-davidson.com/search/?createNewAlert=false&q=&locationsearch=
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate
+  - key: lucid_motors
+    company: Lucid Motors
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # lucidmotors.com/careers/search/<id> is a first-party page over a Greenhouse board
+      # (the sample id 5138492007 is a Greenhouse job id; the API's absolute_url is
+      # lucidmotors.com/careers/search/<id>?gh_jid=<id>, i.e. the human-facing page itself,
+      # so no public_url_template needed). Board token is "lucidmotors" (boards-api.greenhouse.io
+      # /v1/boards/lucidmotors 200; "lucid"/"lucidgroup" 404). Public, zero-auth; ?content=true
+      # inlines every description for all 426 jobs in one request (double-encoded, unescaped
+      # centrally by greenhouse.py). Sample job 5138492007 ("Staff Feature Owner – ADAS/AD
+      # Driving Features", Newark, CA) confirmed present. The board is global (Saudi Arabia
+      # ~72 of 426) — evaluate_location excludes those.
+      list_url: https://boards-api.greenhouse.io/v1/boards/lucidmotors/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: volvo_cars
+    company: Volvo Cars
+    adapter: successfactors_rmk
+    platform: successfactors_rmk
+    config:
+      # jobs.volvocars.com is plain server-rendered SuccessFactors RMK, same shape as
+      # volkswagen/paccar/harley_davidson. Differences found by testing: page size is 20 (not
+      # 25), and `startrow` past the end wraps back to page 1 rather than returning empty.
+      # Uses the unfiltered listing (all 46 jobs, incl. Kosice/Gothenburg/Ghent) and leaves
+      # U.S. eligibility to location.py, rather than trusting the site's `location=US` facet
+      # (a real filter: 46 -> 9, the 9 being exactly the U.S.-looking rows, but it keys on the
+      # site's own tagging, so a mis-tagged U.S. job would be silently lost). Both sample jobs
+      # (Ridgeville SC "Systems Engineer" 1437336933, "Senior Launch Engineer" 1438065233)
+      # appear in the full set.
+      list_url: https://jobs.volvocars.com/search/?q=&q2=&alertId=&locationsearch=&title=&location=&date=&department=
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 20
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate
+  - key: cummins
+    company: Cummins
+    adapter: oracle_hcm
+    platform: oracle_hcm
+    config:
+      # cummins.jobs is a marketing/SEO front end; each job's real Apply link goes to fa-espx-saasfaprod1.fa.ocs.oraclecloud.com, site CX_1 —
+      # Oracle HCM Recruiting Cloud, same public unauthenticated recruitingCEJobRequisitions
+      # REST API as ford/denso. Confirmed with plain httpx, no cookies: 1,124 jobs, all
+      # unique across pages at limit=200/offset step (~489 US, rest global — India, China,
+      # Australia, Mexico, UK — excluded by evaluate_location via PrimaryLocationCountry).
+      # Sample job 2434431 ("Product Functional Test Technology Engineer", Jamestown, NY) is
+      # present. The default listing order is NOT sorted by PostedDate (verified: dates jump
+      # around across the full catalog), so no early-stop — always fetches the full catalog.
+      # Detail: the description is split across ExternalDescriptionStr/ResponsibilitiesStr/
+      # QualificationsStr (same as Ford), fetched via detail_base_url + Id. public_url_template
+      # points at Oracle's own candidate-experience page (200 for the sample) rather than the
+      # REST JSON URL, which is not something to hand a human.
+      paginate: true
+      list_url: https://fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=CX_1,facetsList=LOCATIONS,limit=200,offset=0
+      items_path: items.0.requisitionList
+      total_path: items.0.TotalJobsCount
+      detail_base_url: https://fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/
+      detail_description_path: [ExternalDescriptionStr, ExternalResponsibilitiesStr, ExternalQualificationsStr]
+      public_url_template: https://fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/{id}
+      fields:
+        id: Id
+        title: Title
+        url: Id
+        location: PrimaryLocation
+        country: PrimaryLocationCountry
+        employment_type: WorkplaceType
+        posted_at: PostedDate
+  - key: blue_bird
+    company: Blue Bird
+    adapter: ultipro
+    platform: ultipro
+    config:
+      # recruiting.ultipro.com/BLU1004BBBC/JobBoard/<guid> is UKG Pro Recruiting's public job
+      # board (a client-side widget; the raw HTML has no job data). It calls an anonymous
+      # `POST <board>/JobBoardView/LoadSearchResults` (Top/Skip, verified real; Top=500 returns
+      # all 36 jobs, sorted by PostedDate desc) — see adapters/ultipro.py. Sample job
+      # bc9f4889-... ("Senior Vehicle Controls Integration Engineer", Troy, MI) is present.
+      # Full descriptions come from each detail page's inline CandidateOpportunityDetail JSON.
+      # `url` is that browsable detail page. Structured Address city/state/country ("USA") flows
+      # onto the summary for evaluate_location's high-confidence branch. Another UltiPro tenant
+      # needs only its own board_url.
+      board_url: https://recruiting.ultipro.com/BLU1004BBBC/JobBoard/1dfd3da7-cc1c-4f67-a1ca-2de669150f8c
+      page_size: 100
+  - key: schaeffler
+    company: Schaeffler
+    adapter: zf
+    platform: successfactors_rmk
+    config:
+      # jobs.schaeffler.com is SuccessFactors RMK ("Job2Web"), the same platform/detail
+      # template as ZF (jobs.zf.com), so this reuses adapters/zf.py (HtmlPaginatedAdapter +
+      # the microdata datePosted override) via config. The landing page (/?currentPage=&pageSize=)
+      # is a client-rendered shell with no jobs in its HTML, and the widget's own API
+      # (POST /services/recruiting/v1/jobs, what BMW's successfactors_rmk_v2 uses) is NOT
+      # usable here: it returns 401 without a per-page-load X-CSRF-Token, and the site's
+      # robots.txt disallows /services/ — this project doesn't replay CSRF tokens for
+      # collection. The classic server-rendered search page /search/ is not disallowed and
+      # returns real job tiles over plain httpx, no cookies: `startrow` pagination is real
+      # (100/page, 695 jobs total: 7 pages, 100x6 + 95, startrow=700 empty).
+      # This is the *tile* variant of the RMK search page, not the tr.data-row table
+      # PACCAR/VW/ZF use: `li.job-tile`, each tile rendering its fields 3x (desktop/mobile
+      # variants), so first-match selectors are fine. The tile shows only a city — US jobs read
+      # "Fort Mill, SC", non-US just "Brasov" — with no country and no date.
+      # `optionsFacetsDD_country=US` is a real filter (695 -> 226, verified by crawling both
+      # sets: every tile whose city ends ", XX" is in the filtered set and nothing else is),
+      # and keeps the collector from fetching ~470 pointless non-US detail pages. Detail pages
+      # carry the description in `.jobdescription` and schema.org microdata datePosted (no
+      # JSON-LD), which zf.py already reads. CAVEATS: (1) datePosted is stable on re-fetch
+      # (14/14) but clustered in the last month regardless of how old the requisition looks —
+      # same SuccessFactors "republish" behavior as ZF — so no early-stop; (2) the given sample
+      # (Vitesco req 42488 "Systems Engineer") is not on this board (?q=42488 -> 0 tiles; the
+      # old career2.successfactors.eu VitescoProd portal is a login-flow shell with no job
+      # content, and Vitesco's own careers URL now redirects to schaeffler.com/careers) —
+      # verified against other jobs instead; (3) job_id falls back to a title+location+url
+      # hash (the numeric id in the URL isn't a card attribute), like PACCAR/VW/ZF.
+      list_url: https://jobs.schaeffler.com/search/?q=&locale=en_US&optionsFacetsDD_country=US
+      card_selector: li.job-tile
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: .section-field.city div[id$="city-value"]
+      page_parameter: startrow
+      page_size: 100
+      description_selector: .jobdescription
+  - key: applied_intuition
+    company: Applied Intuition
+    adapter: ashby
+    platform: ashby
+    config:
+      # appliedintuition.com/careers links each job to jobs.ashbyhq.com/applied/<uuid>
+      # (confirmed 200 for the sample), a real unauthenticated Ashby board; the public
+      # posting API mirrors it exactly, same shape as openai/skydio/perplexity above:
+      # 307 jobs in one request, full descriptionHtml inline (no per-job detail fetch),
+      # jobUrl is the human-openable board page (no public_url_template needed).
+      # Sample job 6e6b218a-ef17-45fe-86ba-0bf33199016f ("Application Engineer - Technical
+      # Customer Lead", Sunnyvale, CA) confirmed present. The bare `location` is only a
+      # city ("Sunnyvale"), so structured address.postalAddress (country/region/city) is
+      # what gives evaluate_location its high-confidence branch: 240 of 307 are in the
+      # United States, the rest mostly Germany/Japan/UK. publishedAt is present on every
+      # job but the list is not date-sorted, so no early-stop. CAVEAT: workplaceType is
+      # "OnSite" on all 307 (likely the tenant leaving Ashby's default, not a real
+      # claim), so work_arrangement is weak evidence here. The plain URL and
+      # ?includeCompensation=true return the same job set; the plain feed carries no
+      # compensation field, and salary.py parses the 12 descriptions that state a range.
+      list_url: https://api.ashbyhq.com/posting-api/job-board/applied
+      items_path: jobs
+      listing_description_path: descriptionHtml
+      fields:
+        id: id
+        title: title
+        url: jobUrl
+        location: location
+        department: department
+        employment_type: employmentType
+        posted_at: publishedAt
+        work_arrangement: workplaceType
+        country: address.postalAddress.addressCountry
+        state: address.postalAddress.addressRegion
+        city: address.postalAddress.addressLocality
+  - key: kodiak
+    company: Kodiak
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # kodiak.ai/careers links each job directly to job-boards.greenhouse.io/kodiak/jobs/<id>
+      # (all 68 ids on the careers page are exactly the 68 the API returns), so this is a
+      # standard Greenhouse board — no hidden backend to chase, same shape as anthropic/
+      # torc_robotics. Board token "kodiak" confirmed 200 on boards-api.greenhouse.io. Public,
+      # zero-auth; ?content=true inlines every description (double-encoded, unescaped centrally
+      # by greenhouse.py), so no detail fetch. absolute_url is the human-facing Greenhouse page.
+      # location.name is free text with inconsistent forms ("Lancaster, TX" / "Lancaster,
+      # Texas" / "Lancaster, Tx", "Kermit, TX or Odessa, TX", "San Francisco Bay Area",
+      # "Remote United States") passed through as-is for evaluate_location.
+      # first_published is the original post date (updated_at differs on 53 of 68 jobs).
+      list_url: https://boards-api.greenhouse.io/v1/boards/kodiak/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: aurora
+    company: Aurora
+    adapter: ashby
+    platform: ashby
+    config:
+      # aurora.tech/careers is a Nuxt site over Ashby: the sample job page's own canonical
+      # link is aurora.tech/careers?ashby_jid=<id> and the site's runtime config carries
+      # ashbyOrgSlug:"aurora-operations-inc" — the real board slug, NOT the guessable
+      # "aurora"/"auroratech"/"aurora-innovation" (all 404 on the posting API). Public
+      # posting API (api.ashbyhq.com/posting-api/job-board/aurora-operations-inc), zero-auth,
+      # same shape as openai/skydio: 90 jobs, full descriptionHtml inline (no detail fetch),
+      # structured address.postalAddress (all 90 addressCountry "United States") for
+      # evaluate_location's high-confidence branch, workplaceType -> work_arrangement.
+      # Sample job 599187fe-1cf0-4037-9497-bbdacd5b1322 ("Senior Systems Engineer, Hardware
+      # Systems", Dallas, TX, OnSite) confirmed present. jobUrl is the human-facing
+      # jobs.ashbyhq.com page, used directly as url.
+      list_url: https://api.ashbyhq.com/posting-api/job-board/aurora-operations-inc
+      items_path: jobs
+      listing_description_path: descriptionHtml
+      fields:
+        id: id
+        title: title
+        url: jobUrl
+        location: location
+        department: department
+        employment_type: employmentType
+        posted_at: publishedAt
+        work_arrangement: workplaceType
+        country: address.postalAddress.addressCountry
+        state: address.postalAddress.addressRegion
+        city: address.postalAddress.addressLocality
+  - key: visteon
+    company: Visteon
+    adapter: unsupported
+    platform: darwinbox
+    # visteon-panorama.darwinbox.com/ms/candidatev2/main/careers/allJobs is a client-rendered
+    # Darwinbox candidate-v2 SPA (all three given URLs return the identical 29 KB shell). Rendering
+    # it once with Playwright showed the real listing call: POST /ms/candidateapi/job/alljobs
+    # ?companyId=main with a JSON body {companyId, page, sort_option, limit} -> {status, data[],
+    # job_counts: 106}, each item carrying the full description inline (`jd`, once HTML-escaped),
+    # so a plain-httpx adapter would need only a handful of calls per run. The first plain-httpx
+    # replay (no cookies) returned real data, but after a burst of ~10 discovery calls Cloudflare
+    # began answering every /ms/candidateapi/* request with 403 "Attention Required" (the static
+    # shell still 200s), and it was still blocked after a ~5 minute cooldown. Item shape, the
+    # pagination/limit behavior, the location/country/date field names and the sample job
+    # (a6a5532ab608e8) were therefore NOT verified — nothing here is guessed. Revisit later with
+    # plain httpx before considering stealth_html, which would be a disclosed anti-automation
+    # choice with real ToS exposure (CLAUDE.md, docs/SPEC.md §5.8).
+    unsupported_reason: Darwinbox's candidateapi endpoints (POST /ms/candidateapi/job/alljobs) answer plain requests with a Cloudflare 403 "Attention Required" block after the first call; listing shape and sample job unverified, and this project does not defeat an active anti-automation control without an explicit decision to use stealth_html.
