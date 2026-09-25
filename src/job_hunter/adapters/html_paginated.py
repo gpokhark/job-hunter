@@ -65,6 +65,11 @@ class HtmlPaginatedAdapter(JobAdapter):
                 detail_url = urljoin(cfg.get("detail_base_url", url), link.attributes["href"])
                 location_node = card.css_first(cfg.get("location_selector", ".location"))
                 location = normalize_text(location_node.text()) if location_node else None
+                # Opt-in: some cards (Harman's Avature) put the "Location:" label and its
+                # value in one span with no separate value node to select.
+                label = cfg.get("location_strip_prefix")
+                if location and label and location.startswith(label):
+                    location = location[len(label):].strip() or None
                 attr = cfg.get("id_attribute", "data-job-id")
                 job_id = card.attributes.get(attr) or fallback_job_id(
                     self.company.company, title, location, detail_url

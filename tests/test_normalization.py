@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from job_hunter.normalizer import (
     canonical_url,
     description_hash,
+    extract_job_posting_ld,
     fallback_job_id,
     parse_display_date,
     parse_flexible_date,
@@ -63,3 +64,31 @@ def test_parse_flexible_date_non_zero_padded():
     (non-zero-padded month/day) — confirmed live, and fromisoformat rejects it outright."""
     assert parse_flexible_date("2026-8-19") == datetime(2026, 8, 19, tzinfo=UTC)
     assert parse_flexible_date("2026-08-09") == datetime(2026, 8, 9, tzinfo=UTC)
+
+
+def test_job_posting_ld_tolerates_raw_newlines_inside_strings():
+    """Brose pastes multi-line text into JSON-LD strings unescaped; strict json.loads rejects
+    it ("Invalid control character"), which used to drop the whole block silently."""
+    html = (
+        '<script type="application/ld+json">{"@type": "JobPosting", '
+        '"datePosted": "09-25-2026", "description": "line one\nline two"}</script>'
+    )
+    posting = extract_job_posting_ld(html)
+    assert posting is not None and posting["datePosted"] == "09-25-2026"
+    assert "line two" in posting["description"]
+
+
+def test_job_posting_ld_still_skips_genuinely_broken_json():
+    assert extract_job_posting_ld('<script type="application/ld+json">{not json</script>') is None
+
+
+def test_display_date_accepts_day_month_abbrev_year_with_a_label_prefix():
+    """Harman's Avature cards: "Date Posted: 24-Sep-2026" in a single span."""
+    assert parse_display_date("Date Posted: 24-Sep-2026") == datetime(2026, 9, 24, tzinfo=UTC)
+    assert parse_display_date("24-Sep-2026") == datetime(2026, 9, 24, tzinfo=UTC)
+    assert parse_display_date("Posted: Aug 10, 2026") == datetime(2026, 8, 10, tzinfo=UTC)
+
+
+def test_display_date_label_strip_does_not_touch_times_or_garbage():
+    assert parse_display_date("Posted recently") is None
+    assert parse_display_date("Date Posted: not a date") is None

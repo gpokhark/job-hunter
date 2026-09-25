@@ -61,7 +61,9 @@ _NOT_AVAILABLE = [
         r"no visa sponsorship",
         r"not (?:currently )?(?:provide|offer).{0,40}sponsorship",
         r"unable to sponsor",
-        r"sponsorship.{0,40}is not available",
+        # "unavailable" (no "is not") covers e.g. "Future sponsorship for work
+        # authorization unavailable" — the wording above only names "employment visa status".
+        r"sponsorship.{0,40}(?:is not available|unavailable)",
         r"not authorized to sponsor",
         r"not require.{0,40}sponsorship",
         r"not need.{0,30}sponsorship",
@@ -76,6 +78,11 @@ _NOT_AVAILABLE = [
         r"(?:international traffic in arms regulations|export administration regulations)"
         r"\s*\((?:itar|ear)\).{0,400}?(?:may be required to obtain|must obtain|require[sd]?)"
         r".{0,20}?(?:an )?export (?:licen[sc]e|authorization)",
+        # Citizenship-only roles can't sponsor anyone. Firm phrasing only ("preferred" never
+        # matches), and not when citizenship is one alternative among several ("U.S. citizen
+        # or permanent resident", "citizen/GC") — those don't say a visa is off the table.
+        r"must be a (?:u\.?s\.?|united states) citizen\b(?!\s*(?:or\b|and/or\b|/|,\s*(?:or\s+)?(?:a\s+)?(?:lawful|permanent|green)))",
+        r"(?:u\.?s\.?|united states) citizenship (?:is )?required\b(?!\s*(?:or\b|and/or\b|/))",
         # Sponsorship offered only to existing employees already holding a company visa —
         # not available to an external applicant. See module docstring.
         r"sponsorship (?:will only|is only) be (?:open|available|offered) to "

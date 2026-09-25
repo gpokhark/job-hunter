@@ -118,6 +118,7 @@ and an older flat `GET /api/apply/v2/jobs` (snake_case fields, `start`-offset pa
 detail URL). Guessing the wrong generation 403s with a same-shaped "Not authorized"/"PCSX is not
 enabled" message rather than a real auth error — a strong signal to try the other generation, not
 a dead end. See `eightfold.py`.
+A tenant may also rate-limit hard (Qualcomm: HTTP 429 after 2-3 rapid requests, no `Retry-After`, window clears in seconds) — set the per-source pacing (`min_request_interval_seconds`/`max_request_interval_seconds`, plus a higher `max_retries`) rather than probing in bursts; the same tenant also returned a real `location=united states` filter (1,994 -> 766).
 
 **Avature** — recognizable via an `avature.net` host. Its default career-site search page can
 render a fixed, plausible-looking set of results over plain httpx regardless of what query string
@@ -130,6 +131,10 @@ param before the filter actually took effect; confirmed real, not coincidental, 
 second facet value and seeing the result set actually change). Once known, the same URL works over
 plain httpx with real pagination (a `jobOffset` row-offset param, one tenant confirmed capped at a
 fixed small page size — check for this, don't assume the requested page-size param does anything).
+Not every Avature tenant needs the wizard: Harman's plain `SearchJobs/?listFilterMode=1&jobRecordsPerPage=20`
+is a genuine, complete listing (`jobOffset` pagination, a real `Date Posted: DD-Mon-YYYY` on each card),
+so `html_paginated` fits directly — confirm by paging through and checking for unique, changing results
+before assuming the Molex-style workaround is needed.
 Card and detail pages can reuse the exact same CSS class for unrelated fields — check for a
 distinguishing ancestor class (not a label) before writing a `description_selector` that might
 also scoop up sibling metadata fields.
@@ -144,6 +149,13 @@ an `Authorization: Bearer` header on `POST .../api/ats/job-posting-previews/sear
 same token requirement, needed since the listing preview's own description is truncated. Watch for
 an embedded schema.org `googleJobJson` field on the detail response — it's a JSON **string**
 (needs its own `json.loads`), not an already-parsed object. See `paycom.py`.
+
+**A company site that only *links* to an ATS login shell** (Brose: job pages' "Application login" →
+`career2.successfactors.eu?company=brosefahrz`, a "Sign In" page with no jobs; ZF/Vitesco same) — don't
+stop at the ATS host. Read the company site's own listing page source for an inline `$.ajax`/`fetch` to
+a static JSON file (Brose: `/de-en/technisch/joblist.json`), then check each detail page for JSON-LD
+(watch for raw newlines inside its strings and non-ISO date formats such as "MM-DD-YYYY"). See
+`brose.py`.
 
 **UKG Pro Recruiting (UltiPro)** — recognizable via `recruiting.ultipro.com/<tenant>/JobBoard/<guid>`
 (or `rec-cdn-prod.cdn.ultipro.com` assets). The board is a client-side widget with no job data in its

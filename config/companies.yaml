@@ -1830,3 +1830,161 @@ companies:
     # plain httpx before considering stealth_html, which would be a disclosed anti-automation
     # choice with real ToS exposure (CLAUDE.md, docs/SPEC.md §5.8).
     unsupported_reason: Darwinbox's candidateapi endpoints (POST /ms/candidateapi/job/alljobs) answer plain requests with a Cloudflare 403 "Attention Required" block after the first call; listing shape and sample job unverified, and this project does not defeat an active anti-automation control without an explicit decision to use stealth_html.
+  - key: brose
+    company: Brose
+    adapter: brose
+    platform: brose
+    config:
+      # brose.com's job pages point their "Application login" at career2.successfactors.eu
+      # (company=brosefahrz) — a login-flow shell ("Career Opportunities: Sign In") with no job
+      # content, the same dead end as ZF's/Vitesco's SAP career-site-builder link. The real,
+      # public source is on brose.com itself: the career search page
+      # (/de-en/career/jobsucheergebnisse-2025.html) is a client-rendered table fed by one static,
+      # unauthenticated JSON file, /de-en/technisch/joblist.json, found in that page's inline
+      # $.ajax call — a top-level list of 103 jobs (unique jobId/url, none `deleted`, all lang
+      # "en"): {title, url, place[city], country, division[], mode, jobId}. Country is a full
+      # name ("United States of America", 24 US jobs; India/Mexico/Brazil/UK/... otherwise), used
+      # as the structured country. Sample job 9452 ("System Engineer - Testing Technology",
+      # Auburn Hills, US) is present. The list has no dates or descriptions; each job's own page
+      # (the same brose.com URL a human opens, used as `url`) has schema.org JobPosting JSON-LD
+      # with datePosted ("MM-DD-YYYY"), addressRegion/addressCountry, and the body split across
+      # description/responsibilities/qualifications/jobBenefits — see adapters/brose.py (and
+      # normalizer.extract_job_posting_ld's lenient fallback: Brose's JSON-LD contains raw
+      # newlines inside strings). datePosted looks real, not "now": 11 sampled jobs ranged
+      # 08-27 to 09-25 with higher jobIds later, though several share 08-27/09-01 (probably batch
+      # publishing). Not verified stable across days, so no early-stop (the list is unsorted
+      # anyway).
+      list_url: https://www.brose.com/de-en/technisch/joblist.json
+      fields:
+        id: jobId
+        title: title
+        url: url
+        location: place.0
+        country: country
+        department: division.0
+        employment_type: mode
+  - key: motional
+    company: Motional
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # motional.com/open-positions#/<id> is a first-party page that embeds a Greenhouse job
+      # board (`greenhouse.io/embed/job_board/js?for=motional` in the page source; the hash
+      # routes #/7855051003 and #/7694178003/apply are the embed's own client-side routes). Board
+      # token "motional" confirmed 200 on boards-api.greenhouse.io ("motionalad"/"motional-ad"
+      # 404). Public, zero-auth; ?content=true inlines all 72 descriptions (double-encoded,
+      # unescaped centrally by greenhouse.py), so no detail fetch. Both sample jobs are present:
+      # 7855051003 ("Associate AV Test Engineer", Pittsburgh, PA) and 7694178003 ("AV Test
+      # Engineer", Las Vegas, NV). absolute_url is the human-facing
+      # motional.com/open-positions/?gh_jid=<id>#/<id> page, used directly. location.name is
+      # "City, State, Country" text, often several sites joined by "; " plus "Remote U.S.";
+      # 13 Singapore jobs are excluded by evaluate_location.
+      list_url: https://boards-api.greenhouse.io/v1/boards/motional/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+  - key: qualcomm
+    company: Qualcomm
+    adapter: eightfold
+    platform: eightfold
+    config:
+      # careers.qualcomm.com/careers?pid=<id> is Eightfold's newer "pcsx" front end (the page
+      # embeds eightfold.ai config; same platform as deere/microsoft above), and its public,
+      # unauthenticated /api/pcsx/search + /api/pcsx/position_details endpoints answer plain
+      # httpx with no cookies. Global catalog 1,994 jobs; `location=united states` is a real
+      # filter (count 766; filter_include_remote makes no difference to the count, kept for
+      # parity with microsoft). Page size is a fixed 10/request, so ~77 pages for the U.S. set.
+      # Sample pid 446721225509 ("Senior Engineer - Linux Kernel Development") is a Hyderabad,
+      # India job that happened to be first in the global timestamp sort, so it is correctly
+      # NOT in the U.S. list — verified via position_details (200, 6.8 KB description,
+      # publicUrl https://careers.qualcomm.com/careers/job/<id> = the human page, 200).
+      # RATE LIMIT: the API answers a burst of even 2-3 requests with 429 (no Retry-After
+      # header; the window is short and clears within seconds), so this uses the base adapter's
+      # opt-in per-source pacing (min/max_request_interval_seconds, serialized across
+      # concurrent detail fetches) plus the extra retries below instead of hammering it — a
+      # full U.S. crawl is therefore slow by design (~77 listing pages at 3-4s).
+      # posted_at is `postedTs` (the default here); it differs from `creationTs` (sample: 09-25
+      # vs 09-18), so it is probably a re-post/refresh date rather than the first-seen date;
+      # not verified stable across days, and the U.S. list order was not verified date-sorted,
+      # so no early-stop.
+      list_url: https://careers.qualcomm.com/api/pcsx/search
+      detail_url: https://careers.qualcomm.com/api/pcsx/position_details
+      public_base_url: https://careers.qualcomm.com
+      max_pages: 100
+      min_request_interval_seconds: 3
+      max_request_interval_seconds: 4
+      max_retries: 6
+      params:
+        domain: qualcomm.com
+        location: united states
+        filter_include_remote: 1
+      detail_params:
+        domain: qualcomm.com
+        hl: en
+  - key: harman
+    company: Harman
+    adapter: html_paginated
+    platform: avature
+    config:
+      # jobsearch.harman.com is Avature (same platform family as Molex's koch.avature.net), but
+      # unlike Molex the plain SearchJobs page here is a genuine, complete server-rendered
+      # listing: no wizard/facet needed. Confirmed via plain curl/httpx, no cookies: 358 jobs
+      # over 18 pages of 20 via a `jobOffset` row offset (all 358 urls unique). Sample job 32294
+      # ("Software Architect ADAS", Bucharest, Romania, posted 15-Jul-2026) is present — a
+      # non-U.S. job, correctly excluded by evaluate_location. Each card carries a real
+      # `Date Posted: DD-Mon-YYYY` (parsed by normalizer.parse_display_date, which now strips the
+      # glued-on label and accepts that format), and it agrees with the detail page's JSON-LD
+      # datePosted (2026-07-15 for the sample). The list is NOT date-sorted, so no early-stop
+      # (the catalog is small anyway). The card's "Location: ..." label shares one span with its
+      # value, hence location_strip_prefix. Locations are free text with no fixed country field
+      # ("USA - Cabot Drive", "Carlsbad – California, USA", "New York - USA - 19 West 44th St.",
+      # "IN_Bangalore_Sattva Knowledge Court Bdg_HII") passed to evaluate_location as-is.
+      # Detail: the body is the article carrying the `description-separator` class (a sibling
+      # article--details block holds only Location/Job Family/Job ID metadata sharing the same
+      # value class, so the description selector is scoped to avoid it); the JSON-LD has no
+      # description. Job ids fall back to a title+location+url hash (the numeric id is only in
+      # the URL, not a card attribute).
+      list_url: https://jobsearch.harman.com/en_US/careers/SearchJobs/?listFilterMode=1&jobRecordsPerPage=20
+      card_selector: article.article--result
+      link_selector: .article__header__text__title a
+      title_selector: .article__header__text__title a
+      location_selector: .list-item-location
+      location_strip_prefix: "Location:"
+      posted_at_selector: .list-item-posted
+      description_selector: article.description-separator .article__content__view__field__value
+      page_parameter: jobOffset
+      page_size: 20
+      max_pages: 40
+  - key: mitsubishi_motors_na
+    company: Mitsubishi Motors North America
+    adapter: greenhouse
+    platform: greenhouse
+    config:
+      # job-boards.greenhouse.io/mitsubishimotorsna is itself a standard Greenhouse job-boards
+      # host (page title "Jobs at Mitsubishi Motors North America, Inc."), so no
+      # front-end/backend split to chase — same shape as anthropic/kodiak/torc_robotics. Board
+      # token "mitsubishimotorsna" confirmed 200 on boards-api.greenhouse.io, public and
+      # zero-auth. ?content=true inlines all 8 jobs' full descriptions (double-encoded,
+      # unescaped centrally by greenhouse.py), so no detail fetch; absolute_url is the
+      # human-facing board page, used directly. No sample job was provided for this one, so
+      # verification is against the board's own listing (8 jobs, all with content).
+      # location.name is free text ("Franklin, TN (Hybrid Position)", "South Florida -
+      # Remote", "Charlotte, NC - Remote", "Ann Arbor, MI; Arlington, VA; Washington DC -
+      # Remote") passed through as-is for evaluate_location. A tiny catalog: the U.S.-only
+      # dealer/regional-sales roles here are mostly outside a typical engineering profile.
+      list_url: https://boards-api.greenhouse.io/v1/boards/mitsubishimotorsna/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published

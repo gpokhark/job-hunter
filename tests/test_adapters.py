@@ -11,6 +11,7 @@ from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
 from job_hunter.adapters.base import SchemaError
 from job_hunter.adapters.bosch import BoschAdapter
+from job_hunter.adapters.brose import BroseAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
 from job_hunter.adapters.greenhouse import GreenhouseAdapter
 from job_hunter.adapters.html_multi_index import HtmlMultiIndexAdapter
@@ -1966,3 +1967,135 @@ async def test_ultipro_detail_without_data_blob_fails_loudly():
     async with httpx.AsyncClient() as client:
         with pytest.raises(SchemaError):
             await UltiProAdapter(company, client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+
+
+_BROSE_LIST_URL = "https://brose.example/de-en/technisch/joblist.json"
+_BROSE_JOB_URL = "https://brose.example/de-en/career/job---system-engineer-9452.html"
+
+
+def _brose_company():
+    return CompanyConfig(
+        key="brose", company="Brose", adapter="brose",
+        config={
+            "list_url": _BROSE_LIST_URL,
+            "fields": {
+                "id": "jobId", "title": "title", "url": "url", "location": "place.0",
+                "country": "country", "department": "division.0", "employment_type": "mode",
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_brose_listing_is_a_top_level_json_list():
+    respx.get(_BROSE_LIST_URL).mock(return_value=httpx.Response(200, json=[{
+        "title": "System Engineer", "url": _BROSE_JOB_URL, "place": ["Auburn Hills"],
+        "country": "United States of America", "division": ["Automotive Engineering"],
+        "mode": "Full-time", "jobId": "9452", "deleted": "",
+    }]))
+    async with httpx.AsyncClient() as client:
+        jobs = await BroseAdapter(_brose_company(), client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert (job.job_id, job.title, job.url) == ("9452", "System Engineer", _BROSE_JOB_URL)
+    assert job.location_raw == "Auburn Hills" and job.country == "United States of America"
+    assert job.department == "Automotive Engineering" and job.employment_type == "Full-time"
+    assert job.posted_at is None
+
+
+_BROSE_DETAIL_HTML = """<html><head><script type="application/ld+json">{
+"@context": "http://schema.org/", "@type": "JobPosting", "title": "System Engineer",
+"datePosted": "09-25-2026",
+"description": "Intro line one.
+Intro line two.",
+"responsibilities": "
+Build test benches.",
+"qualifications": "
+Bachelor degree. No visa sponsorship.",
+"jobBenefits": "
+Health insurance.",
+"jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress",
+  "addressRegion": "Michigan", "addressCountry": "United States of America"}}
+}</script></head><body></body></html>"""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_brose_detail_reads_json_ld_with_raw_newlines():
+    """Brose's JSON-LD pastes multi-line text straight into JSON strings (raw newlines), which
+    strict json.loads rejects — the lenient fallback must still recover the block. Body is the
+    concatenation of all four text fields; datePosted is month-first; region/country flow onto
+    the detail for evaluate_location."""
+    respx.get(_BROSE_JOB_URL).mock(return_value=httpx.Response(200, text=_BROSE_DETAIL_HTML))
+    summary = JobSummary(
+        source_key="brose", source_platform="brose", company="Brose", job_id="9452",
+        title="System Engineer", url=_BROSE_JOB_URL,
+    )
+    async with httpx.AsyncClient() as client:
+        detail = await BroseAdapter(_brose_company(), client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+    for text in ("Intro line one.", "Build test benches.", "No visa sponsorship.", "Health insurance."):
+        assert text in detail.description
+    assert detail.posted_at.strftime("%Y-%m-%d") == "2026-09-25"
+    assert (detail.state, detail.country) == ("Michigan", "United States of America")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_brose_detail_without_json_ld_fails_loudly():
+    respx.get(_BROSE_JOB_URL).mock(return_value=httpx.Response(200, text="<html>nothing</html>"))
+    summary = JobSummary(
+        source_key="brose", source_platform="brose", company="Brose", job_id="9452",
+        title="System Engineer", url=_BROSE_JOB_URL,
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SchemaError):
+            await BroseAdapter(_brose_company(), client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+
+
+def _avature_card(idx, job_id, title, location, posted):
+    return f"""<article class="article article--result" id="article--{idx}">
+<div class="article__header"><div class="article__header__text">
+<h3 class="article__header__text__title"><a class="link" href="https://jobs.example/en_US/careers/JobDetail/{title.replace(' ', '-')}/{job_id}">{title}</a></h3>
+<div class="article__header__text__subtitle">
+<span class="list-item-location"><strong> Location:</strong> {location}</span>
+<span class="list-item-posted"><strong> Date Posted:</strong> {posted}</span>
+</div></div></div></article>"""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_avature_cards_label_prefixed_location_and_date_with_joboffset_pagination():
+    """Harman's Avature listing: label and value share one span (no value-only node), the date is
+    "DD-Mon-YYYY", and pagination is a `jobOffset` row offset that stops on a short page."""
+    base = "https://jobs.example/en_US/careers/SearchJobs/?listFilterMode=1&jobRecordsPerPage=2"
+    respx.get(base, params={"jobOffset": "2"}).mock(
+        return_value=httpx.Response(200, text=_avature_card(1, 3, "Buyer", "New York - USA - 19 West 44th St.", "22-Sep-2026"))
+    )
+    respx.get(base).mock(
+        return_value=httpx.Response(
+            200,
+            text=_avature_card(1, 1, "Software Architect", "Bucharest - Bucharest, Romania", "15-Jul-2026")
+            + _avature_card(2, 2, "Engineer", "Carlsbad – California, USA", "24-Sep-2026"),
+        )
+    )
+    company = CompanyConfig(
+        key="harman", company="Harman", adapter="html_paginated",
+        config={
+            "list_url": base,
+            "card_selector": "article.article--result",
+            "link_selector": ".article__header__text__title a",
+            "title_selector": ".article__header__text__title a",
+            "location_selector": ".list-item-location",
+            "location_strip_prefix": "Location:",
+            "posted_at_selector": ".list-item-posted",
+            "page_parameter": "jobOffset",
+            "page_size": 2,
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await HtmlPaginatedAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert [j.title for j in jobs] == ["Software Architect", "Engineer", "Buyer"]
+    assert jobs[0].location_raw == "Bucharest - Bucharest, Romania"
+    assert jobs[2].location_raw == "New York - USA - 19 West 44th St."
+    assert [j.posted_at.strftime("%Y-%m-%d") for j in jobs] == ["2026-07-15", "2026-09-24", "2026-09-22"]

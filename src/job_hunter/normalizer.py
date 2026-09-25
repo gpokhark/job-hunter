@@ -39,12 +39,16 @@ def parse_relative_posted(text: str | None, *, now: datetime | None = None) -> d
     return None
 
 
-_DISPLAY_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d", "%d %b %Y")
+_DISPLAY_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y")
 # British-English SuccessFactors RMK tenants (confirmed live: Jaguar Land Rover's
 # jaguarlandrovercareers.com) spell September's abbreviation "Sept" (4 letters) instead
 # of the standard 3-letter "Sep" every other month uses — %b never matches it, so it's
 # normalized before any format is tried rather than added as its own format string.
 _SEPT_ABBREVIATION = re.compile(r"\bSept\b")
+# A UI label glued onto the value it labels ("Date Posted: 24-Sep-2026" — Harman's Avature
+# cards render the label and date inside one span). Letters/spaces only before the colon, so a
+# time such as "10:30" or a bare date is never touched.
+_LEADING_LABEL = re.compile(r"^[A-Za-z][A-Za-z ]{0,30}:\s*")
 
 
 def parse_display_date(text: str | None) -> datetime | None:
@@ -54,6 +58,7 @@ def parse_display_date(text: str | None) -> datetime | None:
     cleaned = normalize_text(text)
     if not cleaned:
         return None
+    cleaned = _LEADING_LABEL.sub("", cleaned)
     cleaned = _SEPT_ABBREVIATION.sub("Sep", cleaned)
     for fmt in _DISPLAY_DATE_FORMATS:
         try:
@@ -88,7 +93,14 @@ def extract_job_posting_ld(text: str) -> dict | None:
         try:
             data = json.loads(match.group(1))
         except json.JSONDecodeError:
-            continue
+            # Some CMS templates paste multi-line text straight into a JSON string, leaving
+            # raw newlines the strict parser rejects (confirmed: Brose's job pages — "Invalid
+            # control character") — otherwise well-formed, so accept them rather than losing
+            # the whole block (and its datePosted/description) silently.
+            try:
+                data = json.loads(match.group(1), strict=False)
+            except json.JSONDecodeError:
+                continue
         candidates: list = data.get("@graph", [data]) if isinstance(data, dict) else []
         for candidate in candidates:
             if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
