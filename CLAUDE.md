@@ -83,7 +83,7 @@ ranked `SearchResult` JSON.
   `greenhouse.py`, `oracle_hcm.py`, `phenom.py`, `successfactors_rmk.py`, `html_paginated.py`,
   `html_multi_index.py`, `discovered_api.py`, `stealth_html.py`, `adp_recruiting.py`, `apple.py`,
   `eightfold.py`, `successfactors_rmk_v2.py`, `bosch.py`, `zf.py`, `csod.py`, `icims_attract.py`,
-  `dayforce.py`, `smartrecruiters.py`, `paycom.py`, `paylocity.py`), registered in
+  `dayforce.py`, `smartrecruiters.py`, `paycom.py`, `paylocity.py`, `ultipro.py`), registered in
   `adapters/__init__.py`'s `ADAPTERS` dict, selected via `companies.yaml`'s `adapter` key. All
   inherit `JobAdapter` (`adapters/base.py`): retry-with-backoff `request()` (429/500/502/503/504 +
   network/timeout, honors `Retry-After`), default `healthcheck()`. Adapters implement
@@ -131,7 +131,7 @@ ranked `SearchResult` JSON.
 
 - **`location.py`** — `evaluate_location` → `LocationDecision` (`us_eligible`, `confidence`,
   `evidence`). Precedence: structured country/state fields → "remote in the U.S." phrasing → U.S.
-  state name/abbrev → explicit "United States" text → recognized non-U.S. country/city list → bare
+  state name/abbrev → explicit "United States" text → a short allowlist of state-less U.S. metro phrases ("San Francisco Bay Area"; add here, never bare city names that exist abroad) → recognized non-U.S. country/city list → bare
   "remote" with no U.S. evidence rejected as low-confidence. This ordering prevents ambiguous
   multi-location/remote postings from being mis-included/excluded — read the comments before
   reordering.

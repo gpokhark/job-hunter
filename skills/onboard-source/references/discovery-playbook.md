@@ -55,6 +55,13 @@ while the listing-level field stayed fixed) — prefer the listing-level field u
 job. Fits `html_paginated`/`successfactors_rmk` with `card_selector`, `link_selector`,
 `title_selector`, `location_selector`, and (if present) `posted_at_selector` targeting a
 `td.colDate span.jobDate`-shaped element, parsed via `normalizer.parse_display_date`.
+A second, *tile* variant exists (Schaeffler: `li.job-tile`, city-only location, no date column).
+If a RMK site's landing page looks client-rendered and its `/services/recruiting/v1/jobs` API
+returns 401 (per-page-load `X-CSRF-Token`; also check `robots.txt` — Schaeffler disallows
+`/services/`), try the classic `/search/?q=&startrow=N` URL before anything else: it is usually
+still server-rendered and not disallowed. Confirm the `optionsFacetsDD_country=US` filter by crawling
+filtered vs. unfiltered and diffing, and check whether the detail page carries microdata
+`datePosted` (reuse `zf.py`) instead of JSON-LD.
 
 **ADP Recruiting Management (RM)** — a career-site front end at
 `https://myjobs.adp.com/<career_site_domain>/cx/...` that never renders anything server-side. A
@@ -137,6 +144,16 @@ an `Authorization: Bearer` header on `POST .../api/ats/job-posting-previews/sear
 same token requirement, needed since the listing preview's own description is truncated. Watch for
 an embedded schema.org `googleJobJson` field on the detail response — it's a JSON **string**
 (needs its own `json.loads`), not an already-parsed object. See `paycom.py`.
+
+**UKG Pro Recruiting (UltiPro)** — recognizable via `recruiting.ultipro.com/<tenant>/JobBoard/<guid>`
+(or `rec-cdn-prod.cdn.ultipro.com` assets). The board is a client-side widget with no job data in its
+plain HTML, but a bare, cookie-less `POST <board>/JobBoardView/LoadSearchResults` (JSON body:
+`opportunitySearch.{Top,Skip,QueryString,OrderBy,Filters}` plus an empty `matchCriteria`) returns the
+whole listing with `totalCount`; `Top`/`Skip` pagination is real (checked by comparing pages). The
+listing has only a short `BriefDescription` — the full description is inside the detail page's inline
+`CandidateOpportunityDetail({...})` JS call (plain JSON, parse with `raw_decode`). Locations carry a
+structured `Address` (city/state `Code`/country `Code`), but `LocalizedName` can be a site name that
+isn't a place. See `ultipro.py`.
 
 **Radancy TalentBrew** — recognizable via `tbcdn.talentbrew.com`/`radancy.net` in a page's CSP or
 asset hosts. Don't assume this branding always means a skin over a different real backend the way

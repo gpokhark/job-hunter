@@ -140,7 +140,7 @@ pagination) or `page_number_parameter` (1-indexed page-number pagination), `post
 `html_paginated` key plus `wait_selector`.
 
 Use `scripts/endpoint_probe.py` (or curl) during development to inspect a candidate endpoint
-before writing config for it — never hand-invent an endpoint shape (§5.21).
+before writing config for it — never hand-invent an endpoint shape (§5.22).
 
 ---
 
@@ -201,6 +201,7 @@ is judged still valid.
 | `smartrecruiters` | `SmartRecruitersAdapter` | subclasses `json_api.ConfigurableJsonAdapter` for SmartRecruiters' public Job Board API, adding ordinary offset/limit pagination (server caps at 100/page) — see §5.18 |
 | `paycom` | `PaycomAdapter` | Paycom's "career-page" ATS widget — a short-lived anonymous bearer token embedded in the plain page HTML, replayed on a public search/detail API — see §5.19 |
 | `paylocity` | `PaylocityAdapter` | Paylocity Recruiting's public job board — parses a `window.pageData` JS object literal embedded in the listing's own plain HTML for the whole job list at once, and label-matched `Description`/`Requirements` divs (not always-present JSON-LD) for detail — see §5.20 |
+| `ultipro` | `UltiProAdapter` | UKG Pro Recruiting (UltiPro) public job board — anonymous `POST .../JobBoardView/LoadSearchResults` with `Top`/`Skip` for the listing, an inline `CandidateOpportunityDetail({...})` JS call on each detail page for the full description — see §5.21 |
 | `unsupported` | `UnsupportedAdapter` | explicit "no viable path" marker; `unsupported_reason` required |
 
 `json_api.ConfigurableJsonAdapter` (not directly registered, but the base several of the above
@@ -212,13 +213,13 @@ All adapters inherit `JobAdapter` (`adapters/base.py`), which supplies retry-wit
 (`request()`), and a default `healthcheck()`. Adapters implement `fetch_summaries()` (required)
 and optionally `fetch_detail()`.
 
-### 5.2 Currently configured companies (65, `config/companies.yaml`)
+### 5.2 Currently configured companies (76, `config/companies.yaml`)
 
 Live, current numbers: `uv run job-hunter source-status`. **Every row is deterministic Python —
 none of it runs an LLM**; collection always executes as plain `asyncio`/httpx/selectolax(/Scrapling)
 code, identically on every run. The only LLM involvement anywhere in the system is later and
 separate: `job-reviewer` scoring the JSON output against a resume — it reads this data, it doesn't
-produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.21), but
+produce it. Getting a *new* source working still takes one-time reverse-engineering (§5.22), but
 that's a cost paid once per company, not per search.
 
 | Key | Company | Adapter | Posted date | Tools used |
@@ -264,6 +265,7 @@ that's a cost paid once per company, not per search.
 | scout_motors | Scout Motors | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic, `?content=true` inlines every description (233 jobs) |
 | meta | Meta | **unsupported** | n/a | robots.txt explicitly prohibits automated collection without Facebook's written permission; job search only renders via an internal Comet/Relay GraphQL contract — see §5.7 |
 | zf | ZF Friedrichshafen AG | zf | Yes (JobPosting microdata, Java `Date.toString()`) | httpx + selectolax — classic SuccessFactors RMK listing table (166 US jobs) reused from `html_paginated`, one bespoke `posted_at` override for a non-JSON-LD microdate; given `career5.successfactors.eu` listing URL was a dead end, real site found via the sample job's own host (§5.14) |
+| schaeffler | Schaeffler | zf | Yes (JobPosting microdata `datePosted`, stable on re-fetch but clustered in the last month — same "republish" caveat as zf) | httpx + selectolax — classic server-rendered SuccessFactors RMK `/search/` page in its *tile* variant (`li.job-tile`, 100/page, city-only location), reusing the `zf` adapter via config; `optionsFacetsDD_country=US` verified exact (695 -> 226); the widget's `/services/recruiting/v1/jobs` API is CSRF-gated and robots.txt-disallowed, so not used; given Vitesco sample (req 42488) is not on this board |
 | hella | Forvia Hella | csod | Yes (`postingEffectiveDate` / JobPosting JSON-LD `DatePosted`) | httpx only — Cornerstone OnDemand, a new platform family; a short-lived anonymous JWT embedded in the plain careersite page's own HTML is replayed as a Bearer token on a public search API (488 jobs, 33 US), full description from each job's own JSON-LD detail page (§5.15) |
 | cnh | CNH Industrial | successfactors_rmk_v2 | Yes (`unifiedStandardStart`, "M/D/YY") | httpx only — same platform/API shape as bmw, reused via config; needed one shared-adapter addition (an `itemprop="description"` fallback) since CNH's detail page has no labeled `.joblayouttoken` for its description (173 US jobs; pagination confirmed non-deterministic run-to-run, see §5.7) |
 | faurecia | Forvia Faurecia | eightfold | Yes (`t_create`, confirmed monotonic — NOT `t_update`) | httpx only — same Eightfold platform as deere but an older API generation (flat response, snake_case fields, absolute detail URL, id-in-path detail fetch); `eightfold.py` generalized to auto-detect both shapes (111 US jobs) |
@@ -272,6 +274,16 @@ that's a cost paid once per company, not per search.
 | mathworks | MathWorks | **unsupported** | n/a | mechanism fully mapped (plain HTML, real `?page=N` pagination, JSON-LD detail) but MathWorks' Akamai bot-management deterministically 403s this project's own identifying User-Agent — see §5.7 |
 | mazda | Mazda North American Operations | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API served from the same `myworkdaysite.com` vanity host as the real candidate-facing page (only 6 jobs at onboarding time) |
 | zipline | Zipline | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic/scout_motors, `?content=true` inlines every description (339 jobs); real board token is `flyzipline`, not the guessable `zipline` (404s) — found via the sample job page's own embedded (empty) `greenhouse-embed` div |
+| latitude_ai | Latitude AI | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic/torc_robotics, `?content=true` inlines every description (41 jobs); lat.ai/careers is a shell over the `latitude` board (not `latitude-ai`); multi-site `location.name` strings ("Pittsburgh, PA, Palo Alto, CA, Detroit, MI") pass through as-is |
+| harley_davidson | Harley-Davidson | successfactors_rmk | Yes (`td.colDate span.jobDate`, agrees with detail-page microdata `datePosted`) | httpx + selectolax — same server-rendered SuccessFactors RMK shape as volkswagen/paccar, `startrow` pagination verified real (86 jobs over 4 pages), unfiltered by country (3 non-U.S. rows excluded by `evaluate_location`); no early-stop (small catalog) |
+| lucid_motors | Lucid Motors | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic/latitude_ai, `?content=true` inlines every description (426 jobs, ~92 non-U.S., mostly Saudi Arabia); board token is `lucidmotors`; `absolute_url` is already the human-facing lucidmotors.com page |
+| volvo_cars | Volvo Cars | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax — same server-rendered SuccessFactors RMK shape as volkswagen/paccar/harley_davidson, but page size is 20 and `startrow` past the end wraps to page 1; uses the unfiltered listing (46 jobs, 9 U.S.-eligible via `location.py`) rather than the site's `location=US` facet, which works (46 -> 9) but would silently lose a mis-tagged U.S. job |
+| cummins | Cummins | oracle_hcm | Yes (`PostedDate`; listing and detail agree for the sample) | httpx only — cummins.jobs is a front end over Oracle HCM (`fa-espx-saasfaprod1.fa.ocs.oraclecloud.com`, site `CX_1`), same public REST API as ford/denso; 1,124 jobs (~490 U.S.) paginated at limit=200; listing order is not date-sorted so no early-stop; `public_url_template` points at Oracle's candidate page |
+| blue_bird | Blue Bird | ultipro | Yes (`PostedDate`; listing and detail agree to the millisecond) | httpx only — a new platform family, UKG Pro Recruiting (§5.21); anonymous POST search (`Top`/`Skip`) plus inline detail JSON, 36 jobs, structured per-job Address city/state/country |
+| applied_intuition | Applied Intuition | ashby | Yes (`publishedAt`) | httpx only — same Ashby public posting API shape as openai/skydio, full `descriptionHtml` inline (307 jobs, 240 U.S.), structured `address.postalAddress` since the bare `location` is city-only; `workplaceType` is "OnSite" on every job so it is weak evidence; list not date-sorted |
+| kodiak | Kodiak | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic/torc_robotics, `?content=true` inlines every description (68 jobs); free-text location strings with inconsistent state forms, plus a state-less "San Francisco Bay Area" that needed a `location.py` metro-area rule |
+| aurora | Aurora | ashby | Yes (`publishedAt`) | httpx only — same Ashby public posting API shape as openai/skydio, 90 jobs with inline `descriptionHtml` and structured `address.postalAddress`; real board slug `aurora-operations-inc` found in the Nuxt runtime config, not the guessable `aurora` (404) |
+| visteon | Visteon | unsupported | n/a | Darwinbox candidate-v2 SPA; the real listing call (`POST /ms/candidateapi/job/alljobs`, JSON with inline descriptions, 106 jobs) was seen once via a rendered page, but Cloudflare then 403s every `/ms/candidateapi/*` request for plain httpx, even after a ~5 min cooldown; unverified beyond that, revisit before considering `stealth_html` |
 | skydio | Skydio | ashby | Yes (`publishedAt`) | httpx only — same Ashby public posting API shape as openai/perplexity, 132 jobs with full `descriptionHtml` inline |
 | intuitive | Intuitive Surgical | smartrecruiters | Yes (`releasedDate`) | httpx only — public SmartRecruiters Job Board API behind an Akamai-blocked branded front end (careers.intuitive.com); a new platform family (§5.18), 677 jobs |
 | jj | Johnson & Johnson | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API behind an Akamai-blocked branded front end (careers.jnj.com), same fix as gm/caterpillar/magna (1,706 jobs); a first-time full-catalog `--refresh-details` run hit an isolated 429 on one job's detail fetch — non-fatal (`collector.py`'s per-job try/except keeps the summary and retries next run), source still completed `ok` |
@@ -289,10 +301,10 @@ that's a cost paid once per company, not per search.
 | torc_robotics | Torc Robotics | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io/torcrobotics is already Greenhouse's own public host, no front end to see through; same shape as anthropic/scout_motors/may_mobility (52 jobs) |
 | hyundai_mobis | Hyundai MOBIS | paylocity | Yes (`PublishedDate`, JSON-LD `datePosted` confirmed a stable but wrong +5h and not used) | httpx + selectolax — a new platform family, Paylocity Recruiting (§5.20); the entire job list, with structured per-job location, is embedded in the listing's own plain HTML as `window.pageData`, no separate API; detail-page JSON-LD is confirmed absent on some jobs, so description comes from label-matched `Description`/`Requirements` divs instead (12 jobs, Mobis Technical Center of North America, Plymouth MI) |
 
-Adapter mix: workday ×16, successfactors_rmk ×6, successfactors_rmk_v2 ×2, lever ×3, ashby ×3,
-stealth_html ×2, oracle_hcm ×4, greenhouse ×7, eightfold ×3, html_paginated ×4, unsupported ×3,
-1 each of smartrecruiters/paycom/paylocity/phenom/html_multi_index/apple/adp_recruiting/bosch/zf/
-csod/icims_attract/dayforce.
+Adapter mix: workday ×16, greenhouse ×10, successfactors_rmk ×8, oracle_hcm ×5, ashby ×5, lever ×3,
+eightfold ×3, html_paginated ×3, stealth_html ×3, unsupported ×4, successfactors_rmk_v2 ×2, zf ×2, 1 each of
+smartrecruiters/paycom/paylocity/ultipro/phenom/html_multi_index/apple/adp_recruiting/bosch/csod/
+icims_attract/dayforce.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.
@@ -647,6 +659,20 @@ The date is likely a periodic "republish" timestamp rather than a true original 
 ones) — still useful for `passes_recency`, but not trusted for early-pagination-stop, and the
 listing is confirmed not reliably sorted newest-first either.
 
+
+**Schaeffler** reuses `zf.py` unchanged, via config only. Its landing page
+(`jobs.schaeffler.com/?currentPage=&pageSize=`) is a client-rendered shell, and the widget's own API
+(`POST /services/recruiting/v1/jobs`, the endpoint BMW's `successfactors_rmk_v2` uses) returns 401
+without a per-page-load `X-CSRF-Token` — and `robots.txt` disallows `/services/` — so it is not used.
+The classic server-rendered `/search/` page is still there and is not disallowed; it uses the
+*tile* variant of the RMK search page (`li.job-tile`, fields repeated for desktop/mobile) rather than
+ZF's `tr.data-row` table, shows only a city (US jobs read "Fort Mill, SC") and no date, and paginates
+100/page via `startrow`. `optionsFacetsDD_country=US` was verified exact by crawling both sets
+(695 -> 226; every ", XX" city is in the filtered set and nothing else is). One of the 226 jobs (a
+Wooster, OH CNC operator posting) served a detail page with an empty job body, so it is stored with
+no description or date — a site-side gap, not an adapter fault. The requested Vitesco sample
+(`career2.successfactors.eu` company `VitescoProd`, req 42488) is a login-flow "verp" widget shell
+with no job content, and Vitesco's own careers URL now redirects to schaeffler.com/careers.
 ### 5.15 The `csod` adapter — a public frontend key minted per page load
 
 Forvia Hella (`hella.csod.com`) runs Cornerstone OnDemand's "Career Site Player" — an Angular
@@ -790,7 +816,33 @@ JSON-LD *was* present, its `datePosted` ran a fixed ~5 hours after the same job'
 original post time either), so `fetch_detail` never overrides `posted_at` at all; the
 listing-level `PublishedDate` captured in `fetch_summaries` is what's kept.
 
-### 5.21 Adding a new source
+### 5.21 The `ultipro` adapter — an anonymous POST search and an inline-JS detail blob
+
+**Blue Bird** (`ultipro.py`, a new adapter and platform family) is on UKG Pro Recruiting (formerly
+UltiPro), a shared ATS hosting many employers at `recruiting.ultipro.com/<tenant>/JobBoard/<guid>`.
+The visible board is a client-side widget with no job data in its raw HTML, but it calls a public,
+unauthenticated `POST <board>/JobBoardView/LoadSearchResults` (confirmed with a bare httpx POST, no
+cookie or token). `Top`/`Skip` pagination is real — a second page differs from the first, and a
+`Skip` past the end returns an empty list — and `totalCount` gives the full count; `Top=500`
+returned all 36 jobs in one call. With `OrderBy` on `PostedDate` descending the list was
+monotonic on this tenant, but no early-stop is used given the catalog size.
+
+The listing carries only a short `BriefDescription`. The full description lives on the detail page
+(`<board>/OpportunityDetail?opportunityId=<id>`) inside an inline
+`new US.Opportunity.CandidateOpportunityDetail({...})` JS call whose argument is plain JSON, parsed
+with `json.JSONDecoder().raw_decode` so nested braces inside the description can't break it. That
+page is also what a person can open, so it is the job's `url` (the search POST is not). The listing
+`PostedDate` agrees with the detail's to the millisecond, so `fetch_detail` never overrides it.
+
+Location: each opportunity has a list of structured `Locations` with an `Address` (city, state
+`Code`, country `Code` such as `USA`). `LocalizedName` is not always a place — Blue Bird has a site
+named "Blue Bird South" whose address is Fort Valley, GA — so the label is built from the structured
+"City, ST" when present and falls back to `LocalizedName` (needed for a bare "Remote", which has no
+city/state). A multi-location job gets a joined `location_raw` and no single city/state.
+`JobLocationType` (values 1/2/None seen) was not mapped to `work_arrangement`, since its meaning was
+not verified against a labeled example.
+
+### 5.22 Adding a new source
 
 A one-time reverse-engineering step, not something that happens on every search: fetch the plain
 page (`scripts/endpoint_probe.py` or curl) to check for a real JSON API or clean static HTML
@@ -1321,7 +1373,7 @@ stops — this is a safe, idempotent skill to invoke any time, not only right af
   Server running locally (or reachable on the LAN) before `job-reviewer` can score anything.
 - The company catalog's history: started from 22 originally requested companies, gained Woven by
   Toyota (onboarded later), and dropped Audi and Mercedes-Benz entirely (neither ever had a working
-  endpoint) — 21 total, then grown steadily via the `onboard-source` skill (§5.21) with each new
+  endpoint) — 21 total, then grown steadily via the `onboard-source` skill (§5.22) with each new
   company's live count, mechanism, and any caveats recorded in its own row/subsection under §5.2 —
   see that section (or `uv run job-hunter source-status`) for the current, authoritative count
   rather than a number restated here that would only go stale again.

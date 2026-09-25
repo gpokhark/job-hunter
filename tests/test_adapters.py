@@ -22,6 +22,7 @@ from job_hunter.adapters.paylocity import PaylocityAdapter
 from job_hunter.adapters.phenom import PhenomAdapter
 from job_hunter.adapters.smartrecruiters import SmartRecruitersAdapter
 from job_hunter.adapters.successfactors_rmk_v2 import SuccessFactorsRmkV2Adapter
+from job_hunter.adapters.ultipro import UltiProAdapter
 from job_hunter.adapters.workday import WorkdayAdapter
 from job_hunter.config import CollectionConfig, CompanyConfig
 from job_hunter.models import JobSummary, WorkArrangement
@@ -1871,3 +1872,97 @@ async def test_paylocity_detail_matches_by_label_not_json_ld():
     assert "Stale JSON-LD" not in detail.description
     assert detail.employment_type == "Full-time"
     assert detail.posted_at is None
+
+
+_ULTIPRO_BOARD = "https://recruiting.example/TEN1/JobBoard/guid-1"
+
+
+def _ultipro_item(job_id, title, locations, posted="2026-09-11T18:40:20.073Z"):
+    return {
+        "Id": job_id, "Title": title, "JobCategoryName": "Engineering", "FullTime": True,
+        "Locations": locations, "PostedDate": posted, "BriefDescription": "short",
+    }
+
+
+def _ultipro_loc(name, city=None, state=None, country="USA"):
+    return {
+        "LocalizedName": name,
+        "Address": {
+            "City": city,
+            "State": {"Code": state, "Name": state} if state else None,
+            "Country": {"Code": country, "Name": "United States"},
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ultipro_listing_paginates_and_builds_locations():
+    """Top/Skip pagination is followed until totalCount is reached; a site named
+    something that isn't a place ("Blue Bird South") must not become location_raw when a
+    structured city/state exists; a bare "Remote" (no city/state) keeps its name; a
+    multi-location job gets no single city/state; and `url` is the browsable detail page."""
+    route = respx.post(f"{_ULTIPRO_BOARD}/JobBoardView/LoadSearchResults")
+    route.side_effect = [
+        httpx.Response(200, json={"totalCount": 3, "opportunities": [
+            _ultipro_item("a1", "Systems Engineer", [_ultipro_loc("Blue Bird South", "Fort Valley", "GA")]),
+            _ultipro_item("a2", "Test Lead", [_ultipro_loc("Remote")]),
+        ]}),
+        httpx.Response(200, json={"totalCount": 3, "opportunities": [
+            _ultipro_item("a3", "Buyer", [
+                _ultipro_loc("Troy, MI", "Troy", "MI"), _ultipro_loc("Macon, GA", "Macon", "GA"),
+            ]),
+        ]}),
+    ]
+    company = CompanyConfig(
+        key="acme", company="Acme", adapter="ultipro", config={"board_url": _ULTIPRO_BOARD + "/", "page_size": 2}
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await UltiProAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert [j.job_id for j in jobs] == ["a1", "a2", "a3"]
+    assert route.calls[1].request.content.decode().count('"Skip":2') == 1
+    first, remote, multi = jobs
+    assert first.location_raw == "Fort Valley, GA"
+    assert (first.city, first.state, first.country) == ("Fort Valley", "GA", "USA")
+    assert remote.location_raw == "Remote" and remote.city is None
+    assert multi.location_raw == "Troy, MI; Macon, GA"
+    assert multi.city is None and multi.state is None
+    assert first.url == f"{_ULTIPRO_BOARD}/OpportunityDetail?opportunityId=a1"
+    assert first.posted_at.strftime("%Y-%m-%d") == "2026-09-11"
+    assert first.department == "Engineering" and first.employment_type == "Full-time"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ultipro_detail_reads_inline_opportunity_json():
+    """The full description exists only inside the inline
+    `new US.Opportunity.CandidateOpportunityDetail({...})` JS call on the detail page."""
+    job_url = f"{_ULTIPRO_BOARD}/OpportunityDetail?opportunityId=a1"
+    html = (
+        "<script>var x = 1; opportunity = new US.Opportunity.CandidateOpportunityDetail("
+        '{"Id":"a1","Description":"<p>Real {braces} description.</p>","Title":"T"}'
+        "); more();</script>"
+    )
+    respx.get(job_url).mock(return_value=httpx.Response(200, text=html))
+    company = CompanyConfig(key="acme", company="Acme", adapter="ultipro", config={"board_url": _ULTIPRO_BOARD})
+    summary = JobSummary(
+        source_key="acme", source_platform="ultipro", company="Acme", job_id="a1", title="T", url=job_url,
+    )
+    async with httpx.AsyncClient() as client:
+        detail = await UltiProAdapter(company, client, CollectionConfig(max_retries=0)).fetch_detail(summary)
+    assert detail.description == "<p>Real {braces} description.</p>"
+    assert detail.posted_at is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ultipro_detail_without_data_blob_fails_loudly():
+    job_url = f"{_ULTIPRO_BOARD}/OpportunityDetail?opportunityId=a1"
+    respx.get(job_url).mock(return_value=httpx.Response(200, text="<html>challenge</html>"))
+    company = CompanyConfig(key="acme", company="Acme", adapter="ultipro", config={"board_url": _ULTIPRO_BOARD})
+    summary = JobSummary(
+        source_key="acme", source_platform="ultipro", company="Acme", job_id="a1", title="T", url=job_url,
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SchemaError):
+            await UltiProAdapter(company, client, CollectionConfig(max_retries=0)).fetch_detail(summary)

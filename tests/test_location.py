@@ -16,6 +16,10 @@ from job_hunter.models import WorkArrangement
         "Plano, TX / Toronto, ON",
         "Germany or United States",
         "Remote, California",
+        "San Francisco Bay Area",
+        "SF Bay Area",
+        "Silicon Valley",
+        "London, UK; San Francisco Bay Area",
     ],
 )
 def test_eligible_locations(text):
@@ -35,6 +39,8 @@ def test_eligible_locations(text):
         "Osnabrück, DE +1 more…",
         "Pickering, ON, CA, L1V 0C4",
         "Wolfsburg, DE, 38436",
+        "Bay Area, Manila, Philippines",
+        "Portland",
     ],
 )
 def test_ineligible_locations(text):

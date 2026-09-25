@@ -63,6 +63,15 @@ NON_US = re.compile(
     r"france|china|australia|singapore|brazil)\b",
     re.I,
 )
+# Named U.S. metro areas that appear with no state or country at all (Kodiak's Greenhouse
+# board: "San Francisco Bay Area" for four postings, otherwise "Mountain View, CA"). Kept to a
+# short allowlist of phrases that only ever mean a U.S. place — never a bare city like
+# "Portland" or "Birmingham" that also exists abroad — since a wrongly rejected genuine U.S.
+# posting is silently lost, while a missing entry here is cheap to add when one is found.
+US_METRO_AREA = re.compile(
+    r"\b(?:(?:san francisco|sf)\s+bay\s+area|silicon\s+valley)\b",
+    re.I,
+)
 US_COUNTRY = re.compile(r"\b(united states(?: of america)?|u\.?s\.?a?\.?|usa)\b", re.I)
 REMOTE_US = re.compile(
     r"(?:remote\s*[-,/()]?\s*(?:in|within)?\s*(?:the\s*)?(?:united states|u\.?s\.?a?\.?))|"
@@ -282,6 +291,16 @@ def evaluate_location(
             True,
             LocationConfidence.HIGH,
             "explicit United States location",
+            country="US",
+            arrangement=work,
+        )
+    if US_METRO_AREA.search(location):
+        # Checked before the non-U.S. rejection below for the same reason state matches are:
+        # "London; San Francisco Bay Area" still offers a genuine U.S. location.
+        return LocationDecision(
+            True,
+            LocationConfidence.HIGH,
+            "recognized U.S. metro area",
             country="US",
             arrangement=work,
         )
