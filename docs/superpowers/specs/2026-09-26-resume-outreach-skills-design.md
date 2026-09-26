@@ -43,8 +43,7 @@ no hook, and nothing personal committed to git.
   not portable; the HTML path replaced it in the source repo.
 - The PostToolUse hook (`convert_resume.py`) — runtime-specific and Write-tool-only; the skills
   call the scripts explicitly instead.
-- A resume queue, running Claude/Hermes from the radar server, an **Outreach** button, LaTeX
-  output. (The renderer boundary in §6.4 keeps a LaTeX backend possible later.)
+- A resume queue, running Claude/Hermes from the radar server, and an **Outreach** button.
 - Applying to jobs, scheduling, or any change to scoring/prefilter (job-hunter's existing
   division of labor holds: Python owns retrieval and deterministic mechanics; the agent skill owns
   the writing).
@@ -58,7 +57,7 @@ no hook, and nothing personal committed to git.
 | D3 | The JD is saved as a file on click (not read from SQLite at skill time) so it survives job closure/`cleanup`, keeps a stable copy of the text the CV was tailored to, and serves outreach and the log later. |
 | D4 | Generated files live under `data/output/<Company_Name>/` (already git-ignored). |
 | D5 | Master resume = newest dated `main_resume_<YYYY-MM-DD>.md` in `data/resume/` (no config edit needed); the profile's `resume_path` is only a fallback. The reviewer uses the same resolver. |
-| D6 | Renderer = HTML → PDF via Playwright/Chromium (cross-platform, no Word). LaTeX and Word are not used. |
+| D6 | Renderer = HTML → PDF via Playwright/Chromium (cross-platform, no Word install needed). HTML is the only output format. |
 | D7 | Skills must work in Claude Code **and** Hermes (and OpenCode), like the existing skills. |
 | D8 | Contact details (name/email/phone/LinkedIn/GitHub) come from a `contact:` block in the git-ignored `config/candidate_profile.yaml`. |
 | D9 | No Outreach button in this iteration. |
@@ -213,8 +212,8 @@ Playwright and pypdf are imported lazily; if they (or Chromium) are missing the 
 exact fix (`uv sync --extra resume` and `uv run playwright install chromium`) and exits 2 rather
 than a traceback. US Letter, 0.5" margins, 1/1.5/2-page targets and fill bands are unchanged from
 the source.
-**Renderer boundary:** the skills only ever call `measure_resume.py <html> [--target-pages N]
-[--save-pdf out.pdf]`; nothing else assumes Chromium, so another backend could replace it later.
+**Skill interface:** the skills only ever call `measure_resume.py <html> [--target-pages N]
+[--save-pdf out.pdf]`, so the skill text never depends on how the PDF is produced.
 **Fonts:** the HTML template's font stack becomes `Arial, "Liberation Sans", Helvetica, sans-serif`
 (metric-compatible fallbacks), and the skill notes that page-fill is measured on the machine that
 renders the PDF, so it is re-measured per machine rather than assumed portable.
@@ -393,5 +392,5 @@ data/output/resume_log.csv
 
 ## 12. Deliberately deferred
 
-An Outreach button; a resume/outreach queue; a LaTeX backend; the job-scraper skill; batch
+An Outreach button; a resume/outreach queue; the job-scraper skill; batch
 "generate for all Saved applications"; showing generated-CV links back on the radar row.
