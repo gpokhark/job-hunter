@@ -1,6 +1,6 @@
 # Live radar dashboard and application tracker — implementation plan
 
-Status: **proposed; no feature code is implemented.**
+Status: **Phase A implemented (merged); Phase B implemented on branch `live-radar-phase-b`.**
 
 Audit date: **2026-09-25** (revision 2: re-audited against the repository — see §10 for what the
 audit changed). Implement in the order below and keep the static file:// radar working throughout.
@@ -124,7 +124,7 @@ notes (e.g. 4,000 chars); reject blank keys/title/url; `score` nullable.
 ### 3.2 Migrations
 
 Phase A appends `_migrate_v3_create_feedback_tombstones`; Phase B appends
-`_migrate_v4_create_applications`. Both use `CREATE TABLE IF NOT EXISTS`; never renumber.
+`_migrate_v4_create_applications`. (Shipped: v4 is `_migrate_v4_create_application_tables` and adds `application_tombstones` alongside `applications`, so a deleted application cannot be resurrected.) Both use `CREATE TABLE IF NOT EXISTS`; never renumber.
 
     CREATE TABLE IF NOT EXISTS feedback_tombstones (
         source_key TEXT NOT NULL, job_id TEXT NOT NULL, deleted_at TEXT NOT NULL,
@@ -213,6 +213,8 @@ Client metadata is never authoritative for persistence.
 
 ### 4.2 Template behavior
 
+(Phase B shipped: a `Track` chip in `.row-end`; the editor panel lives in `.row-detail` for scored rows and toggles under the row for unreviewed rows; edits autosave and always send the full record.)
+
 Add placeholders `__LIVE_MODE__` (`true`/`false`), `__LIVE_STATE_JSON__`, `__LIVE_TOOLBAR__`
 (empty in static), and `__LIVE_SCRIPT__` (empty in static). The existing feedback and filter
 IIFEs are left in place for static mode. In live mode:
@@ -287,7 +289,7 @@ Reload profile/settings per request (soft-exclude edits affect the fallback pool
 | GET /applications | (Phase B) Fresh Applications HTML; `no-store`. |
 | GET /api/state | Versions (archive, assessments, feedback, applications) plus counts. |
 | GET /api/feedback | `{"ok": true, "feedback": {key: {source_key, job_id, label, recorded_at}}}`, keyed `source_key\|job_id`; no descriptions. |
-| GET /api/applications | (Phase B) Application rows. |
+| GET /api/applications | (Phase B) `{ok, applications: {key: item}}`, keyed `source_key\|job_id`. |
 | POST /api/feedback | `{source_key, job_id, label, client_ts}`; `label` null deletes. |
 | POST /api/application | (Phase B) `{source_key, job_id, status?, applied_at?, notes?, client_ts}`; omitted fields unchanged; status null deletes. |
 

@@ -138,6 +138,8 @@ are configurable in `config/settings.yaml`; see `docs/SPEC.md` §8.6 and
 
 **Live mode:** `uv run python scripts/serve_radar.py --open` serves the radar with click-to-save feedback (SQLite), extra filters (min score, posted-within, company, location, has-salary, feedback state, sort), and "New results — Reload" polling. Static `render_radar.py` output and Export Feedback are unchanged; the server is loopback-only by default. Profile edits apply on the next page load; `settings.yaml` edits (age windows, undated days) need a server restart. In live mode, treat the static Export Feedback file as older than any live changes.
 
+**Application tracking (live mode only):** each row has a Track chip that opens an editor panel (status saved/applied/interviewing/offer/rejected/withdrawn, applied date, notes; edits autosave), the toolbar adds Application and Hide applied filters, and `/applications` lists every tracked application. Application data lives in SQLite; `data/applications.json`/`.csv` are refreshed after each save (a refresh failure is reported as a warning and never fails the save), and `uv run job-hunter export-applications` rewrites them on demand. Live saves do not refresh the feedback exports. Applications are never removed by `cleanup`; a posting it deletes shows as "removed".
+
 Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
 button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated
 "irrelevant" tags into safe `soft_exclude_terms` candidates for `candidate_profile.yaml` (never

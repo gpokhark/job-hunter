@@ -226,7 +226,7 @@ ranked `SearchResult` JSON.
   check-mode run bootstraps the snapshot with nothing to compare — no `--accept-baseline` needed
   for that one. See `skills/job-feedback/SKILL.md`.
 
-- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/api/state`, `/api/feedback`; POST `/api/feedback`. Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (the label is client-supplied and validated; company/title/department/score are derived server-side from the `jobs`/`assessments` tables), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`.
+- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application` (application snapshot fields derived server-side; every UI edit sends the full record; `applied_at` can't be cleared; unknown job → 404; 15 s handler timeout; feedback untag is idempotent). Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (the label is client-supplied and validated; company/title/department/score are derived server-side from the `jobs`/`assessments` tables), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`, but each committed application write refreshes `data/applications.json`/`.csv` (`applications_export.py`'s `write_applications_exports`; CSV formula guard prefixes `'` on cells starting `= + - @` tab/CR); a refresh failure surfaces as `export_warning` and never fails or reverts the save. `scripts/render_applications.py` renders `/applications`; `scripts/templates/radar_live_sync.js` is the shared node-tested outbox engine (`tests/js/`) used by both live pages.
 
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from
@@ -339,7 +339,7 @@ ranked `SearchResult` JSON.
   the launcher locates `uv` itself, falls back to `python3` with a stderr note, and always exits 0
   (advisory by design).
 
-- **`storage.py`** — SQLite (WAL). Five tables: `jobs` (one row per `(source_key, job_id)`,
+- **`storage.py`** — SQLite (WAL). Five core tables (plus `feedback_tombstones`, `applications`, `application_tombstones`): `jobs` (one row per `(source_key, job_id)`,
   upserted with `is_new`/`is_changed` from content hash), `runs` (per search invocation),
   `source_health` (per-source rolling status/consecutive-failures/last-success), `assessments`
   (per `(source_key, job_id)`, a local model's verdict — score/recommended/matches/gaps — written
@@ -358,6 +358,13 @@ ranked `SearchResult` JSON.
   suggestion to whichever of all six filtering fields the job's pass/fail reason implicates (not
   just `soft_exclude_terms` — `docs/feedback-exclusion-plan.md` §13).
   Since the live radar, `job_feedback` is also written by `serve_radar.py`, last-writer-wins by event time via `Storage.apply_feedback`/`delete_feedback`: a write applies only if strictly newer than the stored `recorded_at` and any `feedback_tombstones` row (one per untagged job, migration v3, cleared only by a newer label). `apply_radar_feedback.py` uses the export mtime as event time (stale-skipped), so an old export can't overwrite a live label or resurrect an untagged job.
+
+  `applications` (migration v4; one row per `(source_key, job_id)`, status/`applied_at`/notes plus a
+  snapshot of company/title/url/location/posted_at/score/salary_evidence taken once at creation)
+  and `application_tombstones` follow the same last-writer-wins-by-event-time rule through
+  `Storage.apply_application`. No foreign key to `jobs`, so `cleanup` never deletes them (a
+  cleaned-up posting shows as "removed" on `/applications`). Written only by `serve_radar.py`;
+  `job-hunter export-applications` rewrites the JSON/CSV exports.
 
   A job is marked `closed` after 3 consecutive runs missing from a healthy source's listing
   (`mark_missing`); otherwise stays `active` (why previously-seen jobs surface by default).
