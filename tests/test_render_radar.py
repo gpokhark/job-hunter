@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1130,3 +1131,49 @@ def test_negative_day_window_options_are_rejected(option, monkeypatch, capsys):
         main()
     assert exc_info.value.code == 2
     assert "non-negative" in capsys.readouterr().err
+
+
+_GOLDEN_PATH = Path(__file__).parent / "fixtures" / "radar_static_golden.html"
+
+
+def _golden_inputs(tmp_path):
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", posted_at="2026-08-25T00:00:00Z", title="Scored Role",
+                               company="Acme", salary_evidence="$100,000 - $120,000",
+                               visa_sponsorship="available", work_arrangement="remote"),
+                    _candidate("x", "2", posted_at="2026-08-20T00:00:00Z", title="Second Role"),
+                    _candidate("x", "3", posted_at="2026-08-22T00:00:00Z", title="Unreviewed Role"),
+                ],
+                source_health=[
+                    {"source_key": "beta", "company": "Beta Corp", "status": "failed",
+                     "message": "Connection timed out."},
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps([_assessment("x", "1", 88, title="Scored Role"),
+                    _assessment("x", "2", 41, title="Second Role")])
+    )
+    return dict(
+        search_path=search_path, assessments_path=assessments_path, title="Golden Radar",
+        keyword_label=None, new_days=10, now=now,
+    )
+
+
+def test_static_render_is_byte_identical_to_the_pre_live_golden(tmp_path):
+    """Guards the "static report never changes" contract: the golden file was generated from
+    build() *before* the render()/live split, so any static-mode drift fails here."""
+    output_path = tmp_path / "out.html"
+    build(output_path=output_path, **_golden_inputs(tmp_path))
+    actual = output_path.read_text(encoding="utf-8")
+    if os.environ.get("UPDATE_RADAR_GOLDEN") == "1":
+        _GOLDEN_PATH.write_text(actual, encoding="utf-8")
+        pytest.skip("golden regenerated")
+    assert actual == _GOLDEN_PATH.read_text(encoding="utf-8")
