@@ -54,6 +54,8 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +68,20 @@ from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
+_TEMPLATE_DIR = _TEMPLATE_PATH.parent
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+@dataclass(frozen=True)
+class LiveState:
+    """Everything a live render needs that isn't in the archive/assessments: the current
+    feedback rows (keyed "source_key|job_id"), the state versions the client polls against, and
+    the archive filename shown in the footer. Passed in explicitly — the renderer never opens
+    its own DB connection."""
+
+    feedback: dict[str, dict[str, Any]]
+    versions: dict[str, str | None]
+    archive_name: str
 
 
 def _e(text: str | None) -> str:
@@ -202,7 +218,51 @@ def _job_meta_html(location: str | None, salary_evidence: str | None) -> str:
     return " · ".join(parts)
 
 
-def _row_html(row: dict[str, Any]) -> str:
+def _live_row_attrs(
+    *, source_key: str, job_id: str, score: int | None, posted_at: str | None,
+    state: str | None, country: str | None, salary_evidence: str | None,
+) -> str:
+    """Identity + filter attributes for a live row root. Deliberately no company/title (see
+    `_filter_data_attrs`'s docstring); the live script reads those from the visible text."""
+    posted = (posted_at or "")[:10]
+    if not _ISO_DAY.fullmatch(posted):
+        posted = ""
+    return (
+        f' data-source-key="{_attr(source_key)}" data-job-id="{_attr(job_id)}"'
+        f' data-score="{"" if score is None else score}" data-posted="{posted}"'
+        f' data-state="{_attr(state)}" data-country="{_attr(country)}"'
+        f' data-has-salary="{1 if salary_evidence else 0}"'
+    )
+
+
+def _feedback_buttons_html(
+    *, source_key: str, job_id: str, company: str | None, title: str | None,
+    department: str | None, score_attr: str, label: str | None = None,
+) -> str:
+    """The three buttons. With `label=None` (static mode, and any unlabelled live row)
+    this is byte-for-byte the markup the two row builders used to inline."""
+
+    def active(name: str) -> str:
+        return " fb-active" if label == name else ""
+
+    return f'''<span class="feedback-buttons"
+          data-source-key="{_attr(source_key)}" data-job-id="{_attr(job_id)}"
+          data-company="{_attr(company)}" data-title="{_attr(title)}"
+          data-department="{_attr(department)}" data-score="{score_attr}">
+          <button type="button" class="fb-btn fb-relevant{active("relevant")}" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay{active("okay")}" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant{active("irrelevant")}" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>'''
+
+
+def _live_label(feedback: dict[str, dict[str, Any]] | None, source_key: str, job_id: str) -> str | None:
+    if not feedback:
+        return None
+    entry = feedback.get(f"{source_key}|{job_id}")
+    return entry["label"] if entry else None
+
+
+def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, dict[str, Any]] | None = None) -> str:
     tier = _tier(row["score"])
     # "New" is the one signal worth interrupting the title for — it sits right before
     # the title text itself (still inside .job, so the job column's own start position
@@ -236,16 +296,24 @@ def _row_html(row: dict[str, Any]) -> str:
     # track instead of its intended one, misaligning the date/feedback column exactly
     # the way the title column used to be misaligned.
     tags_col = f'<span class="tags">{other_tags}</span>'
-    feedback_buttons = f'''<span class="feedback-buttons"
-          data-source-key="{_attr(row["source_key"])}" data-job-id="{_attr(row["job_id"])}"
-          data-company="{_attr(row["company"])}" data-title="{_attr(row["title"])}"
-          data-department="{_attr(row.get("department"))}" data-score="{row["score"]}">
-          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
-          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
-          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
-        </span>'''
+    label = _live_label(feedback, row["source_key"], row["job_id"]) if live else None
+    feedback_buttons = _feedback_buttons_html(
+        source_key=row["source_key"], job_id=row["job_id"], company=row["company"],
+        title=row["title"], department=row.get("department"), score_attr=str(row["score"]),
+        label=label,
+    )
+    live_attrs = (
+        _live_row_attrs(
+            source_key=row["source_key"], job_id=row["job_id"], score=row["score"],
+            posted_at=row["posted_at"], state=row.get("state"), country=row.get("country"),
+            salary_evidence=row.get("salary_evidence"),
+        )
+        if live
+        else ""
+    )
+    tagged = " fb-tagged" if label else ""
     return f'''
-    <details class="row tier-{tier}" {filter_attrs}>
+    <details class="row tier-{tier}{tagged}" {filter_attrs}{live_attrs}>
       <summary>
         <span class="score">{row["score"]}</span>
         <span class="job">
@@ -277,14 +345,18 @@ def _row_html(row: dict[str, Any]) -> str:
     </details>'''
 
 
-def _rows_html(rows: list[dict[str, Any]], *, empty_message: str) -> str:
+def _rows_html(
+    rows: list[dict[str, Any]], *, empty_message: str, live: bool = False,
+    feedback: dict[str, dict[str, Any]] | None = None,
+) -> str:
     if not rows:
         return f'<p class="empty-state">{_e(empty_message)}</p>'
-    return "".join(_row_html(row) for row in rows)
+    return "".join(_row_html(row, live=live, feedback=feedback) for row in rows)
 
 
 def _never_reviewed_row_html(
-    candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
+    candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int,
+    live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """A candidate with no assessment at all — no matches/gaps to expand into, so this
     stays a plain (non-expandable) row rather than a <details> with nothing to reveal —
@@ -312,16 +384,24 @@ def _never_reviewed_row_html(
     date_display = _fmt_date(posted_at) or _fmt_first_seen(first_seen_at) or "Date unknown"
     meta_html = _job_meta_html(candidate.get("location_raw"), candidate.get("salary_evidence"))
     job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
-    feedback_buttons = f'''<span class="feedback-buttons"
-          data-source-key="{_attr(candidate["source_key"])}" data-job-id="{_attr(candidate["job_id"])}"
-          data-company="{_attr(candidate.get("company"))}" data-title="{_attr(candidate.get("title"))}"
-          data-department="{_attr(candidate.get("department"))}" data-score="">
-          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
-          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
-          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
-        </span>'''
+    label = _live_label(feedback, candidate["source_key"], candidate["job_id"]) if live else None
+    feedback_buttons = _feedback_buttons_html(
+        source_key=candidate["source_key"], job_id=candidate["job_id"], company=candidate.get("company"),
+        title=candidate.get("title"), department=candidate.get("department"), score_attr="",
+        label=label,
+    )
+    live_attrs = (
+        _live_row_attrs(
+            source_key=candidate["source_key"], job_id=candidate["job_id"], score=None,
+            posted_at=posted_at, state=candidate.get("state"), country=candidate.get("country"),
+            salary_evidence=candidate.get("salary_evidence"),
+        )
+        if live
+        else ""
+    )
+    tagged = " fb-tagged" if label else ""
     return f'''
-    <div class="plain-row" {filter_attrs}>
+    <div class="plain-row{tagged}" {filter_attrs}{live_attrs}>
       <div class="plain-row-top">
         <span class="score score-nr" title="Not yet reviewed by the local model">NR</span>
         <span class="job">
@@ -343,13 +423,15 @@ def _never_reviewed_row_html(
 
 
 def _never_reviewed_rows_html(
-    candidates: list[dict[str, Any]], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int
+    candidates: list[dict[str, Any]], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int,
+    live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if not candidates:
         return '<p class="empty-state">Every candidate has been reviewed.</p>'
     return "".join(
         _never_reviewed_row_html(
-            c, now=now, new_days=new_days, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days
+            c, now=now, new_days=new_days, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+            live=live, feedback=feedback,
         )
         for c in candidates
     )
@@ -474,11 +556,91 @@ def _apply_collection_fallback(
     return updated, fallback_provenance
 
 
-def build(
+_LIVE_STATIC_BLOCKS = (
+    ('<div class="feedback-export">', "</div>"),
+    ('<script>\n(function () {\n  // Per-job relevance feedback', "</script>"),
+    ('<script>\n(function () {\n  // Quick-glance client-side filtering', "</script>"),
+)
+
+_LIVE_STYLE = """
+  .live-toolbar-extra { display: contents; }
+  .toolbar-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
+  .toolbar-num, .toolbar-select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
+  .toolbar-num { width: 64px; }
+  .live-bar { position: fixed; bottom: 24px; right: 24px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .live-pill { padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); font-weight: 600; }
+  .live-pill[data-state="live"] { color: var(--accent); }
+  .live-pill[data-state="saving"] { color: var(--ink-soft); }
+  .live-pill[data-state="offline"] { background: var(--accent); color: var(--surface); }
+  .live-notice, .live-reload, .live-archive { padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+  .live-notice:empty { display: none; }
+  .live-archive { color: var(--muted); }
+"""
+
+_LIVE_TOOLBAR = """<span class="live-toolbar-extra">
+      <label class="toolbar-field">Min score <input type="number" id="live-min-score" class="toolbar-num" min="0" max="100" step="5"></label>
+      <label class="toolbar-field">Posted <select id="live-posted-days" class="toolbar-select"><option value="">any time</option><option value="7">last 7 days</option><option value="14">last 14 days</option><option value="30">last 30 days</option></select></label>
+      <label class="toolbar-field">Company <select id="live-company" class="toolbar-select"><option value="">all</option></select></label>
+      <label class="toolbar-field">Location <input type="search" id="live-location" class="toolbar-select" placeholder="state or city" autocomplete="off"></label>
+      <label class="toolbar-field"><input type="checkbox" id="live-has-salary"> Has salary</label>
+      <label class="toolbar-field">Feedback <select id="live-feedback" class="toolbar-select"><option value="">any</option><option value="untagged">untagged</option><option value="relevant">relevant</option><option value="okay">okay</option><option value="irrelevant">irrelevant</option></select></label>
+      <label class="toolbar-field">Sort <select id="live-sort" class="toolbar-select"><option value="default">default</option><option value="score">score</option><option value="newest">newest</option><option value="company">company</option></select></label>
+    </span>"""
+
+
+def _json_for_script(value: Any) -> str:
+    """JSON safe to embed inside a <script> element: `<`, `>`, `&` and the two JS line
+    separators are \\u-escaped so hostile text can never close the tag or break the literal."""
+    return (
+        json.dumps(value, ensure_ascii=False, sort_keys=True)
+        .replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    )
+
+
+def _replace_block(text: str, start: str, end: str, replacement: str) -> str:
+    """Replace the first `start` ... `end` span. Raises (rather than silently no-ops) if the
+    template no longer contains it, so a template edit that breaks live mode fails loudly."""
+    try:
+        first = text.index(start)
+        last = text.index(end, first) + len(end)
+    except ValueError as exc:
+        raise ValueError(f"radar template no longer contains the block starting {start!r}") from exc
+    return text[:first] + replacement + text[last:]
+
+
+def _live_bar_html(live_state: LiveState, sources: str) -> str:
+    rendered = datetime.now().astimezone().strftime("%H:%M:%S")
+    return (
+        '<div class="live-bar">'
+        '<span id="live-status" class="live-pill" role="status" data-state="live">Live</span>'
+        '<span id="live-notice" class="live-notice" role="alert"></span>'
+        '<span id="live-reload" class="live-reload" hidden>New results &mdash; '
+        '<a href="#" id="live-reload-link">Reload</a></span>'
+        f'<span class="live-archive">{_e(live_state.archive_name)} &middot; {_e(sources)} sources '
+        f"&middot; rendered {rendered}</span></div>"
+    )
+
+
+def _live_script_html(live_state: LiveState, stem: str) -> str:
+    boot = {
+        "stem": stem,
+        "feedback": {k: {"label": v["label"]} for k, v in live_state.feedback.items()},
+        "versions": live_state.versions,
+    }
+    parts = [f"<script>window.__RADAR_LIVE__ = {_json_for_script(boot)};</script>"]
+    for name in ("radar_live_core.js", "radar_live_ui.js"):
+        source = (_TEMPLATE_DIR / name).read_text(encoding="utf-8")
+        if "</script" in source.lower():
+            raise ValueError(f"{name} must not contain a script terminator")
+        parts.append(f"<script>\n{source}\n</script>")
+    return "\n".join(parts)
+
+
+def render(
     *,
     search_path: Path,
     assessments_path: Path,
-    output_path: Path,
     title: str,
     keyword_label: str | None,
     new_days: int,
@@ -490,7 +652,11 @@ def build(
     max_age_days: int | None = None,
     keywords: list[str] | None = None,
     collection_fallback: bool = True,
-) -> dict[str, Any]:
+    live: bool = False,
+    live_state: LiveState | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if live and live_state is None:
+        raise ValueError("live=True requires a LiveState")
     search = json.loads(search_path.read_text(encoding="utf-8"))
     candidates = {(c["source_key"], c["job_id"]): c for c in search["candidates"]}
     assessments = json.loads(assessments_path.read_text(encoding="utf-8"))
@@ -560,6 +726,8 @@ def build(
                 "sponsorship_evidence": candidate.get("sponsorship_evidence"),
                 "salary_evidence": candidate.get("salary_evidence"),
                 "work_arrangement": candidate.get("work_arrangement"),
+                "state": candidate.get("state"),
+                "country": candidate.get("country"),
             }
         )
 
@@ -619,6 +787,24 @@ def build(
     )
 
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    if live:
+        for start, end in _LIVE_STATIC_BLOCKS[1:]:
+            template = _replace_block(template, start, end, "")
+        template = _replace_block(
+            template, *_LIVE_STATIC_BLOCKS[0], _live_bar_html(live_state, sources)
+        )
+        template = (
+            template.replace("__LIVE_STYLE__", _LIVE_STYLE)
+            .replace("__LIVE_TOOLBAR__", _LIVE_TOOLBAR)
+            .replace("__LIVE_SCRIPT__", _live_script_html(live_state, search_path.stem))
+        )
+    else:
+        template = (
+            template.replace("__LIVE_STYLE__", "")
+            .replace("__LIVE_TOOLBAR__", "")
+            .replace("__LIVE_SCRIPT__", "")
+        )
+    feedback = live_state.feedback if live_state else None
     out = (
         template.replace("__TITLE__", _e(title))
         .replace("__SEARCH_STEM__", _e(search_path.stem))
@@ -641,27 +827,36 @@ def build(
         .replace("__SPONSORSHIP_NEW__", str(sponsorship_new))
         .replace(
             "__STRONG_ROWS__",
-            _rows_html(strong, empty_message="No candidates scored 75 or above for this search."),
+            _rows_html(
+                strong, empty_message="No candidates scored 75 or above for this search.",
+                live=live, feedback=feedback,
+            ),
         )
         .replace(
             "__REVIEW_ROWS__",
-            _rows_html(review, empty_message="No candidates scored 50-74 for this search."),
+            _rows_html(
+                review, empty_message="No candidates scored 50-74 for this search.",
+                live=live, feedback=feedback,
+            ),
         )
         .replace(
             "__BELOW_50_ROWS__",
-            _rows_html(below_50_rows, empty_message="No candidates scored below 50 for this search."),
+            _rows_html(
+                below_50_rows, empty_message="No candidates scored below 50 for this search.",
+                live=live, feedback=feedback,
+            ),
         )
         .replace(
             "__NEVER_REVIEWED_ROWS__",
             _never_reviewed_rows_html(
                 never_reviewed_candidates, now=now, new_days=new_days,
                 undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+                live=live, feedback=feedback,
             ),
         )
         .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
     )
-    atomic_write_text(output_path, out)
-    return {
+    return out, {
         "strong": len(strong),
         "review": len(review),
         "below_50": below_50,
@@ -674,6 +869,14 @@ def build(
         # or no source failed this run.
         "stale_source_fallback": fallback_provenance,
     }
+
+
+def build(*, output_path: Path, **render_kwargs: Any) -> dict[str, Any]:
+    """Render the static (file://) report and write it atomically. Signature and return value
+    are unchanged for every existing caller/test; live rendering goes through `render()`."""
+    out, stats = render(live=False, **render_kwargs)
+    atomic_write_text(output_path, out)
+    return stats
 
 
 def _default_title(keyword: str | None) -> str:
