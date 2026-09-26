@@ -26,8 +26,9 @@ no hook, and nothing personal committed to git.
 2. `job-hunter export-jd` (CLI) and `POST /api/jd` (live radar server): write one job's JD as a
    text file in `data/output/<Company>/`.
 3. A **Resume** button on live radar rows.
-4. A shared "newest dated master resume" resolver (`job-hunter resume-path`), also used by the
-   local-LLM reviewer.
+4. A shared "newest dated master resume" resolver (`job-hunter resume-files`, which also reports
+   the optional personalization and cover-letter-sample files), also used by the local-LLM reviewer.
+   Owner-controlled personalization at invocation time and via `data/resume/personalization.md` (§6.8).
 5. A `contact:` block in the (git-ignored) candidate profile.
 6. `scripts/measure_resume.py` (HTML → PDF, page-fill check) and `scripts/log_resume.py`
    (append to `data/output/resume_log.csv`), behind an optional `resume` dependency extra.
@@ -61,6 +62,7 @@ no hook, and nothing personal committed to git.
 | D7 | Skills must work in Claude Code **and** Hermes (and OpenCode), like the existing skills. |
 | D8 | Contact details (name/email/phone/LinkedIn/GitHub) come from a `contact:` block in the git-ignored `config/candidate_profile.yaml`. |
 | D9 | No Outreach button in this iteration. |
+| D10 | Personalization stays fully in the user's hands: free-text instructions at every invocation (as today) **and** an optional standing `data/resume/personalization.md`; only integrity rules are non-overridable (see §6.8). |
 
 ## 4. Repository facts this design relies on (audited)
 
@@ -98,7 +100,7 @@ radar row  ──[Resume button]──▶ POST /api/jd ──▶ jd_export.expor
                                     │
                     (user pastes into Claude Code / Hermes)
                                     ▼
-resume-generator skill ─ job-hunter resume-path ─▶ newest data/resume/main_resume_<date>.md
+resume-generator skill ─ job-hunter resume-files ─▶ newest data/resume/main_resume_<date>.md (+ personalization.md, cover-letter sample if present)
                        ─ profile contact block  ─▶ name/email/phone/links
                        ─ writes _draft.html ─▶ scripts/measure_resume.py ─▶ fit report (JSON)
                        ─ writes <Last>_CV_….html ─▶ measure_resume.py --save-pdf ─▶ .pdf
@@ -121,8 +123,12 @@ Precedence: (1) `explicit` if given (must exist, else `FileNotFoundError` naming
 unparseable dates ignored; a name that doesn't match the pattern is never chosen — no
 mtime guessing); (3) `profile.resume_path` if set and existing; else `FileNotFoundError` with a
 message telling the user to add `data/resume/main_resume_<YYYY-MM-DD>.md`.
-The CLI `job-hunter resume-path [--resume PATH]` prints the resolved absolute path (stdout only,
-so a skill can capture it) and exits non-zero with the message on stderr when none is found.
+The same module also provides `find_personalization(root)` (`data/resume/personalization.md` if it
+exists) and `find_cover_sample(root)` (newest dated `data/resume/cover_letter_<date>.md`, same
+filename-date rule). The CLI `job-hunter resume-files [--resume PATH]` prints one JSON object
+`{master_resume, personalization, cover_letter_sample}` (absolute paths; the last two `null` when
+absent) on stdout so a skill can capture everything in one call, and exits non-zero with the
+message on stderr only when no master resume can be found.
 `review_with_lm_studio.py` calls the same function instead of reading `profile.resume_path`
 directly; assessment cache validity still keys on `content_hash` only (updating the resume never
 forces re-review — unchanged).
@@ -274,11 +280,51 @@ Both are `skills/<name>/SKILL.md` with frontmatter `name`, `version: 1.0.0`, `de
   failure returns 503/500 with a generic message and logs the traceback (no path leakage).
 - The prompt/path never come from the browser; the client sends only the two identifiers.
 
+### 6.8 Personalization (owner-controlled, at any time)
+
+Personalization works exactly as it does in the source workflow, plus one persistent file:
+
+1. **At invocation (every run).** Anything the user writes alongside the request is a first-class
+   instruction: page size ("1.5 page", "2 page"), emphasis ("lead with functional safety",
+   "feature the Ford role first"), what to drop ("leave out the older roles"), tone or length
+   changes, a specific recipient name or angle for outreach, extra context about the company or
+   role, "use this JD text" pasted inline, or any combination. The skills must read the whole
+   request for such instructions before applying their defaults, and must not ignore or
+   re-interpret them. The button's copied prompt is plain text the user pastes and can freely
+   extend (e.g. `Use the resume-generator skill on <path>, 2 page, emphasise ADAS validation`).
+2. **Standing preferences (optional file).** `data/resume/personalization.md` (git-ignored via
+   `data/*`, plain markdown, edited any time, no config, no restart) holds standing instructions
+   with optional per-skill sections (`## resume-generator`, `## outreach-writer`, and `## all`).
+   The skills load it on every run via `job-hunter resume-files`; typical content: preferred
+   tone, phrases to avoid or prefer, sections to always/never include, default page size, whether
+   to lead with certain skills, signature/sign-off style, things about the user's situation
+   (e.g. relocation, visa status wording rules, notice period) that may be stated in outreach.
+3. **Precedence** (highest first): integrity rules (below) > instructions in the current request >
+   `personalization.md` > the skill's built-in defaults. A request-time instruction always beats a
+   standing one for that run only; nothing in a run rewrites the personalization file.
+4. **What can never be overridden (integrity rules).** No fabrication (skills, tools,
+   certifications, metrics, employers, dates, experience not in the master resume), no
+   invented recipient names or contact details, no claims contradicting the master resume, and
+   no leaving the job-hunter output folder. If an instruction would violate one, the skill says
+   so briefly and does the honest version instead (e.g. names the closest real experience).
+5. **What can be overridden (format defaults).** Page size, bullet counts, the email's word
+   range and 3-point structure, the cover letter's 5-bullet/~220-word structure, the summary
+   length, the Technical Skills block, filename tokens' page suffix, etc. are *defaults*: the user
+   may change any of them by explicit request or in `personalization.md`. Where a default is
+   overridden, the skill still runs the measurement loop against the overridden target and
+   reports honestly if the result doesn't fit.
+6. **Editing the skills themselves** remains possible (they are plain `SKILL.md` files), with the
+   repo rule that a behavior change bumps the skill's `version` (and the installer re-links/copies).
+   Personalization through the request or the file needs no repo change and is the recommended path.
+7. **Transparency.** Each run's report says which personalization it applied (which parts of the
+   request and which sections of `personalization.md`) so the user can verify and adjust.
+
 ## 7. Data layout
 
 ```
 data/resume/main_resume_<YYYY-MM-DD>.md        # you add these; newest date wins (git-ignored via data/*)
 data/resume/cover_letter_<YYYY-MM-DD>.md       # optional format sample for outreach-writer
+data/resume/personalization.md                 # optional standing preferences (see 6.8)
 data/output/<Company_Name>/JD_<Company>_<Title>_<date>[_N].txt
 data/output/<Company_Name>/<Last>_CV_<Company>_<RoleToken>[_1p5_|_2p_]<date>.html / .pdf
 data/output/<Company_Name>/<Last>_Email_<Company>_<date>.txt
@@ -290,7 +336,7 @@ data/output/resume_log.csv
 
 | Situation | Behavior |
 |---|---|
-| No master resume found | `resume-path` exits 2; message says to add `data/resume/main_resume_<date>.md` (or pass `--resume`). |
+| No master resume found | `resume-files` exits 2; message says to add `data/resume/main_resume_<date>.md` (or pass `--resume`). |
 | Contact missing/placeholder | `contact` exits 2 listing the fields; skills stop and relay it. |
 | `resume` extra / Chromium missing | scripts exit 2 with the exact install commands. |
 | JD job missing / no description | `export-jd` exits 1; server 404/409; UI notice; no file written. |
@@ -304,7 +350,8 @@ data/output/resume_log.csv
   precedence, error messages); `ContactInfo`/`job-hunter contact` (missing/placeholder detection);
   `jd_export` (format golden with HTML description, `<li>`/entity handling, filename
   sanitization incl. hostile titles, idempotent re-export, changed-content `_2`, missing job, empty
-  description, no absolute path in results); `fill_status` bands for 1/1.5/2 pages; `log_resume` CSV
+  description, no absolute path in results); `find_personalization`/`find_cover_sample` and the
+  `resume-files` JSON shape (present/absent/`null`); `fill_status` bands for 1/1.5/2 pages; `log_resume` CSV
   header/row/append; `review_with_lm_studio` uses the resolver (existing tests still pass).
 - **Server:** `POST /api/jd` — success (file exists, relative path, prompt), 404, 409, guards (Host,
   Origin, Content-Type, size, `extra="forbid"`), no absolute path/leak, repeated click
