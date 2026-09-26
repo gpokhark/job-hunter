@@ -1,6 +1,9 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from pydantic import ValidationError
+
 from job_hunter import storage as storage_module
 from job_hunter.models import Assessment, Job, JobFeedback, LocationConfidence
 from job_hunter.normalizer import description_hash
@@ -397,3 +400,125 @@ def test_migrate_skips_already_applied_migrations_on_a_second_open(tmp_path, mon
         pass  # second open: must not re-run migration 1
 
     assert calls == [], "migration 1 ran again on an already-migrated database"
+
+
+# --- live-radar feedback: tombstones + event-time (last-writer-wins) writes ---
+
+
+def _t(minutes: int) -> datetime:
+    return datetime(2026, 9, 26, 12, 0, tzinfo=UTC) + timedelta(minutes=minutes)
+
+
+def test_feedback_label_is_restricted_to_the_three_known_values():
+    with pytest.raises(ValidationError):
+        make_feedback(label="maybe")
+
+
+def test_pre_v3_database_gains_the_tombstone_table_on_open(tmp_path):
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.connection.execute("DROP TABLE feedback_tombstones")
+        storage.connection.execute("PRAGMA user_version = 2")
+        storage.connection.commit()
+    with Storage(db_path) as storage:
+        count = storage.connection.execute("SELECT COUNT(*) FROM feedback_tombstones").fetchone()[0]
+        version = storage.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert count == 0
+    assert version == len(storage_module._MIGRATIONS)
+
+
+def test_apply_feedback_requires_a_strictly_newer_event(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.apply_feedback(make_feedback(label="okay"), event_at=_t(0)) == "applied"
+        # Equal timestamp: rejected (strictly newer required).
+        assert storage.apply_feedback(make_feedback(label="relevant"), event_at=_t(0)) == "stale"
+        # Older: rejected.
+        assert storage.apply_feedback(make_feedback(label="relevant"), event_at=_t(-5)) == "stale"
+        row = storage.get_job_feedback("apple", "99")
+        assert row["label"] == "okay"
+        assert row["recorded_at"] == _t(0).isoformat()
+        # Newer: applied, recorded_at is the event time (not "now").
+        assert storage.apply_feedback(make_feedback(label="irrelevant"), event_at=_t(5)) == "applied"
+        row = storage.get_job_feedback("apple", "99")
+        assert row["label"] == "irrelevant"
+        assert row["recorded_at"] == _t(5).isoformat()
+
+
+def test_apply_feedback_rejects_a_naive_event_time(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage, pytest.raises(ValueError):
+        storage.apply_feedback(make_feedback(), event_at=datetime(2026, 9, 26, 12, 0))
+
+
+def test_apply_feedback_force_bypasses_the_staleness_check(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.apply_feedback(make_feedback(label="okay"), event_at=_t(10))
+        assert (
+            storage.apply_feedback(make_feedback(label="relevant"), event_at=_t(0), force=True)
+            == "applied"
+        )
+        assert storage.get_job_feedback("apple", "99")["label"] == "relevant"
+
+
+def test_delete_feedback_leaves_a_tombstone_that_blocks_older_labels(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.apply_feedback(make_feedback(label="okay"), event_at=_t(0))
+        assert storage.delete_feedback("apple", "99", event_at=_t(10)) == "applied"
+        assert storage.get_job_feedback("apple", "99") is None
+        # An older label (e.g. a stale export) must not resurrect the job.
+        assert storage.apply_feedback(make_feedback(label="relevant"), event_at=_t(5)) == "stale"
+        assert storage.get_job_feedback("apple", "99") is None
+        # A newer label clears the tombstone and lands.
+        assert storage.apply_feedback(make_feedback(label="relevant"), event_at=_t(20)) == "applied"
+        assert storage.get_job_feedback("apple", "99")["label"] == "relevant"
+        tombstones = storage.connection.execute("SELECT * FROM feedback_tombstones").fetchall()
+        assert tombstones == []
+
+
+def test_delete_feedback_is_itself_subject_to_the_staleness_check(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.apply_feedback(make_feedback(label="okay"), event_at=_t(10))
+        assert storage.delete_feedback("apple", "99", event_at=_t(0)) == "stale"
+        assert storage.get_job_feedback("apple", "99")["label"] == "okay"
+
+
+def test_delete_feedback_with_no_prior_row_still_records_a_tombstone(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.delete_feedback("apple", "99", event_at=_t(10)) == "applied"
+        assert storage.apply_feedback(make_feedback(label="okay"), event_at=_t(0)) == "stale"
+
+
+def test_feedback_map_is_keyed_by_source_and_job(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.apply_feedback(make_feedback(source_key="a", job_id="1"), event_at=_t(0))
+        storage.apply_feedback(make_feedback(source_key="b", job_id="2", label="okay"), event_at=_t(0))
+        mapping = storage.feedback_map()
+    assert set(mapping) == {"a|1", "b|2"}
+    assert mapping["b|2"]["label"] == "okay"
+
+
+def test_get_job_snapshot_and_assessment_score_never_expose_the_description(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.get_job_snapshot("acme", "42") is None
+        assert storage.get_assessment_score("acme", "42") is None
+        storage.upsert_job(make_job(description="secret body", posted_at=None))
+        storage.upsert_assessment(make_assessment(score=77))
+        snapshot = storage.get_job_snapshot("acme", "42")
+        assert snapshot["company"] == "Acme"
+        assert snapshot["url"] == "https://example.com/42"
+        assert snapshot["status"] == "active"
+        assert "description" not in snapshot
+        assert storage.get_assessment_score("acme", "42") == 77
+
+
+def test_delete_closed_jobs_leaves_feedback_tombstones_alone(tmp_path):
+    now = datetime.now(UTC)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(job_id="stale", last_seen_at=now - timedelta(days=30)))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='stale'")
+        storage.connection.commit()
+        storage.delete_feedback("acme", "stale", event_at=_t(0))
+        storage.delete_closed_jobs(now - timedelta(days=7))
+        remaining = storage.connection.execute(
+            "SELECT job_id FROM feedback_tombstones"
+        ).fetchall()
+    assert [row["job_id"] for row in remaining] == ["stale"]

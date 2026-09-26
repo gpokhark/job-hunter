@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -136,6 +136,9 @@ class Job(JobSummary):
     prior_assessment: Assessment | None = None
 
 
+FeedbackLabel = Literal["relevant", "okay", "irrelevant"]
+
+
 class JobFeedback(BaseModel):
     """A human's click-through verdict on one job from a rendered radar report — "relevant",
     "okay", or "irrelevant". Keyed by (source_key, job_id), upserted (never appended): a later
@@ -150,7 +153,7 @@ class JobFeedback(BaseModel):
     title: str
     department: str | None = None
     score: int | None = None
-    label: str
+    label: FeedbackLabel
     recorded_at: datetime = Field(default_factory=utcnow)
 
 

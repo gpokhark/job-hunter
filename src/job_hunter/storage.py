@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .location import code_appears_in_own_text, evaluate_location, is_ambiguous_state_country_code
 from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth, WorkArrangement
@@ -37,6 +37,20 @@ def _migrate_v2_add_salary_evidence_column(connection: sqlite3.Connection) -> No
         connection.execute("ALTER TABLE jobs ADD COLUMN salary_evidence TEXT")
 
 
+def _migrate_v3_create_feedback_tombstones(connection: sqlite3.Connection) -> None:
+    """`feedback_tombstones`: one row per (source_key, job_id) whose feedback was deleted
+    ("untagged"), stamped with the deletion's event time. Lets an older write (a stale outbox
+    retry, or an old `radar-feedback-*.json` export) be recognized as older than the untag
+    instead of silently resurrecting the label. Retained forever; a row is cleared only by a
+    strictly newer label."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS feedback_tombstones (
+            source_key TEXT NOT NULL, job_id TEXT NOT NULL, deleted_at TEXT NOT NULL,
+            PRIMARY KEY (source_key, job_id)
+        )"""
+    )
+
+
 #: Ordered, 1-indexed migration steps — entry `N` (1-based) upgrades a database from schema
 #: version `N-1` to version `N`. Tracked via SQLite's own built-in `PRAGMA user_version` integer
 #: (docs/agent-runtime-audit.md's "no explicit schema-version marker" finding) rather than a
@@ -51,7 +65,13 @@ def _migrate_v2_add_salary_evidence_column(connection: sqlite3.Connection) -> No
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_add_sponsorship_columns,
     _migrate_v2_add_salary_evidence_column,
+    _migrate_v3_create_feedback_tombstones,
 ]
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class Storage:
@@ -576,6 +596,121 @@ class Storage:
             "SELECT * FROM job_feedback ORDER BY recorded_at DESC"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_job_feedback(self, source_key: str, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM job_feedback WHERE source_key=? AND job_id=?", (source_key, job_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def feedback_map(self) -> dict[str, dict[str, Any]]:
+        """Every feedback row keyed by "source_key|job_id" — the shape the live radar page and
+        `/api/feedback` use."""
+        return {f"{row['source_key']}|{row['job_id']}": row for row in self.export_job_feedback()}
+
+    def _latest_feedback_event(self, source_key: str, job_id: str) -> datetime | None:
+        """Newest of the stored label's `recorded_at` and any tombstone's `deleted_at`."""
+        times: list[datetime] = []
+        row = self.connection.execute(
+            "SELECT recorded_at FROM job_feedback WHERE source_key=? AND job_id=?",
+            (source_key, job_id),
+        ).fetchone()
+        if row:
+            times.append(_parse_utc(row["recorded_at"]))
+        tomb = self.connection.execute(
+            "SELECT deleted_at FROM feedback_tombstones WHERE source_key=? AND job_id=?",
+            (source_key, job_id),
+        ).fetchone()
+        if tomb:
+            times.append(_parse_utc(tomb["deleted_at"]))
+        return max(times) if times else None
+
+    def apply_feedback(
+        self, feedback: JobFeedback, *, event_at: datetime, force: bool = False
+    ) -> Literal["applied", "stale"]:
+        """Last-writer-wins by *event time*, for every writer (live click, outbox retry, static
+        import): applied only if `event_at` is strictly newer than the stored label and any
+        tombstone (docs/live-radar-dashboard-plan.md section 3.4). The row's `recorded_at`
+        becomes `event_at`, not the wall clock, and a newer label clears the tombstone. One
+        `BEGIN IMMEDIATE` transaction so a concurrent writer can't slip between check and write.
+        `force=True` skips the check (legacy callers with no event time)."""
+        if event_at.tzinfo is None:
+            raise ValueError("event_at must be timezone-aware")
+        event_at = event_at.astimezone(UTC)
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            latest = self._latest_feedback_event(feedback.source_key, feedback.job_id)
+            if not force and latest is not None and event_at <= latest:
+                self.connection.rollback()
+                return "stale"
+            self.connection.execute(
+                """INSERT INTO job_feedback(source_key, job_id, company, title, department, score,
+                   label, recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_key, job_id) DO UPDATE SET company=excluded.company,
+                   title=excluded.title, department=excluded.department, score=excluded.score,
+                   label=excluded.label, recorded_at=excluded.recorded_at""",
+                (
+                    feedback.source_key, feedback.job_id, feedback.company, feedback.title,
+                    feedback.department, feedback.score, feedback.label, event_at.isoformat(),
+                ),
+            )
+            self.connection.execute(
+                "DELETE FROM feedback_tombstones WHERE source_key=? AND job_id=?",
+                (feedback.source_key, feedback.job_id),
+            )
+            self.connection.commit()
+        except BaseException:
+            self.connection.rollback()
+            raise
+        return "applied"
+
+    def delete_feedback(
+        self, source_key: str, job_id: str, *, event_at: datetime
+    ) -> Literal["applied", "stale"]:
+        """Untag: remove the label and record a tombstone at `event_at`, under the same
+        strictly-newer rule as `apply_feedback`. Records the tombstone even when no label row
+        exists, so an older import still can't create one afterward."""
+        if event_at.tzinfo is None:
+            raise ValueError("event_at must be timezone-aware")
+        event_at = event_at.astimezone(UTC)
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            latest = self._latest_feedback_event(source_key, job_id)
+            if latest is not None and event_at <= latest:
+                self.connection.rollback()
+                return "stale"
+            self.connection.execute(
+                "DELETE FROM job_feedback WHERE source_key=? AND job_id=?", (source_key, job_id)
+            )
+            self.connection.execute(
+                """INSERT INTO feedback_tombstones(source_key, job_id, deleted_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(source_key, job_id) DO UPDATE SET deleted_at=excluded.deleted_at""",
+                (source_key, job_id, event_at.isoformat()),
+            )
+            self.connection.commit()
+        except BaseException:
+            self.connection.rollback()
+            raise
+        return "applied"
+
+    def get_job_snapshot(self, source_key: str, job_id: str) -> dict[str, Any] | None:
+        """The few `jobs` columns a feedback write needs, by primary key — deliberately never
+        `description` (the table is ~98% description text)."""
+        row = self.connection.execute(
+            """SELECT source_key, job_id, company, title, department, canonical_url AS url,
+               location_raw, posted_at, salary_evidence, status
+               FROM jobs WHERE source_key=? AND job_id=?""",
+            (source_key, job_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_assessment_score(self, source_key: str, job_id: str) -> int | None:
+        row = self.connection.execute(
+            "SELECT score FROM assessments WHERE source_key=? AND job_id=?", (source_key, job_id)
+        ).fetchone()
+        return int(row["score"]) if row else None
 
     def find_stale_closed_jobs(self, before: datetime) -> list[dict[str, Any]]:
         """Jobs eligible for `job-hunter cleanup`: `status='closed'` and not observed
