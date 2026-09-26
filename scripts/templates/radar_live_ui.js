@@ -46,6 +46,12 @@
   var outbox = loadOutbox();
   var flushing = false, attempt = 0, retryTimer = null;
 
+  // Apply pending outbox entries to labels so unsent writes are visible after reload
+  outbox.filter(function (o) { return o.kind === 'feedback'; }).forEach(function (o) {
+    if (o.payload.label) labels[o.key] = o.payload.label;
+    else delete labels[o.key];
+  });
+
   function loadOutbox() {
     try {
       var parsed = JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]');
@@ -107,6 +113,7 @@
       // Remove only this exact entry: a newer write for the same key may have replaced it
       // while the request was in flight, and must stay queued.
       outbox = outbox.filter(function (o) { return o !== item; });
+      saveOutbox();
       var superseded = outbox.some(function (o) { return o.kind === item.kind && o.key === item.key; });
       if (kind === 'ok') {
         if (!superseded) setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
@@ -114,16 +121,20 @@
         notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status));
         if (!superseded) pullFeedback();
       }
-      saveOutbox();
       flushing = false;
       attempt = 0;
       flush();
-    }).catch(function () {
+    }, function () {
+      // Network failure only (not post-processing errors)
       flushing = false;
       attempt += 1;
       setStatus();
       clearTimeout(retryTimer);
       retryTimer = setTimeout(flush, L.backoffMs(attempt - 1));
+    }).catch(function (e) {
+      // Post-processing errors: reset flushing and surface asynchronously
+      flushing = false;
+      setTimeout(function () { throw e; });
     });
   }
 
