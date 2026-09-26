@@ -102,10 +102,21 @@
         setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
         applyFilters();
       }
+      if (item.kind === 'application') {
+        if (!superseded) {
+          var it = res.json && res.json.item;
+          setApp(item.key, it ? pick(it) : null);
+          applyFilters();
+        }
+        if (res.json && res.json.export_warning) {
+          notice('Saved, but the export files could not be refreshed: ' + res.json.export_warning);
+        }
+      }
     },
     onRejected: function (item, res, superseded) {
       notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status));
       if (item.kind === 'feedback' && !superseded) pullFeedback();
+      if (item.kind === 'application' && !superseded) pullApplications();
     },
     onError: function (e) { setTimeout(function () { throw e; }); }
   });
@@ -115,6 +126,110 @@
     if (o.payload.label) labels[o.key] = o.payload.label; else delete labels[o.key];
   });
   function pendingKeys() { return sync.pending('feedback'); }
+
+  // ---- application tracking --------------------------------------------------------------
+  var APP_LABEL = {
+    saved: 'Saved', applied: 'Applied', interviewing: 'Interviewing', offer: 'Offer',
+    rejected: 'Rejected', withdrawn: 'Withdrawn'
+  };
+  var apps = {};
+  Object.keys(boot.applications || {}).forEach(function (k) { apps[k] = boot.applications[k]; });
+
+  function appFromPayload(key, p) {
+    if (p.status === null) return null;
+    var prev = apps[key];
+    return {
+      status: p.status,
+      applied_at: p.status === 'saved' ? null : (p.applied_at || (prev && prev.applied_at) || todayIso()),
+      notes: p.notes === undefined ? (prev ? prev.notes : null) : p.notes
+    };
+  }
+  function pick(it) { return { status: it.status, applied_at: it.applied_at, notes: it.notes }; }
+
+  function fillPanel(panel, app) {
+    var sel = panel.querySelector('.app-status'), date = panel.querySelector('.app-date');
+    var notes = panel.querySelector('.app-notes');
+    sel.value = app ? app.status : '';
+    date.value = app && app.applied_at ? app.applied_at : '';
+    date.disabled = !app || app.status === 'saved';
+    if (document.activeElement !== notes) notes.value = app && app.notes ? app.notes : '';
+  }
+  function paintApp(row) {
+    var app = apps[keyOf(row)] || null;
+    row.dataset.appStatus = app ? app.status : '';
+    var chip = row.querySelector('.app-chip');
+    if (chip) {
+      chip.textContent = app ? APP_LABEL[app.status] : 'Track';
+      chip.dataset.appStatus = app ? app.status : '';
+      chip.classList.toggle('app-chip-on', !!app);
+    }
+    var panel = row.querySelector('.app-panel');
+    if (panel) fillPanel(panel, app);
+  }
+  function setApp(key, app) {
+    if (app) apps[key] = app; else delete apps[key];
+    (rowsByKey[key] || []).forEach(paintApp);
+  }
+
+  // Unsent application writes from an earlier page load are shown, not lost.
+  sync.restored().filter(function (o) { return o.kind === 'application'; }).forEach(function (o) {
+    var next = appFromPayload(o.key, o.payload);
+    if (next) apps[o.key] = next; else delete apps[o.key];
+  });
+
+  function saveApp(row) {
+    var key = keyOf(row), panel = row.querySelector('.app-panel');
+    var status = panel.querySelector('.app-status').value;
+    var payload = {
+      source_key: row.dataset.sourceKey, job_id: row.dataset.jobId, client_ts: L.isoNow(Date.now())
+    };
+    if (status === '') {
+      var had = apps[key];
+      if (!had) return;
+      if (had.notes && !window.confirm('Stop tracking this job and delete its notes?')) {
+        fillPanel(panel, had);
+        return;
+      }
+      payload.status = null;
+    } else {
+      payload.status = status;
+      var date = panel.querySelector('.app-date').value;
+      if (status !== 'saved' && date) payload.applied_at = date;
+      var notes = panel.querySelector('.app-notes').value;
+      payload.notes = notes.trim() === '' ? null : notes;
+    }
+    setApp(key, appFromPayload(key, payload));
+    sync.queue({ kind: 'application', key: key, payload: payload });
+    applyFilters();
+  }
+
+  document.addEventListener('click', function (evt) {
+    var chip = evt.target.closest ? evt.target.closest('.app-chip') : null;
+    if (!chip) return;
+    // Nested inside <summary>: keep the click from toggling the row.
+    evt.preventDefault();
+    evt.stopPropagation();
+    var row = chip.closest(ROW_SELECTOR), panel = row && row.querySelector('.app-panel');
+    if (!panel) return;
+    if (row.tagName === 'DETAILS') { row.open = true; panel.hidden = false; }
+    else { panel.hidden = !panel.hidden; }
+    if (!panel.hidden) panel.querySelector('.app-status').focus();
+  });
+  document.addEventListener('change', function (evt) {
+    var field = evt.target.closest ? evt.target.closest('.app-status, .app-date, .app-notes') : null;
+    if (!field) return;
+    var row = field.closest(ROW_SELECTOR);
+    if (row) saveApp(row);
+  });
+
+  function pullApplications() {
+    return fetch('/api/applications').then(function (r) { return r.json(); }).then(function (body) {
+      L.reconcileApps(apps, body.applications || {}, sync.pending('application')).forEach(function (c) {
+        setApp(c.key, c.app ? pick(c.app) : null);
+      });
+      applyFilters();
+    }).catch(function () { /* transient; the outbox status already reflects real save failures */ });
+  }
 
   document.addEventListener('click', function (evt) {
     var btn = evt.target.closest ? evt.target.closest('.fb-btn') : null;
@@ -158,11 +273,12 @@
       var v = s.versions || {};
       if (v.archive !== known.archive || v.assessments !== known.assessments) showReload();
       if (v.feedback !== known.feedback) { known.feedback = v.feedback; pullFeedback(); }
+      if (v.applications !== known.applications) { known.applications = v.applications; pullApplications(); }
     }).catch(function () { /* server briefly unreachable; the next tick retries */ });
   }
   setInterval(poll, 10000);
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') { poll(); pullFeedback(); sync.flush(); }
+    if (document.visibilityState === 'visible') { poll(); pullFeedback(); pullApplications(); sync.flush(); }
   });
   window.addEventListener('focus', sync.flush);
   var reloadLink = $('live-reload-link');
@@ -174,6 +290,7 @@
   var minScore = $('live-min-score'), postedDays = $('live-posted-days'), company = $('live-company');
   var locationInput = $('live-location'), hasSalary = $('live-has-salary');
   var feedbackSel = $('live-feedback'), sortSel = $('live-sort');
+  var appSel = $('live-app'), hideApplied = $('live-hide-applied');
   var clearBtn = $('filter-clear'), countEl = $('filter-count');
 
   var companies = {};
@@ -204,6 +321,8 @@
     f.location = locationInput.value;
     f.hasSalary = hasSalary.checked;
     f.feedback = feedbackSel.value;
+    f.app = appSel.value;
+    f.hideApplied = hideApplied.checked;
     f.sort = sortSel.value;
     return f;
   }
@@ -220,6 +339,8 @@
     locationInput.value = f.location;
     hasSalary.checked = f.hasSalary;
     feedbackSel.value = f.feedback;
+    appSel.value = f.app;
+    hideApplied.checked = f.hideApplied;
     sortSel.value = f.sort;
   }
 
@@ -238,7 +359,8 @@
     var active = L.filtersActive(f);
     var visible = 0;
     rows.forEach(function (row) {
-      var ok = L.rowPasses(factsOf.get(row), f, labels[keyOf(row)], today);
+      var ok = L.rowPasses(factsOf.get(row), f, labels[keyOf(row)], today,
+        apps[keyOf(row)] && apps[keyOf(row)].status);
       row.hidden = !ok;
       if (ok) visible += 1;
     });
@@ -271,7 +393,7 @@
     c.addEventListener('click', function () { c.classList.toggle('active'); applyFilters(); });
   });
   [search, minScore, locationInput].forEach(function (el) { el.addEventListener('input', applyFilters); });
-  [postedDays, company, hasSalary, feedbackSel, sortSel].forEach(function (el) {
+  [postedDays, company, hasSalary, feedbackSel, appSel, hideApplied, sortSel].forEach(function (el) {
     el.addEventListener('change', applyFilters);
   });
   clearBtn.addEventListener('click', function () {
@@ -300,6 +422,7 @@
   // ---- boot ------------------------------------------------------------------------------
   writeFilters(L.decodeHash(location.hash));
   rows.forEach(paintRow);
+  rows.forEach(paintApp);
   applyFilters();
   sync.flush();
 })();
