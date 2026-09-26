@@ -125,7 +125,7 @@
       source_key: row.dataset.sourceKey, job_id: row.dataset.jobId, status: status,
       notes: notes.trim() === '' ? null : notes, client_ts: L.isoNow(Date.now())
     };
-    if (status !== 'saved' && date) payload.applied_at = date;
+    if (status !== 'saved') payload.applied_at = date || todayIso();
     refreshRow(row, {
       status: status,
       applied_at: status === 'saved' ? null : (payload.applied_at || row.dataset.appliedAt || todayIso()),

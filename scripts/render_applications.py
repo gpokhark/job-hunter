@@ -6,6 +6,7 @@ descriptions, never database paths. All text is HTML-escaped; embedded JSON is s
 from __future__ import annotations
 
 import html
+import re
 from datetime import date
 from typing import Any, Literal
 
@@ -21,7 +22,10 @@ _SCRIPTS = ("radar_live_core.js", "radar_live_sync.js", "applications_ui.js")
 def days_since(applied_at: str | None, today: date) -> int | None:
     if not applied_at:
         return None
-    return (today - date.fromisoformat(applied_at)).days
+    try:
+        return (today - date.fromisoformat(applied_at)).days
+    except ValueError:
+        return None
 
 
 def posting_state(job_status: str | None) -> Literal["open", "closed", "removed"]:
@@ -110,12 +114,14 @@ def render_applications_page(
     page = _TEMPLATE_PATH.read_text(encoding="utf-8")
     subhead = f"{len(applications)} tracked application{'s' if len(applications) != 1 else ''}. Changes save immediately."
     archive = _e(archive_name) if archive_name else "live"
-    return (
-        page.replace("__TITLE__", "Applications")
-        .replace("__SUBHEAD__", _e(subhead))
-        .replace("__COUNTS__", counts_html)
-        .replace("__EMPTY_HIDDEN__", " hidden" if applications else "")
-        .replace("__ARCHIVE__", archive)
-        .replace("__ROWS__", rows)
-        .replace("__SCRIPTS__", "\n".join(scripts))
-    )
+    tokens = {
+        "__TITLE__": "Applications",
+        "__SUBHEAD__": _e(subhead),
+        "__COUNTS__": counts_html,
+        "__EMPTY_HIDDEN__": " hidden" if applications else "",
+        "__ARCHIVE__": archive,
+        "__ROWS__": rows,
+        "__SCRIPTS__": "\n".join(scripts),
+    }
+    # Single pass: substituted text is never rescanned, so titles/notes containing a token are inert.
+    return re.sub(r"__[A-Z][A-Z0-9_]*__", lambda m: tokens.get(m.group(0), m.group(0)), page)

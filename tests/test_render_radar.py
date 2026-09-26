@@ -1362,3 +1362,46 @@ def test_live_toolbar_bar_and_boot_json_carry_the_application_features(tmp_path)
     assert '"applications": {"x|1":' in html
     assert '\\u003c/script\\u003e' in html and "</script><img" not in html
     assert '"applications": "p1"' in html  # versions.applications reaches the client
+
+
+_HOSTILE = "__STRONG_ROWS__ __REVIEW_ROWS__ __LIVE_SCRIPT__ __TITLE__ __LIVE_BAR__"
+
+
+def _hostile_inputs(tmp_path):
+    inputs = _golden_inputs(tmp_path)
+    data = json.loads(inputs["search_path"].read_text())
+    for cand in data["candidates"]:
+        if cand["job_id"] == "1":
+            cand["title"] = _HOSTILE
+            cand["company"] = _HOSTILE
+    inputs["search_path"].write_text(json.dumps(data))
+    return inputs
+
+
+def test_live_render_is_inert_to_template_tokens_in_titles_and_notes(tmp_path):
+    def live(inputs, notes):
+        state = LiveState(
+            feedback={}, versions={"archive": "a1", "assessments": "s1", "feedback": "f1", "applications": "p1"},
+            archive_name="search.json", applications={"x|1": _app(notes=notes)},
+        )
+        return render(live=True, live_state=state, **inputs)[0]
+
+    base_dir, hostile_dir = tmp_path / "a", tmp_path / "b"
+    base_dir.mkdir()
+    hostile_dir.mkdir()
+    baseline = live(_golden_inputs(base_dir), "plain")
+    page = live(_hostile_inputs(hostile_dir), _HOSTILE)
+    match = re.search(r"window\.__RADAR_LIVE__ = (\{.*?\});</script>", page, re.DOTALL)
+    boot = json.loads(match.group(1))
+    assert boot["applications"]["x|1"]["notes"] == _HOSTILE
+    assert page.count("<script") == baseline.count("<script")
+
+
+def test_static_render_keeps_token_text_in_titles_literal(tmp_path):
+    base, _ = render(**_golden_inputs(tmp_path))
+    hostile_dir = tmp_path / "h"
+    hostile_dir.mkdir()
+    page, _ = render(**_hostile_inputs(hostile_dir))
+    assert _HOSTILE in page
+    assert page.count("<details") == base.count("<details")
+    assert page.count("<script") == base.count("<script")

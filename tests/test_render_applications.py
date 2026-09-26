@@ -110,3 +110,14 @@ def test_saved_row_has_a_disabled_date_and_no_days_text():
     html = _page([_app(status="saved", applied_at=None)])
     assert re.search(r'<input type="date" class="app-date"[^>]*disabled', html)
     assert '<span class="app-days"></span>' in html
+
+
+def test_days_since_tolerates_a_corrupt_date():
+    assert days_since("garbage", TODAY) is None
+
+
+def test_template_tokens_in_titles_and_notes_render_literally():
+    hostile = "__SCRIPTS__ __ROWS__ __COUNTS__ __TITLE__"
+    html = _page([_app(title=hostile, notes=hostile)])
+    assert html.count(hostile) == 2
+    assert html.count("<script") == 4

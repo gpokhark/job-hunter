@@ -367,7 +367,8 @@ def test_export_failure_never_fails_or_reverts_the_save(env, monkeypatch):
 
     monkeypatch.setattr(serve_radar, "write_applications_exports", boom)
     status, _, body = post_app(env, 10, status="applied")
-    assert status == 200 and body["ok"] is True and "disk full" in body["export_warning"]
+    assert status == 200 and body["ok"] is True and "OSError" in body["export_warning"]
+    assert "disk full" not in body["export_warning"]
     assert body["item"]["status"] == "applied"
     with Storage(env.db) as storage:
         assert storage.get_application("acme", "1")["status"] == "applied"

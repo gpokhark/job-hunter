@@ -853,73 +853,62 @@ def render(
     if live:
         for start, end in _LIVE_STATIC_BLOCKS[1:]:
             template = _replace_block(template, start, end, "")
-        template = _replace_block(
-            template, *_LIVE_STATIC_BLOCKS[0], _live_bar_html(live_state, sources)
-        )
-        template = (
-            template.replace("__LIVE_STYLE__", _LIVE_STYLE)
-            .replace("__LIVE_TOOLBAR__", _LIVE_TOOLBAR)
-            .replace("__LIVE_SCRIPT__", _live_script_html(live_state, search_path.stem))
-        )
+        # Placeholder only: data such as archive_name is substituted in the single pass below.
+        template = _replace_block(template, *_LIVE_STATIC_BLOCKS[0], "__LIVE_BAR__")
+        live_tokens = {
+            "__LIVE_STYLE__": _LIVE_STYLE,
+            "__LIVE_TOOLBAR__": _LIVE_TOOLBAR,
+            "__LIVE_SCRIPT__": _live_script_html(live_state, search_path.stem),
+            "__LIVE_BAR__": _live_bar_html(live_state, sources),
+        }
     else:
-        template = (
-            template.replace("__LIVE_STYLE__", "")
-            .replace("__LIVE_TOOLBAR__", "")
-            .replace("__LIVE_SCRIPT__", "")
-        )
+        live_tokens = {
+            "__LIVE_STYLE__": "", "__LIVE_TOOLBAR__": "", "__LIVE_SCRIPT__": "", "__LIVE_BAR__": "",
+        }
     feedback = live_state.feedback if live_state else None
     apps = live_state.applications if live_state else None
-    out = (
-        template.replace("__TITLE__", _e(title))
-        .replace("__SEARCH_STEM__", _e(search_path.stem))
-        .replace("__H1__", _e(title))
-        .replace("__EYEBROW__", _e(eyebrow))
-        .replace("__SUBHEAD__", _e(subhead))
-        .replace("__TOTAL_JOBS__", str(len(candidates)))
-        .replace("__TOTAL_SCORED__", str(len(rows)))
-        .replace("__STRONG_COUNT__", str(len(strong)))
-        .replace("__REVIEW_COUNT__", str(len(review)))
-        .replace("__BELOW_50__", str(below_50))
-        .replace("__SOURCES__", _e(sources))
-        .replace("__FAILED_COUNT__", str(failed_count))
-        .replace("__SOURCE_ISSUES_COUNT__", str(len(source_issues)))
-        .replace("__NEVER_REVIEWED_COUNT__", str(never_reviewed))
-        .replace("__TOTAL_NEW__", str(total_new))
-        .replace("__STRONG_NEW__", str(strong_new))
-        .replace("__REVIEW_NEW__", str(review_new))
-        .replace("__BELOW_50_NEW__", str(below_50_new))
-        .replace("__SPONSORSHIP_NEW__", str(sponsorship_new))
-        .replace(
-            "__STRONG_ROWS__",
-            _rows_html(
-                strong, empty_message="No candidates scored 75 or above for this search.",
-                live=live, feedback=feedback, apps=apps,
-            ),
-        )
-        .replace(
-            "__REVIEW_ROWS__",
-            _rows_html(
-                review, empty_message="No candidates scored 50-74 for this search.",
-                live=live, feedback=feedback, apps=apps,
-            ),
-        )
-        .replace(
-            "__BELOW_50_ROWS__",
-            _rows_html(
-                below_50_rows, empty_message="No candidates scored below 50 for this search.",
-                live=live, feedback=feedback, apps=apps,
-            ),
-        )
-        .replace(
-            "__NEVER_REVIEWED_ROWS__",
-            _never_reviewed_rows_html(
-                never_reviewed_candidates, now=now, new_days=new_days,
-                undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
-                live=live, feedback=feedback, apps=apps,
-            ),
-        )
-        .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
-    )
+    tokens = {
+        **live_tokens,
+        "__TITLE__": _e(title),
+        "__SEARCH_STEM__": _e(search_path.stem),
+        "__H1__": _e(title),
+        "__EYEBROW__": _e(eyebrow),
+        "__SUBHEAD__": _e(subhead),
+        "__TOTAL_JOBS__": str(len(candidates)),
+        "__TOTAL_SCORED__": str(len(rows)),
+        "__STRONG_COUNT__": str(len(strong)),
+        "__REVIEW_COUNT__": str(len(review)),
+        "__BELOW_50__": str(below_50),
+        "__SOURCES__": _e(sources),
+        "__FAILED_COUNT__": str(failed_count),
+        "__SOURCE_ISSUES_COUNT__": str(len(source_issues)),
+        "__NEVER_REVIEWED_COUNT__": str(never_reviewed),
+        "__TOTAL_NEW__": str(total_new),
+        "__STRONG_NEW__": str(strong_new),
+        "__REVIEW_NEW__": str(review_new),
+        "__BELOW_50_NEW__": str(below_50_new),
+        "__SPONSORSHIP_NEW__": str(sponsorship_new),
+        "__STRONG_ROWS__": _rows_html(
+            strong, empty_message="No candidates scored 75 or above for this search.",
+            live=live, feedback=feedback, apps=apps,
+        ),
+        "__REVIEW_ROWS__": _rows_html(
+            review, empty_message="No candidates scored 50-74 for this search.",
+            live=live, feedback=feedback, apps=apps,
+        ),
+        "__BELOW_50_ROWS__": _rows_html(
+            below_50_rows, empty_message="No candidates scored below 50 for this search.",
+            live=live, feedback=feedback, apps=apps,
+        ),
+        "__NEVER_REVIEWED_ROWS__": _never_reviewed_rows_html(
+            never_reviewed_candidates, now=now, new_days=new_days,
+            undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
+            live=live, feedback=feedback, apps=apps,
+        ),
+        "__SOURCE_ISSUES_ROWS__": _source_issue_rows_html(source_issues),
+    }
+    # Single pass: substituted text is never rescanned, so data containing a token is inert.
+    out = re.sub(r"__[A-Z][A-Z0-9_]*__", lambda m: tokens.get(m.group(0), m.group(0)), template)
     return out, {
         "strong": len(strong),
         "review": len(review),

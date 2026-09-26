@@ -291,6 +291,8 @@ def render_applications_html(cfg: ServerConfig) -> str:
     )
 
 
+_EXPORT_LOCK = threading.Lock()
+
 _POST_ROUTES = {"/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite}
 
 
@@ -445,12 +447,14 @@ class RadarHandler(BaseHTTPRequestHandler):
                     )
                     if status == 200 and not response.get("stale"):
                         try:
-                            write_applications_exports(
-                                self.server.cfg.settings.database_path.parent, storage.export_applications()
-                            )
+                            with _EXPORT_LOCK:
+                                write_applications_exports(
+                                    self.server.cfg.settings.database_path.parent,
+                                    storage.export_applications(),
+                                )
                         except Exception as exc:  # noqa: BLE001 - the save is already committed
                             traceback.print_exc()
-                            response["export_warning"] = str(exc)
+                            response["export_warning"] = f"{type(exc).__name__}: could not write applications.json/.csv"
             self._json(status, response)
         except Exception as exc:  # noqa: BLE001
             self._fail(exc)

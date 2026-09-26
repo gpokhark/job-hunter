@@ -185,7 +185,11 @@
     };
     if (status === '') {
       var had = apps[key];
-      if (!had) return;
+      if (!had) {
+        var typed = panel.querySelector('.app-notes').value;
+        if (typed.trim() !== '') notice('Pick a status to start tracking \u2014 notes are saved with it.');
+        return;
+      }
       if (had.notes && !window.confirm('Stop tracking this job and delete its notes?')) {
         fillPanel(panel, had);
         return;
@@ -194,7 +198,7 @@
     } else {
       payload.status = status;
       var date = panel.querySelector('.app-date').value;
-      if (status !== 'saved' && date) payload.applied_at = date;
+      if (status !== 'saved') payload.applied_at = date || todayIso();
       var notes = panel.querySelector('.app-notes').value;
       payload.notes = notes.trim() === '' ? null : notes;
     }
