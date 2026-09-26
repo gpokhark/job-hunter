@@ -122,11 +122,17 @@ Precedence: (1) `explicit` if given (must exist, else `FileNotFoundError` naming
 unparseable dates ignored; a name that doesn't match the pattern is never chosen — no
 mtime guessing); (3) `profile.resume_path` if set and existing; else `FileNotFoundError` with a
 message telling the user to add `data/resume/main_resume_<YYYY-MM-DD>.md`.
+`resolve_master_resume` returns `ResolvedResume(path, source)` with `source` in
+`{"explicit", "dated", "profile"}`. The `resume-files` CLI **refuses** (exit 2) when the only
+candidate is a profile fallback whose filename contains `.example.` (the repo ships
+`config/resume.example.md`), so a resume is never generated from placeholder text; the local
+reviewer keeps today's behavior (it may still use the fallback).
 The same module also provides `find_personalization(root)` (`data/resume/personalization.md` if it
 exists) and `find_cover_sample(root)` (newest dated `data/resume/cover_letter_<date>.md`, same
 filename-date rule). The CLI `job-hunter resume-files [--resume PATH]` prints one JSON object
-`{master_resume, personalization, cover_letter_sample}` (absolute paths; the last two `null` when
-absent) on stdout so a skill can capture everything in one call, and exits non-zero with the
+`{master_resume, master_resume_source, personalization, cover_letter_sample, review_evidence}`
+(absolute paths; the last three `null` when absent; `review_evidence` = newest dated
+`data/resume/Review_Evidence_<date>.md`, used only for IEEE/SAE/committee-style contexts) on stdout so a skill can capture everything in one call, and exits non-zero with the
 message on stderr only when no master resume can be found.
 `review_with_lm_studio.py` calls the same function instead of reading `profile.resume_path`
 directly; assessment cache validity still keys on `content_hash` only (updating the resume never
@@ -145,8 +151,9 @@ contact:
 
 New Pydantic model `ContactInfo` (all fields `str | None`; `name` required for generation) and
 `CandidateProfile.contact: ContactInfo = ContactInfo()`. `candidate_profile.example.yaml` gets the
-block with obvious placeholders. `job-hunter contact` prints the block as JSON and exits non-zero
-listing missing/placeholder fields (a value is a placeholder if it contains `example.com`,
+block with obvious placeholders. `job-hunter contact` prints the block as JSON (plus derived `first_name`/`last_name`) and exits
+non-zero listing missing/placeholder fields; `name` and `email` are required, `phone`, `linkedin`
+and `github` are optional (omitted from the resume header when absent) (a value is a placeholder if it contains `example.com`,
 `xxxx`, or equals the example's text) so skills fail fast with exact instructions and **never
 invent contact details**. `LastName`/first name are derived from `contact.name` by the skills
 (last whitespace-separated token; first token).
@@ -325,6 +332,7 @@ Personalization works exactly as it does in the source workflow, plus one persis
 data/resume/main_resume_<YYYY-MM-DD>.md        # you add these; newest date wins (git-ignored via data/*)
 data/resume/cover_letter_<YYYY-MM-DD>.md       # optional format sample for outreach-writer
 data/resume/personalization.md                 # optional standing preferences (see 6.8)
+data/resume/Review_Evidence_<YYYY-MM-DD>.md    # optional; IEEE/SAE/committee contexts only
 data/output/<Company_Name>/JD_<Company>_<Title>_<date>[_N].txt
 data/output/<Company_Name>/<Last>_CV_<Company>_<RoleToken>[_1p5_|_2p_]<date>.html / .pdf
 data/output/<Company_Name>/<Last>_Email_<Company>_<date>.txt
