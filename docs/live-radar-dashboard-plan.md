@@ -250,7 +250,7 @@ in that file makes them unit-testable with `node --test` where node exists (§8)
    open/closed state in `sessionStorage`.
 5. Sorting within a tier rewrites DOM order inside that tier's `.rows`, keeps the
    `.filter-empty-state` sibling contract, and updates the tier's "Sorted by …" note. Counts:
-   the toolbar shows "Showing X of Y", and each tier count shows "visible/total" while any filter
+   the toolbar shows "Showing X of Y", and each tier count appends ` · N shown` while any filter
    is active; header stats stay as rendered. Filtering never writes data.
 6. Prefer event delegation; add no dependency.
 
@@ -286,12 +286,12 @@ Reload profile/settings per request (soft-exclude edits affect the fallback pool
 | GET / | Fresh radar HTML; `Cache-Control: no-store`. |
 | GET /applications | (Phase B) Fresh Applications HTML; `no-store`. |
 | GET /api/state | Versions (archive, assessments, feedback, applications) plus counts. |
-| GET /api/feedback | Feedback map keyed `source_key\|job_id`; no descriptions. |
+| GET /api/feedback | `{"ok": true, "feedback": {key: {source_key, job_id, label, recorded_at}}}`, keyed `source_key\|job_id`; no descriptions. |
 | GET /api/applications | (Phase B) Application rows. |
 | POST /api/feedback | `{source_key, job_id, label, client_ts}`; `label` null deletes. |
 | POST /api/application | (Phase B) `{source_key, job_id, status?, applied_at?, notes?, client_ts}`; omitted fields unchanged; status null deletes. |
 
-Success: `{ok: true, item}`, `{ok: true, deleted: true}`, or `{ok: true, stale: true, item}` (§3.4).
+Success: `{ok: true, item}`, `{ok: true, deleted: true}`, or `{ok: true, stale: true, item: <row|null>}` (§3.4; `null` = currently untagged).
 Pydantic request models; reject blank/unknown keys; cap the body **before** parsing. Bad
 JSON/validation 400 JSON; unknown job 404; SQLite operational/lock errors 503; unexpected errors
 logged and returned as 500 without stopping the server.

@@ -1,6 +1,6 @@
 ---
 name: job-feedback
-version: 1.1.0
+version: 1.2.0
 description: Turn radar feedback clicks and any candidate_profile.yaml change — a manual edit or a previously-suggested one — into a reviewed, confirmed profile update, showing exactly which jobs it gains/loses. Nothing is ever written to candidate_profile.yaml, or accepted as the new baseline, without your explicit yes.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — every step is a deterministic script over already-collected data; the only "review" involved is the human confirming what to apply.
 metadata:
@@ -70,7 +70,7 @@ Output:
    used and its timestamp — relay that so the user can catch a stale pick (e.g. they tagged jobs
    today but forgot to click Export, and this is picking up an old file). Report the new/changed/
    unchanged/invalid counts. If it says nothing was found, that's a normal outcome, not an error —
-   continue to the next step regardless.
+   continue to the next step regardless. If feedback was tagged in the live radar it is already in SQLite; importing an older exported file is safe — entries older than a live change are skipped and reported as `stale-skipped`.
 3. Generate suggestions from every feedback label recorded so far (not only what step 2 just
    ingested) — every job with feedback is re-evaluated against the CURRENT profile, so this
    spans all six filtering fields, not just `soft_exclude_terms`:

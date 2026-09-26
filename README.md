@@ -136,6 +136,8 @@ keeping the latest `retention.keep_latest_reports_per_slug` of each regardless o
 are configurable in `config/settings.yaml`; see `docs/SPEC.md` §8.6 and
 `docs/retention-cleanup-plan.md` for the full design.
 
+**Live mode:** `uv run python scripts/serve_radar.py --open` serves the radar with click-to-save feedback (SQLite), extra filters (min score, posted-within, company, location, has-salary, feedback state, sort), and "New results — Reload" polling. Static `render_radar.py` output and Export Feedback are unchanged; the server is loopback-only by default.
+
 Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
 button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated
 "irrelevant" tags into safe `soft_exclude_terms` candidates for `candidate_profile.yaml` (never

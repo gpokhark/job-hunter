@@ -48,6 +48,7 @@ scoring into Python or retrieval into the skill.
 - Smoke tests and pipeline test runs must write to a temp output dir (e.g. `--out-dir $(mktemp -d)`) or use a `--dry-run` flag. Never write to the real daily archive or radar HTML.
 - Before any run that writes reports or archives, list the target paths and check whether they exist with `ls -la <exact path>`. Report the result truthfully.
 - Output filenames must reflect filters such as `--companies` and `--project`.
+- `serve_radar.py` tests/smoke runs use a temp project (`--project`); never point one at the real `data/` for experiments.
 
 ## Commands
 
@@ -225,6 +226,8 @@ ranked `SearchResult` JSON.
   check-mode run bootstraps the snapshot with nothing to compare — no `--accept-baseline` needed
   for that one. See `skills/job-feedback/SKILL.md`.
 
+- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/api/state`, `/api/feedback`; POST `/api/feedback`. Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (label/company/title/score derived server-side), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`.
+
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from
   SQLite's current `status='active' AND us_eligible=1` pool, scoped to the archive's own
@@ -354,6 +357,7 @@ ranked `SearchResult` JSON.
   every tagged job against the *current* profile via real `evaluate_prefilter` to route a
   suggestion to whichever of all six filtering fields the job's pass/fail reason implicates (not
   just `soft_exclude_terms` — `docs/feedback-exclusion-plan.md` §13).
+  Since the live radar, `job_feedback` is also written by `serve_radar.py`, last-writer-wins by event time via `Storage.apply_feedback`/`delete_feedback`: a write applies only if strictly newer than the stored `recorded_at` and any `feedback_tombstones` row (one per untagged job, migration v3, cleared only by a newer label). `apply_radar_feedback.py` uses the export mtime as event time (stale-skipped), so an old export can't overwrite a live label or resurrect an untagged job.
 
   A job is marked `closed` after 3 consecutive runs missing from a healthy source's listing
   (`mark_missing`); otherwise stays `active` (why previously-seen jobs surface by default).

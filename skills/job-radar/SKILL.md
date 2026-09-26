@@ -1,6 +1,6 @@
 ---
 name: job-radar
-version: 1.2.0
+version: 1.3.0
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — pure presentation over already-recorded assessments, no scoring happens here.
 metadata:
@@ -116,6 +116,8 @@ Output:
    name and message; mention any non-zero `failed`/`source_issues` count in your chat-facing
    summary too, since a company silently missing from candidates because its collection failed is
    exactly the kind of thing worth surfacing, not just leaving for the report to show.
+
+   **Live option:** for interactive triage, `uv run python scripts/serve_radar.py --project "$CLAUDE_PROJECT_DIR" --open` serves the same report with click-to-save feedback, extra filters, and change polling. It is opt-in, loopback-only by default, and never writes `data/radar/`; the static report remains the deliverable.
 
    A `failed` source's row can also carry a second sentence: the stale-source-collection fallback
    (`docs/pipeline-refilter-stale-source-plan.md` section 4.3). Rather than showing zero jobs for
