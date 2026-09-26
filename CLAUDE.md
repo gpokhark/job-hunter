@@ -43,6 +43,12 @@ Division of responsibility is load-bearing: **Python owns networking, normalizat
 health, and location filtering; the agent skill owns evidence-based resume scoring.** Don't move
 scoring into Python or retrieval into the skill.
 
+## Safe testing — NEVER overwrite real data
+
+- Smoke tests and pipeline test runs must write to a temp output dir (e.g. `--out-dir $(mktemp -d)`) or use a `--dry-run` flag. Never write to the real daily archive or radar HTML.
+- Before any run that writes reports or archives, list the target paths and check whether they exist with `ls -la <exact path>`. Report the result truthfully.
+- Output filenames must reflect filters such as `--companies` and `--project`.
+
 ## Commands
 
 ```bash
@@ -458,6 +464,24 @@ ranked `SearchResult` JSON.
   idempotent. `--no-collection-fallback` (default: on) restores the old no-jobs note. Scoped to
   `render_radar.py` alone, not `collector.py` — the live collector's meaning ("jobs fetched this
   run") stays untouched; this is a report-layer merge, not a live-collection change.
+
+## Job Radar Pipeline
+
+### Archives & refilter
+
+- 'Default' archive = today's full default search across ALL companies. Do not pick it by mtime alone; resolve it by date plus search name, and print the chosen archive path and its company count before running refilter or reports.
+- If a report looks stale (for example, missing tags), check the archive snapshot date before debugging the code.
+
+## Job Sources
+
+### Onboarding a job source checklist
+
+1. Identify the ATS (Greenhouse, Lever, Ashby, Workday, SmartRecruiters, Eightfold, Phenom, etc.) and prefer the JSON API (e.g. Ashby `publishedAt`, JSON-LD `datePosted`) over HTML selectors.
+2. Add config and tests, verify live, and confirm that title, description, `posted_at` and location are all populated.
+3. Update README and docs.
+4. If the site is blocked by Cloudflare or rate-limited, mark it `unsupported` or paced and tell the user.
+
+- On macOS use `sed -i ''` or edit with Python instead.
 
 ## Working in this repo
 
