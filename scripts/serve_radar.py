@@ -7,6 +7,8 @@ Unauthenticated by design: it binds to loopback by default and rejects foreign H
 headers, which guards against accidental cross-origin/DNS-rebinding use — not against anyone
 who can reach a non-loopback bind. Never writes data/radar/ and serves nothing from disk.
 
+Profile edits apply on the next page load; settings.yaml edits need a restart.
+
 Usage:
     uv run python scripts/serve_radar.py                          # newest archive, http://127.0.0.1:8765/
     uv run python scripts/serve_radar.py --keyword "adas" --open
@@ -72,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _bracket(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def display_host(host: str) -> str:
+    """Host to show/open in a URL: wildcard binds map to loopback (the Host allowlist rejects
+    0.0.0.0:PORT), IPv6 literals are bracketed."""
+    if host == "0.0.0.0":
+        return "127.0.0.1"
+    if host in ("::", "::1"):
+        return "[::1]"
+    return _bracket(host)
 
 
 def allowed_hosts(host: str, port: int, extra: Iterable[str] = ()) -> frozenset[str]:
@@ -324,7 +336,7 @@ class RadarHandler(BaseHTTPRequestHandler):
             return
         try:
             req = FeedbackWrite.model_validate(json.loads(body))
-        except (ValueError, UnicodeDecodeError) as exc:
+        except (ValueError, UnicodeDecodeError, RecursionError) as exc:
             detail = (
                 json.loads(exc.json(include_url=False, include_context=False, include_input=False))
                 if isinstance(exc, ValidationError)
@@ -370,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
                 server.note_archive(_resolve_archive(args))
             except FileNotFoundError as exc:
                 print(f"job-hunter: no archive yet ({exc}); the page will answer 503 until one exists.", file=sys.stderr)
-            url = f"http://{args.host}:{server.server_address[1]}/"
+            url = f"http://{display_host(args.host)}:{server.server_address[1]}/"
             print(f"Serving live radar at {url} (Ctrl+C to stop)", flush=True)
             if args.open:
                 webbrowser.open(url)

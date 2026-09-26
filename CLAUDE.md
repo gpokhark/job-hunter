@@ -226,7 +226,7 @@ ranked `SearchResult` JSON.
   check-mode run bootstraps the snapshot with nothing to compare — no `--accept-baseline` needed
   for that one. See `skills/job-feedback/SKILL.md`.
 
-- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/api/state`, `/api/feedback`; POST `/api/feedback`. Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (label/company/title/score derived server-side), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`.
+- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/api/state`, `/api/feedback`; POST `/api/feedback`. Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (the label is client-supplied and validated; company/title/department/score are derived server-side from the `jobs`/`assessments` tables), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`.
 
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from

@@ -6,7 +6,7 @@
   var L = window.RadarLive, boot = window.__RADAR_LIVE__;
   if (!L || !boot) return;
 
-  var OUTBOX_KEY = 'job-hunter-outbox:' + boot.stem;
+  var OUTBOX_KEY = 'job-hunter-outbox';
   var GROUPS_KEY = 'job-hunter-groups:' + boot.stem;
   var ROW_SELECTOR = 'details.row, div.plain-row';
   var SORT_NOTE = {
@@ -124,7 +124,10 @@
       saveOutbox();
       var superseded = outbox.some(function (o) { return o.kind === item.kind && o.key === item.key; });
       if (kind === 'ok') {
-        if (!superseded) setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
+        if (!superseded) {
+          setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
+          applyFilters();
+        }
       } else {
         notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status));
         if (!superseded) pullFeedback();

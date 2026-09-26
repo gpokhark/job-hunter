@@ -225,6 +225,24 @@ def test_missing_archive_is_a_clear_503_not_a_crash(env):
     assert env.request("GET", "/api/state")[2]["archive_name"] is None
 
 
+def test_display_host():
+    d = serve_radar.display_host
+    assert d("127.0.0.1") == "127.0.0.1"
+    assert d("localhost") == "localhost"
+    assert d("0.0.0.0") == "127.0.0.1"
+    assert d("::") == "[::1]"
+    assert d("::1") == "[::1]"
+    assert d("192.168.1.5") == "192.168.1.5"
+    assert d("fe80::1") == "[fe80::1]"
+
+
+def test_deeply_nested_json_is_a_400_and_server_survives(env):
+    raw = "[" * 60000
+    status, _, body = env.request("POST", "/api/feedback", raw=raw, headers={"Content-Type": "application/json"})
+    assert status == 400 and body["ok"] is False
+    assert env.request("GET", "/api/state")[0] == 200
+
+
 def test_allowed_hosts_rules():
     assert serve_radar.allowed_hosts("127.0.0.1", 8765) == {
         "127.0.0.1:8765", "localhost:8765", "[::1]:8765"
@@ -241,6 +259,8 @@ def test_non_loopback_warning():
 
 
 def test_port_collision_and_held_lock_are_clean_failures(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "settings.yaml").write_text(f"database_path: {tmp_path}/data/jobs.sqlite3\n")
     monkeypatch.chdir(tmp_path)
@@ -248,9 +268,9 @@ def test_port_collision_and_held_lock_are_clean_failures(tmp_path, monkeypatch, 
     env_dir.mkdir()
     e = Env(env_dir)
     try:
-        assert serve_radar.main(["--port", str(e.port), "--host", "127.0.0.1"]) == 2
+        assert serve_radar.main(["--project", str(tmp_path), "--port", str(e.port), "--host", "127.0.0.1"]) == 2
         assert "cannot listen" in capsys.readouterr().err
     finally:
         e.close()
     with run_lock("radar-server"):
-        assert serve_radar.main(["--port", "0"]) == 2
+        assert serve_radar.main(["--project", str(tmp_path), "--port", "0"]) == 2

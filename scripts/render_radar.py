@@ -987,7 +987,6 @@ def main() -> int:
     chdir_to_project_root(args.project)
     args.search = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
 
-
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
 
     settings = load_settings()
