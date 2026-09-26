@@ -3,8 +3,8 @@
 // source of truth; localStorage holds only a bounded outbox of unsent writes.
 (function () {
   'use strict';
-  var L = window.RadarLive, boot = window.__RADAR_LIVE__;
-  if (!L || !boot) return;
+  var L = window.RadarLive, S = window.RadarLiveSync, boot = window.__RADAR_LIVE__;
+  if (!L || !S || !boot) return;
 
   var OUTBOX_KEY = 'job-hunter-outbox';
   var GROUPS_KEY = 'job-hunter-groups:' + boot.stem;
@@ -43,25 +43,6 @@
   // ---- feedback state + outbox -----------------------------------------------------------
   var labels = {};
   Object.keys(boot.feedback).forEach(function (k) { labels[k] = boot.feedback[k].label; });
-  var outbox = loadOutbox();
-  var flushing = false, attempt = 0, retryTimer = null;
-
-  // Apply pending outbox entries to labels so unsent writes are visible after reload
-  outbox.filter(function (o) { return o.kind === 'feedback'; }).forEach(function (o) {
-    if (o.payload.label) labels[o.key] = o.payload.label;
-    else delete labels[o.key];
-  });
-
-  function loadOutbox() {
-    try {
-      var parsed = JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) { return []; }
-  }
-  function saveOutbox() {
-    try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); } catch (e) { /* private mode / quota */ }
-  }
-  function pendingKeys() { return outbox.filter(function (o) { return o.kind === 'feedback'; }).map(function (o) { return o.key; }); }
 
   function paintRow(row) {
     var label = labels[keyOf(row)] || null;
@@ -75,14 +56,6 @@
     (rowsByKey[key] || []).forEach(paintRow);
   }
 
-  function setStatus() {
-    var el = $('live-status');
-    if (!el) return;
-    var state = flushing ? 'saving' : (outbox.length ? 'offline' : 'live');
-    el.dataset.state = state;
-    el.textContent = state === 'saving' ? 'Saving…'
-      : state === 'offline' ? 'Offline (' + outbox.length + ' unsaved)' : 'Live';
-  }
   var noticeTimer = null;
   function notice(message) {
     var el = $('live-notice');
@@ -92,66 +65,56 @@
     noticeTimer = setTimeout(function () { el.textContent = ''; }, 8000);
   }
 
-  function send(item) {
-    return fetch('/api/feedback', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item.payload)
-    }).then(function (res) {
-      return res.json().catch(function () { return null; }).then(function (json) {
-        return { status: res.status, json: json };
+  function safeStorage() {
+    try { var s = window.localStorage; s.getItem('job-hunter-probe'); return s; } catch (e) {
+      var mem = {};
+      return {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+        setItem: function (k, v) { mem[k] = String(v); }
+      };
+    }
+  }
+  var SEND_URL = { feedback: '/api/feedback', application: '/api/application' };
+
+  function renderStatus(state, unsaved) {
+    var el = $('live-status');
+    if (!el) return;
+    el.dataset.state = state;
+    el.textContent = state === 'saving' ? 'Saving\u2026'
+      : state === 'offline' ? 'Offline (' + unsaved + ' unsaved)' : 'Live';
+  }
+
+  var sync = S.createSync({
+    storage: safeStorage(),
+    storageKey: OUTBOX_KEY,
+    send: function (item) {
+      return fetch(SEND_URL[item.kind], {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item.payload)
+      }).then(function (res) {
+        return res.json().catch(function () { return null; }).then(function (json) {
+          return { status: res.status, json: json };
+        });
       });
-    });
-  }
-
-  function scheduleRetry() {
-    flushing = false;
-    attempt += 1;
-    setStatus();
-    clearTimeout(retryTimer);
-    retryTimer = setTimeout(flush, L.backoffMs(attempt - 1));
-  }
-
-  function flush() {
-    if (flushing || !outbox.length) { setStatus(); return; }
-    flushing = true;
-    setStatus();
-    var item = outbox[0];
-    send(item).then(function (res) {
-      var kind = L.classifyStatus(res.status);
-      if (kind === 'retry') { scheduleRetry(); return; }
-      // Remove only this exact entry: a newer write for the same key may have replaced it
-      // while the request was in flight, and must stay queued.
-      outbox = outbox.filter(function (o) { return o !== item; });
-      saveOutbox();
-      var superseded = outbox.some(function (o) { return o.kind === item.kind && o.key === item.key; });
-      if (kind === 'ok') {
-        if (!superseded) {
-          setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
-          applyFilters();
-        }
-      } else {
-        notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status));
-        if (!superseded) pullFeedback();
+    },
+    onState: renderStatus,
+    onOk: function (item, res, superseded) {
+      if (item.kind === 'feedback' && !superseded) {
+        setLabel(item.key, res.json && res.json.item ? res.json.item.label : null);
+        applyFilters();
       }
-      flushing = false;
-      attempt = 0;
-      flush();
-    }, function () {
-      // Network failure only (not post-processing errors)
-      scheduleRetry();
-    }).catch(function (e) {
-      // Post-processing errors: reset flushing and surface asynchronously
-      flushing = false;
-      setStatus();
-      setTimeout(function () { throw e; });
-    });
-  }
+    },
+    onRejected: function (item, res, superseded) {
+      notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status));
+      if (item.kind === 'feedback' && !superseded) pullFeedback();
+    },
+    onError: function (e) { setTimeout(function () { throw e; }); }
+  });
 
-  function queue(item) {
-    outbox = L.enqueue(outbox, item);
-    saveOutbox();
-    setStatus();
-    flush();
-  }
+  // Apply pending outbox entries to labels so unsent writes are visible after reload.
+  sync.restored().filter(function (o) { return o.kind === 'feedback'; }).forEach(function (o) {
+    if (o.payload.label) labels[o.key] = o.payload.label; else delete labels[o.key];
+  });
+  function pendingKeys() { return sync.pending('feedback'); }
 
   document.addEventListener('click', function (evt) {
     var btn = evt.target.closest ? evt.target.closest('.fb-btn') : null;
@@ -164,7 +127,7 @@
     var key = keyOf(row);
     var next = labels[key] === btn.dataset.label ? null : btn.dataset.label;
     setLabel(key, next);
-    queue({
+    sync.queue({
       kind: 'feedback', key: key,
       payload: {
         source_key: row.dataset.sourceKey, job_id: row.dataset.jobId, label: next,
@@ -199,9 +162,9 @@
   }
   setInterval(poll, 10000);
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') { poll(); pullFeedback(); flush(); }
+    if (document.visibilityState === 'visible') { poll(); pullFeedback(); sync.flush(); }
   });
-  window.addEventListener('focus', flush);
+  window.addEventListener('focus', sync.flush);
   var reloadLink = $('live-reload-link');
   if (reloadLink) reloadLink.addEventListener('click', function (evt) { evt.preventDefault(); location.reload(); });
 
@@ -338,6 +301,5 @@
   writeFilters(L.decodeHash(location.hash));
   rows.forEach(paintRow);
   applyFilters();
-  setStatus();
-  flush();
+  sync.flush();
 })();

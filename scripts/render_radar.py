@@ -629,7 +629,7 @@ def _live_script_html(live_state: LiveState, stem: str) -> str:
         "versions": live_state.versions,
     }
     parts = [f"<script>window.__RADAR_LIVE__ = {_json_for_script(boot)};</script>"]
-    for name in ("radar_live_core.js", "radar_live_ui.js"):
+    for name in ("radar_live_core.js", "radar_live_sync.js", "radar_live_ui.js"):
         source = (_TEMPLATE_DIR / name).read_text(encoding="utf-8")
         if "</script" in source.lower():
             raise ValueError(f"{name} must not contain a script terminator")

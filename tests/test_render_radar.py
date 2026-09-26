@@ -1287,7 +1287,15 @@ def test_live_scripts_contain_no_template_tokens_or_script_terminators():
     scripts_dir = Path(__file__).parents[1] / "scripts" / "templates"
     template = (scripts_dir / "radar_template.html").read_text(encoding="utf-8")
     tokens = set(re.findall(r"__[A-Z][A-Z0-9_]*__", template))
-    for name in ("radar_live_core.js", "radar_live_ui.js"):
+    for name in ("radar_live_core.js", "radar_live_sync.js", "radar_live_ui.js"):
         source = (scripts_dir / name).read_text(encoding="utf-8")
         assert "</script" not in source.lower()
         assert not {t for t in tokens if t in source}, name
+
+
+def test_live_page_inlines_the_sync_engine_between_core_and_ui(tmp_path):
+    html, _ = _live_html(tmp_path)
+    core = html.index("root.RadarLive = api")
+    sync = html.index("root.RadarLiveSync = api")
+    ui = html.index("var L = window.RadarLive, S = window.RadarLiveSync, boot = window.__RADAR_LIVE__")
+    assert core < sync < ui
