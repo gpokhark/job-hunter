@@ -893,8 +893,9 @@ def _default_title(keyword: str | None) -> str:
     return f"{' & '.join(parts)} Radar"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    """The flags that choose *which* report to build (archive, scope, windows) — shared by this
+    script's CLI and `serve_radar.py` so the two can never drift apart."""
     parser.add_argument(
         "--search", type=Path, default=None,
         help=(
@@ -905,10 +906,6 @@ def main() -> int:
     )
     parser.add_argument(
         "--assessments", type=Path, default=Path("data/assessments.json"), help="assessments JSON to read"
-    )
-    parser.add_argument(
-        "--output", type=Path, default=None,
-        help="HTML path (default: data/radar/<search filename>.html)",
     )
     parser.add_argument("--title", default=None, help="page title (default derived from --keyword)")
     parser.add_argument(
@@ -943,6 +940,37 @@ def main() -> int:
             "note-with-no-jobs behavior for a source that failed to scrape this run"
         ),
     )
+
+
+def selection_render_kwargs(
+    args: argparse.Namespace, settings: Any, profile: CandidateProfile | None
+) -> dict[str, Any]:
+    keywords = [t.strip() for t in args.keyword.split(",") if t.strip()] if args.keyword else None
+    return dict(
+        title=args.title or _default_title(args.keyword),
+        keyword_label=args.keyword,
+        new_days=args.new_days,
+        undated_new_days=(
+            args.undated_new_days if args.undated_new_days is not None else settings.search.undated_new_days
+        ),
+        undated_stale_days=(
+            args.undated_stale_days if args.undated_stale_days is not None else settings.search.undated_stale_days
+        ),
+        database_path=settings.database_path,
+        profile=profile,
+        max_age_days=settings.search.max_posting_age_days,
+        keywords=keywords,
+        collection_fallback=not args.no_collection_fallback,
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_selection_arguments(parser)
+    parser.add_argument(
+        "--output", type=Path, default=None,
+        help="HTML path (default: data/radar/<search filename>.html)",
+    )
     parser.add_argument(
         "--result-json", type=Path, default=None,
         help=(
@@ -959,30 +987,15 @@ def main() -> int:
     chdir_to_project_root(args.project)
     args.search = resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
 
+
     output_path = args.output or Path("data/radar") / f"{args.search.stem}.html"
-    title = args.title or _default_title(args.keyword)
 
     settings = load_settings()
-    undated_new_days = args.undated_new_days if args.undated_new_days is not None else settings.search.undated_new_days
-    undated_stale_days = (
-        args.undated_stale_days if args.undated_stale_days is not None else settings.search.undated_stale_days
-    )
-    keywords = [term.strip() for term in args.keyword.split(",") if term.strip()] if args.keyword else None
-
     stats = build(
         search_path=args.search,
         assessments_path=args.assessments,
         output_path=output_path,
-        title=title,
-        keyword_label=args.keyword,
-        new_days=args.new_days,
-        undated_new_days=undated_new_days,
-        undated_stale_days=undated_stale_days,
-        database_path=settings.database_path,
-        profile=load_profile(),
-        max_age_days=settings.search.max_posting_age_days,
-        keywords=keywords,
-        collection_fallback=not args.no_collection_fallback,
+        **selection_render_kwargs(args, settings, load_profile()),
     )
     print(
         f"Wrote {output_path} | strong={stats['strong']} review={stats['review']} "
