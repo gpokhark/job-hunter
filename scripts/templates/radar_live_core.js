@@ -8,11 +8,13 @@
   var MAX_OUTBOX = 200;
   var SORT_MODES = ['default', 'score', 'newest', 'company'];
   var FEEDBACK_FILTERS = ['untagged', 'relevant', 'okay', 'irrelevant'];
+  var APP_STATUSES = ['saved', 'applied', 'interviewing', 'offer', 'rejected', 'withdrawn'];
 
   function emptyFilters() {
     return {
       query: '', tags: [], arrangement: [], sponsorship: [], minScore: null, postedDays: null,
-      company: '', location: '', hasSalary: false, feedback: '', sort: 'default'
+      company: '', location: '', hasSalary: false, feedback: '', sort: 'default',
+      app: '', hideApplied: false
     };
   }
 
@@ -20,14 +22,14 @@
   function filtersActive(f) {
     return !!(f.query.trim() || f.tags.length || f.arrangement.length || f.sponsorship.length ||
       f.minScore !== null || f.postedDays !== null || f.company || f.location.trim() ||
-      f.hasSalary || f.feedback);
+      f.hasSalary || f.feedback || f.app || f.hideApplied);
   }
 
   function dayDiff(todayIso, dayIso) {
     return Math.round((Date.parse(todayIso + 'T00:00:00Z') - Date.parse(dayIso + 'T00:00:00Z')) / 86400000);
   }
 
-  function rowPasses(facts, f, label, todayIso) {
+  function rowPasses(facts, f, label, todayIso, appStatus) {
     var q = f.query.trim().toLowerCase();
     if (q && (facts.company + ' ' + facts.title).toLowerCase().indexOf(q) === -1) return false;
     if (f.tags.length && !f.tags.some(function (t) {
@@ -48,6 +50,10 @@
     if (f.hasSalary && !facts.hasSalary) return false;
     if (f.feedback === 'untagged' && label) return false;
     if (f.feedback && f.feedback !== 'untagged' && label !== f.feedback) return false;
+    var app = appStatus || null;
+    if (f.hideApplied && app && app !== 'saved') return false;
+    if (f.app === 'untracked' && app) return false;
+    if (f.app && f.app !== 'untracked' && app !== f.app) return false;
     return true;
   }
 
@@ -82,6 +88,8 @@
     if (f.location) add('loc', f.location);
     if (f.hasSalary) add('sal', '1');
     if (f.feedback) add('fb', f.feedback);
+    if (f.app) add('app', f.app);
+    if (f.hideApplied) add('hideapp', '1');
     if (f.sort !== 'default') add('sort', f.sort);
     return parts.join('&');
   }
@@ -105,6 +113,8 @@
       else if (key === 'loc') f.location = value;
       else if (key === 'sal') f.hasSalary = value === '1';
       else if (key === 'fb') { if (FEEDBACK_FILTERS.indexOf(value) !== -1) f.feedback = value; }
+      else if (key === 'app') { if (value === 'untracked' || APP_STATUSES.indexOf(value) !== -1) f.app = value; }
+      else if (key === 'hideapp') f.hideApplied = value === '1';
       else if (key === 'sort') { if (SORT_MODES.indexOf(value) !== -1) f.sort = value; }
     });
     return f;
@@ -147,11 +157,31 @@
     return changes;
   }
 
+  function sameApp(a, b) {
+    return a.status === b.status && (a.applied_at || null) === (b.applied_at || null) &&
+      (a.notes || null) === (b.notes || null);
+  }
+
+  // localApps / serverApps: {key: {status, applied_at, notes}}; pendingKeys: keys with an unsent write.
+  function reconcileApps(localApps, serverApps, pendingKeys) {
+    var changes = [], seen = {};
+    Object.keys(serverApps).forEach(function (k) {
+      seen[k] = true;
+      if (pendingKeys.indexOf(k) !== -1) return;
+      if (!localApps[k] || !sameApp(localApps[k], serverApps[k])) changes.push({ key: k, app: serverApps[k] });
+    });
+    Object.keys(localApps).forEach(function (k) {
+      if (seen[k] || pendingKeys.indexOf(k) !== -1) return;
+      changes.push({ key: k, app: null });
+    });
+    return changes;
+  }
+
   var api = {
-    SORT_MODES: SORT_MODES, emptyFilters: emptyFilters, filtersActive: filtersActive,
+    SORT_MODES: SORT_MODES, APP_STATUSES: APP_STATUSES, emptyFilters: emptyFilters, filtersActive: filtersActive,
     rowPasses: rowPasses, sortOrder: sortOrder, encodeHash: encodeHash, decodeHash: decodeHash,
     enqueue: enqueue, classifyStatus: classifyStatus, backoffMs: backoffMs, isoNow: isoNow,
-    reconcile: reconcile
+    reconcile: reconcile, reconcileApps: reconcileApps
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RadarLive = api;
