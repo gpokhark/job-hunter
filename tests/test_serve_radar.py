@@ -1,8 +1,10 @@
 import http.client
 import json
 import os
+import socket
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -116,7 +118,7 @@ def test_root_serves_a_live_page_without_writing_radar_files(env):
 
 
 def test_unknown_routes_and_data_files_are_never_served(env):
-    for path in ("/nope", "/data/jobs.sqlite3", "/../etc/passwd", "/api", "/applications"):
+    for path in ("/nope", "/data/jobs.sqlite3", "/../etc/passwd", "/api", "/applications/x"):
         status, _, _ = env.request("GET", path)
         assert status == 404, path
 
@@ -274,3 +276,168 @@ def test_port_collision_and_held_lock_are_clean_failures(tmp_path, monkeypatch, 
         e.close()
     with run_lock("radar-server"):
         assert serve_radar.main(["--project", str(tmp_path), "--port", "0"]) == 2
+
+
+def post_app(env, seconds_ago, job_id="1", **fields):
+    body = {"source_key": "acme", "job_id": job_id, "client_ts": _ts(seconds_ago)}
+    body.update(fields)
+    return env.request("POST", "/api/application", body)
+
+
+def test_application_create_update_and_delete_round_trip(env):
+    status, _, body = post_app(env, 60, status="applied", notes="referral")
+    assert status == 200 and body["ok"] is True
+    item = body["item"]
+    assert (item["status"], item["notes"], item["company"], item["score"]) == ("applied", "referral", "Acme", 82)
+    assert item["applied_at"] == datetime.now().date().isoformat()  # defaults to the server's local today
+    assert "description" not in json.dumps(body)
+    # partial update: only the notes; status/date unchanged
+    _, _, body = post_app(env, 30, notes="second call")
+    assert (body["item"]["status"], body["item"]["notes"]) == ("applied", "second call")
+    # list endpoint and state version
+    listing = env.request("GET", "/api/applications")[2]
+    assert listing["applications"]["acme|1"]["notes"] == "second call"
+    # delete
+    status, _, body = post_app(env, 5, status=None)
+    assert status == 200 and body == {"ok": True, "deleted": True}
+    assert env.request("GET", "/api/applications")[2]["applications"] == {}
+
+
+def test_application_snapshot_is_server_derived_and_client_metadata_is_rejected(env):
+    assert post_app(env, 5, status="saved", company="Evil Corp")[0] == 400  # extra="forbid"
+    assert post_app(env, 4, status="saved", url="https://evil.example")[0] == 400
+    post_app(env, 3, status="saved")
+    with Storage(env.db) as storage:
+        row = storage.get_application("acme", "1")
+    assert (row["company"], row["title"], row["url"]) == ("Acme", "ADAS Engineer", "https://example.com/1")
+
+
+def test_application_validation_errors(env):
+    assert post_app(env, 5)[0] == 400  # nothing to change
+    assert post_app(env, 5, status="hired")[0] == 400
+    assert post_app(env, 5, status="saved", applied_at="2026-09-01")[0] == 400  # saved has no date
+    assert post_app(env, 5, notes="no status yet")[0] == 400  # creating needs a status
+    assert post_app(env, 5, status="applied", applied_at="2026-02-30")[0] == 400  # not a real date
+    assert post_app(env, 5, status="applied", notes="x" * 4001)[0] == 400
+    post_app(env, 4, status="applied")
+    assert post_app(env, 3, applied_at=None)[0] == 400  # a date can never be cleared
+    assert post_app(env, -3600, status="applied")[0] == 400  # future client_ts
+    assert env.request("GET", "/api/applications")[2]["applications"]["acme|1"]["status"] == "applied"
+
+
+def test_application_unknown_job_is_404_but_deleting_a_known_deletion_is_idempotent(env):
+    assert post_app(env, 5, job_id="nope", status="saved")[0] == 404
+    assert post_app(env, 5, job_id="nope", status=None)[0] == 404
+    post_app(env, 60, status="applied")
+    with Storage(env.db) as storage:  # job later removed by `cleanup`
+        storage.connection.execute("DELETE FROM jobs WHERE job_id='1'")
+        storage.connection.commit()
+    assert post_app(env, 30, notes="still editable")[0] == 200  # existing snapshot is enough
+    assert post_app(env, 20, status=None)[0] == 200
+    assert post_app(env, 10, status=None)[0] == 200  # repeated delete of a removed job converges
+    assert post_app(env, 5, status="saved")[0] == 404  # ...but a removed job cannot be newly tracked
+
+
+def test_late_application_writes_cannot_overwrite_newer_edits_or_resurrect_deleted_rows(env):
+    post_app(env, 30, status="applied", notes="newer")
+    status, _, body = post_app(env, 60, status="offer", notes="older")
+    assert status == 200 and body["stale"] is True and body["item"]["status"] == "applied"
+    post_app(env, 20, status=None)
+    status, _, body = post_app(env, 25, status="applied")
+    assert body["stale"] is True and body["item"] is None
+    assert env.request("GET", "/api/applications")[2]["applications"] == {}
+
+
+def test_application_writes_refresh_both_export_files(env):
+    post_app(env, 10, status="applied", notes="=HYPERLINK(\"http://evil\")")
+    data = env.root / "data"
+    exported = json.loads((data / "applications.json").read_text())
+    assert exported[0]["job_id"] == "1" and exported[0]["status"] == "applied"
+    csv_text = (data / "applications.csv").read_text()
+    assert csv_text.splitlines()[0].startswith("source_key,job_id,company")
+    assert "'=HYPERLINK" in csv_text  # formula guard
+    before = (data / "applications.json").read_text()
+    post_app(env, 5, notes="changed")
+    assert (data / "applications.json").read_text() != before
+
+
+def test_export_failure_never_fails_or_reverts_the_save(env, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(serve_radar, "write_applications_exports", boom)
+    status, _, body = post_app(env, 10, status="applied")
+    assert status == 200 and body["ok"] is True and "disk full" in body["export_warning"]
+    assert body["item"]["status"] == "applied"
+    with Storage(env.db) as storage:
+        assert storage.get_application("acme", "1")["status"] == "applied"
+
+
+def test_state_versions_and_counts_include_applications(env):
+    v0 = env.request("GET", "/api/state")[2]
+    post_app(env, 30, status="applied")
+    v1 = env.request("GET", "/api/state")[2]
+    assert v1["versions"]["applications"] != v0["versions"]["applications"]
+    assert v1["counts"]["applications"] == 1
+    post_app(env, 10, notes="same row count, different content")
+    v2 = env.request("GET", "/api/state")[2]["versions"]
+    assert v2["applications"] != v1["versions"]["applications"]
+    assert v2["feedback"] == v0["versions"]["feedback"]  # feedback version is independent
+
+
+def test_radar_page_boots_with_application_state_and_link(env):
+    post_app(env, 30, status="interviewing", notes="phone screen")
+    html = env.request("GET", "/")[2]
+    assert 'href="/applications"' in html
+    assert '"applications": {"acme|1": {"applied_at":' in html
+    assert 'data-app-status="interviewing"' in html
+
+
+def test_applications_page_lists_rows_and_marks_removed_postings(env):
+    post_app(env, 30, status="applied", notes="</script><img src=x onerror=alert(1)>")
+    post_app(env, 20, job_id="2", status="saved")
+    with Storage(env.db) as storage:
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='2'")
+        storage.connection.execute("DELETE FROM jobs WHERE job_id='1'")
+        storage.connection.commit()
+    status, response, html = env.request("GET", "/applications")
+    assert status == 200 and response.getheader("Cache-Control") == "no-store"
+    assert 'data-posting="removed"' in html and 'data-posting="closed"' in html
+    assert "&lt;/script&gt;&lt;img src=x" in html and "<img src=x" not in html
+    assert 'window.__APPS_LIVE__ = {"versions":' in html
+    assert "jobs.sqlite3" not in html
+
+
+def test_applications_page_works_with_no_archive_and_no_applications(env):
+    os.remove(env.archive)  # /applications does not depend on the radar archive
+    status, _, html = env.request("GET", "/applications")
+    assert status == 200 and 'id="app-empty" class="app-empty">' in html
+
+
+def test_repeated_feedback_untag_of_a_removed_job_is_idempotent(env):
+    env.post_feedback("okay", 60)
+    with Storage(env.db) as storage:
+        storage.connection.execute("DELETE FROM jobs WHERE job_id='1'")
+        storage.connection.commit()
+    assert env.post_feedback(None, 30)[0] == 200
+    assert env.post_feedback(None, 10)[0] == 200  # was a 404 in Phase A
+    assert env.post_feedback("okay", 5)[0] == 404  # a removed job still cannot be newly tagged
+
+
+def test_a_slow_post_body_times_out_instead_of_pinning_a_thread(tmp_path, monkeypatch):
+    monkeypatch.setattr(serve_radar.RadarHandler, "timeout", 1)
+    e = Env(tmp_path)
+    try:
+        sock = socket.create_connection(("127.0.0.1", e.port), timeout=10)
+        sock.sendall(
+            f"POST /api/feedback HTTP/1.1\r\nHost: 127.0.0.1:{e.port}\r\n"
+            "Content-Type: application/json\r\nContent-Length: 500\r\n\r\n{".encode()
+        )
+        started = time.monotonic()
+        data = sock.recv(4096)  # the server gives up and closes; it must not wait forever
+        assert time.monotonic() - started < 8
+        assert data == b"" or b"HTTP/1.1" in data or b"HTTP/1.0" in data
+        sock.close()
+        assert e.request("GET", "/api/state")[0] == 200  # server still healthy
+    finally:
+        e.close()

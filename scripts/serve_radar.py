@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Serve the radar report live on localhost: fresh HTML on every load, feedback clicks saved to
-SQLite immediately (with stale-write protection), change polling. Opt-in; the static
+SQLite immediately (with stale-write protection), job application tracking (statuses, dates,
+notes, an Applications page, CSV/JSON exports), change polling. Opt-in; the static
 `render_radar.py` file:// report is unchanged. See docs/live-radar-dashboard-plan.md.
 
 Unauthenticated by design: it binds to loopback by default and rejects foreign Host/Origin
@@ -28,16 +29,18 @@ import traceback
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import render_applications
 import render_radar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from job_hunter.applications_export import write_applications_exports
 from job_hunter.config import CandidateProfile, Settings, load_profile, load_settings
-from job_hunter.models import FeedbackLabel, JobFeedback
+from job_hunter.models import ApplicationStatus, FeedbackLabel, JobFeedback
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.runlock import RunLockHeld, run_lock
 from job_hunter.search_archive import resolve_search_path
@@ -107,12 +110,11 @@ def non_loopback_warning(host: str) -> str | None:
     )
 
 
-class FeedbackWrite(BaseModel):
+class _KeyedWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_key: str = Field(min_length=1, max_length=200)
     job_id: str = Field(min_length=1, max_length=500)
-    label: FeedbackLabel | None
     client_ts: datetime
 
     @field_validator("source_key", "job_id")
@@ -128,6 +130,19 @@ class FeedbackWrite(BaseModel):
         if value.tzinfo is None:
             raise ValueError("client_ts must include a UTC offset")
         return value.astimezone(UTC)
+
+
+class FeedbackWrite(_KeyedWrite):
+    label: FeedbackLabel | None
+
+
+class ApplicationWrite(_KeyedWrite):
+    """Absent field = unchanged. `status: null` deletes; `notes: null` clears; `applied_at: null`
+    is rejected by storage (a date can only be replaced, or dropped by moving back to `saved`)."""
+
+    status: ApplicationStatus | None = None
+    applied_at: date | None = None
+    notes: str | None = Field(default=None, max_length=4000)
 
 
 def _public_feedback(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -147,7 +162,7 @@ def write_feedback(storage: Storage, req: FeedbackWrite, *, now: datetime) -> tu
     existing = storage.get_job_feedback(*key)
     snapshot = storage.get_job_snapshot(*key)
     if req.label is None:
-        if existing is None and snapshot is None:
+        if existing is None and snapshot is None and storage.get_feedback_tombstone(*key) is None:
             return 404, {"ok": False, "error": "unknown job"}
         outcome = storage.delete_feedback(*key, event_at=event_at)
     else:
@@ -167,6 +182,47 @@ def write_feedback(storage: Storage, req: FeedbackWrite, *, now: datetime) -> tu
     return 200, {"ok": True, "item": current}
 
 
+_APPLICATION_FIELDS = ("status", "applied_at", "notes")
+
+
+def _public_application(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    return None if row is None else dict(row)
+
+
+def write_application(
+    storage: Storage, req: ApplicationWrite, *, now: datetime, today: date
+) -> tuple[int, dict[str, Any]]:
+    """One validated application write. The job snapshot comes from `jobs`/`assessments`
+    (never the client) and is used only when tracking starts; last-writer-wins by `client_ts`."""
+    if req.client_ts > now + FUTURE_TOLERANCE:
+        return 400, {"ok": False, "error": "client_ts is in the future"}
+    event_at = min(req.client_ts, now)
+    changes = {name: getattr(req, name) for name in _APPLICATION_FIELDS if name in req.model_fields_set}
+    if not changes:
+        return 400, {"ok": False, "error": "nothing to change: send status, applied_at or notes"}
+    key = (req.source_key, req.job_id)
+    existing = storage.get_application(*key)
+    job = storage.get_job_snapshot(*key)
+    snapshot = {**job, "score": storage.get_assessment_score(*key)} if job else None
+    deleting = "status" in changes and changes["status"] is None
+    if existing is None and snapshot is None and not (
+        deleting and storage.get_application_tombstone(*key) is not None
+    ):
+        return 404, {"ok": False, "error": "unknown job"}
+    try:
+        outcome, row = storage.apply_application(
+            *key, event_at=event_at, changes=changes, snapshot=snapshot, today=today
+        )
+    except ValueError as exc:  # includes pydantic ValidationError from the Application invariants
+        message = str(exc).strip().splitlines()[0] if str(exc).strip() else "invalid application"
+        return 400, {"ok": False, "error": message}
+    if outcome == "stale":
+        return 200, {"ok": True, "stale": True, "item": _public_application(row)}
+    if outcome == "deleted":
+        return 200, {"ok": True, "deleted": True}
+    return 200, {"ok": True, "item": _public_application(row)}
+
+
 def _file_version(path: Path | None) -> str | None:
     if path is None:
         return None
@@ -177,7 +233,7 @@ def _file_version(path: Path | None) -> str | None:
     return f"{stat.st_mtime_ns}-{stat.st_size}"
 
 
-def _feedback_version(rows: list[dict[str, Any]]) -> str:
+def _rows_version(rows: list[dict[str, Any]]) -> str:
     canonical = json.dumps(
         sorted(rows, key=lambda r: (r["source_key"], r["job_id"])),
         sort_keys=True, separators=(",", ":"), default=str,
@@ -189,11 +245,15 @@ def _resolve_archive(args: argparse.Namespace) -> Path:
     return resolve_search_path(search=args.search, keyword=args.keyword, companies=args.companies)
 
 
-def _versions(cfg: ServerConfig, rows: list[dict[str, Any]], archive: Path | None) -> dict[str, str | None]:
+def _versions(
+    cfg: ServerConfig, rows: list[dict[str, Any]], archive: Path | None,
+    app_rows: list[dict[str, Any]],
+) -> dict[str, str | None]:
     return {
         "archive": _file_version(archive),
         "assessments": _file_version(cfg.args.assessments),
-        "feedback": _feedback_version(rows),
+        "feedback": _rows_version(rows),
+        "applications": _rows_version(app_rows),
     }
 
 
@@ -202,14 +262,36 @@ def render_page(cfg: ServerConfig) -> tuple[str, Path]:
     with Storage(cfg.settings.database_path) as storage:
         rows = storage.export_job_feedback()
         feedback = storage.feedback_map()
+        app_rows = storage.export_applications()
+        apps = storage.application_map()
     state = render_radar.LiveState(
-        feedback=feedback, versions=_versions(cfg, rows, archive), archive_name=archive.name
+        feedback=feedback, versions=_versions(cfg, rows, archive, app_rows),
+        archive_name=archive.name, applications=apps,
     )
     html, _ = render_radar.render(
         search_path=archive, assessments_path=cfg.args.assessments, live=True, live_state=state,
         **render_radar.selection_render_kwargs(cfg.args, cfg.settings, cfg.profile_loader()),
     )
     return html, archive
+
+
+def render_applications_html(cfg: ServerConfig) -> str:
+    try:
+        archive_name: str | None = _resolve_archive(cfg.args).name
+    except FileNotFoundError:
+        archive_name = None  # the Applications page does not depend on the radar archive
+    with Storage(cfg.settings.database_path) as storage:
+        rows = storage.export_applications()
+        feedback_rows = storage.export_job_feedback()
+        states = storage.job_statuses((r["source_key"], r["job_id"]) for r in rows)
+    return render_applications.render_applications_page(
+        applications=rows, job_states=states,
+        versions=_versions(cfg, feedback_rows, None, rows) | {"archive": None},
+        today=date.today(), archive_name=archive_name,
+    )
+
+
+_POST_ROUTES = {"/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite}
 
 
 class RadarServer(ThreadingHTTPServer):
@@ -241,6 +323,7 @@ class RadarServer(ThreadingHTTPServer):
 class RadarHandler(BaseHTTPRequestHandler):
     server: RadarServer  # type: ignore[assignment]
     server_version = "job-hunter-radar"
+    timeout = 15  # seconds: a client that stalls mid-request cannot pin a thread forever
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         sys.stderr.write("radar-server: " + (format % args) + "\n")
@@ -289,15 +372,22 @@ class RadarHandler(BaseHTTPRequestHandler):
                     archive = None
                 with Storage(cfg.settings.database_path) as storage:
                     rows = storage.export_job_feedback()
+                    app_rows = storage.export_applications()
                 self._json(200, {
-                    "ok": True, "versions": _versions(cfg, rows, archive),
-                    "counts": {"feedback": len(rows)},
+                    "ok": True, "versions": _versions(cfg, rows, archive, app_rows),
+                    "counts": {"feedback": len(rows), "applications": len(app_rows)},
                     "archive_name": archive.name if archive else None,
                 })
             elif path == "/api/feedback":
                 with Storage(cfg.settings.database_path) as storage:
                     mapping = storage.feedback_map()
                 self._json(200, {"ok": True, "feedback": {k: _public_feedback(v) for k, v in mapping.items()}})
+            elif path == "/applications":
+                self._send(200, render_applications_html(cfg).encode("utf-8"), "text/html; charset=utf-8")
+            elif path == "/api/applications":
+                with Storage(cfg.settings.database_path) as storage:
+                    mapping = storage.application_map()
+                self._json(200, {"ok": True, "applications": {k: _public_application(v) for k, v in mapping.items()}})
             else:
                 self._json(404, {"ok": False, "error": "not found"})
         except Exception as exc:  # noqa: BLE001 - one bad request must never stop the server
@@ -315,7 +405,8 @@ class RadarHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(min(declared, MAX_DRAIN_BYTES)) if declared and declared > 0 else b""
         if not self._guard_host():
             return
-        if self.path.split("?", 1)[0] != "/api/feedback":
+        model = _POST_ROUTES.get(self.path.split("?", 1)[0])
+        if model is None:
             self._json(404, {"ok": False, "error": "not found"})
             return
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
@@ -335,7 +426,7 @@ class RadarHandler(BaseHTTPRequestHandler):
             self._json(413, {"ok": False, "error": "request body too large"})
             return
         try:
-            req = FeedbackWrite.model_validate(json.loads(body))
+            req = model.model_validate(json.loads(body))
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
             detail = (
                 json.loads(exc.json(include_url=False, include_context=False, include_input=False))
@@ -346,7 +437,20 @@ class RadarHandler(BaseHTTPRequestHandler):
             return
         try:
             with Storage(self.server.cfg.settings.database_path) as storage:
-                status, response = write_feedback(storage, req, now=datetime.now(UTC))
+                if isinstance(req, FeedbackWrite):
+                    status, response = write_feedback(storage, req, now=datetime.now(UTC))
+                else:
+                    status, response = write_application(
+                        storage, req, now=datetime.now(UTC), today=date.today()
+                    )
+                    if status == 200 and not response.get("stale"):
+                        try:
+                            write_applications_exports(
+                                self.server.cfg.settings.database_path.parent, storage.export_applications()
+                            )
+                        except Exception as exc:  # noqa: BLE001 - the save is already committed
+                            traceback.print_exc()
+                            response["export_warning"] = str(exc)
             self._json(status, response)
         except Exception as exc:  # noqa: BLE001
             self._fail(exc)
