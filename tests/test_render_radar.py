@@ -1299,3 +1299,66 @@ def test_live_page_inlines_the_sync_engine_between_core_and_ui(tmp_path):
     sync = html.index("root.RadarLiveSync = api")
     ui = html.index("var L = window.RadarLive, S = window.RadarLiveSync, boot = window.__RADAR_LIVE__")
     assert core < sync < ui
+
+
+def _app(status="applied", applied_at="2026-09-20", notes=None):
+    return {"status": status, "applied_at": applied_at, "notes": notes}
+
+
+def _live_apps_html(tmp_path, apps=None):
+    inputs = _golden_inputs(tmp_path)
+    state = LiveState(
+        feedback={}, versions={"archive": "a1", "assessments": "s1", "feedback": "f1", "applications": "p1"},
+        archive_name="search.json", applications=apps or {},
+    )
+    html, _ = render(live=True, live_state=state, **inputs)
+    return html
+
+
+def test_static_render_has_no_application_machinery(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    for needle in ("app-chip", "app-panel", "live-app", "live-hide-applied", "/applications"):
+        assert needle not in html
+
+
+def test_live_rows_get_a_track_chip_and_a_panel_for_both_row_types(tmp_path):
+    html = _live_apps_html(tmp_path)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'class="app-chip"' in scored and ">Track</button>" in scored
+    assert scored.index('class="app-chip"') < scored.index('class="row-detail"') < scored.index("app-panel")
+    assert 'select class="app-status"' in scored and 'type="date"' in scored and "app-notes" in scored
+    assert "<div class=\"app-panel\" hidden" not in scored  # inside an opened details: never hidden
+    plain = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>.*?\n    </div>', html, re.S).group(0)
+    assert 'class="app-chip"' in plain
+    assert 'class="app-panel" hidden' in plain  # the chip toggles it
+
+
+def test_tracked_job_renders_status_date_notes_and_selected_option(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app("interviewing", "2026-09-22", "call <b>Tue</b> & \"bring\" CV")})
+    row = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'data-app-status="interviewing"' in row and "app-chip-on" in row
+    assert ">Interviewing</button>" in row
+    assert '<option value="interviewing" selected>' in row
+    assert 'value="2026-09-22"' in row
+    assert "call &lt;b&gt;Tue&lt;/b&gt; &amp; \"bring\" CV" in row
+    assert "<b>Tue</b>" not in row
+    untouched = re.search(r'<details class="row[^>]*data-job-id="2"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'data-app-status=""' in untouched
+    assert '<option value="" selected>Not tracking</option>' in untouched
+    assert untouched.count(" selected>") == 1
+
+
+def test_saved_application_disables_the_date_input(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app("saved", None)})
+    row = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert re.search(r'<input type="date" class="app-date"[^>]*disabled', row)
+
+
+def test_live_toolbar_bar_and_boot_json_carry_the_application_features(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app(notes="</script><img src=x>")})
+    assert 'id="live-app"' in html and 'id="live-hide-applied"' in html
+    assert '<option value="untracked">' in html
+    assert 'href="/applications"' in html
+    assert '"applications": {"x|1":' in html
+    assert '\\u003c/script\\u003e' in html and "</script><img" not in html
+    assert '"applications": "p1"' in html  # versions.applications reaches the client

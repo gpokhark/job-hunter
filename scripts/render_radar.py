@@ -55,7 +55,7 @@ import argparse
 import html
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -82,6 +82,7 @@ class LiveState:
     feedback: dict[str, dict[str, Any]]
     versions: dict[str, str | None]
     archive_name: str
+    applications: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _e(text: str | None) -> str:
@@ -220,7 +221,7 @@ def _job_meta_html(location: str | None, salary_evidence: str | None) -> str:
 
 def _live_row_attrs(
     *, source_key: str, job_id: str, score: int | None, posted_at: str | None,
-    state: str | None, country: str | None, salary_evidence: str | None,
+    state: str | None, country: str | None, salary_evidence: str | None, app_status: str = "",
 ) -> str:
     """Identity + filter attributes for a live row root. Deliberately no company/title (see
     `_filter_data_attrs`'s docstring); the live script reads those from the visible text."""
@@ -232,6 +233,7 @@ def _live_row_attrs(
         f' data-score="{"" if score is None else score}" data-posted="{posted}"'
         f' data-state="{_attr(state)}" data-country="{_attr(country)}"'
         f' data-has-salary="{1 if salary_evidence else 0}"'
+        f' data-app-status="{_attr(app_status)}"'
     )
 
 
@@ -262,7 +264,43 @@ def _live_label(feedback: dict[str, dict[str, Any]] | None, source_key: str, job
     return entry["label"] if entry else None
 
 
-def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, dict[str, Any]] | None = None) -> str:
+_APP_STATUSES = ("saved", "applied", "interviewing", "offer", "rejected", "withdrawn")
+
+
+def _app_chip_html(app: dict[str, Any] | None) -> str:
+    status = app["status"] if app else ""
+    label = status.capitalize() if app else "Track"
+    on = " app-chip-on" if app else ""
+    return (
+        f'<button type="button" class="app-chip{on}" data-app-status="{_attr(status)}" '
+        f'title="Track this application">{_e(label)}</button>'
+    )
+
+
+def _app_panel_html(app: dict[str, Any] | None, *, hidden: bool) -> str:
+    status = app["status"] if app else ""
+    options = f'<option value=""{"" if status else " selected"}>Not tracking</option>' + "".join(
+        f'<option value="{s}"{" selected" if s == status else ""}>{s.capitalize()}</option>'
+        for s in _APP_STATUSES
+    )
+    applied = _attr(app.get("applied_at")) if app else ""
+    disabled = " disabled" if (not app or status == "saved") else ""
+    notes = _e(app.get("notes")) if app else ""
+    hidden_attr = " hidden" if hidden else ""
+    return (
+        f'<div class="app-panel"{hidden_attr}>'
+        f'<label class="app-field">Status <select class="app-status">{options}</select></label>'
+        f'<label class="app-field">Applied <input type="date" class="app-date" value="{applied}"{disabled}></label>'
+        f'<label class="app-field app-field-notes">Notes '
+        f'<textarea class="app-notes" rows="2" maxlength="4000">\n{notes}</textarea></label>'
+        "</div>"
+    )
+
+
+def _row_html(
+    row: dict[str, Any], *, live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
+    apps: dict[str, dict[str, Any]] | None = None,
+) -> str:
     tier = _tier(row["score"])
     # "New" is the one signal worth interrupting the title for — it sits right before
     # the title text itself (still inside .job, so the job column's own start position
@@ -297,6 +335,9 @@ def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, di
     # the way the title column used to be misaligned.
     tags_col = f'<span class="tags">{other_tags}</span>'
     label = _live_label(feedback, row["source_key"], row["job_id"]) if live else None
+    app = apps.get(f"{row['source_key']}|{row['job_id']}") if (live and apps) else None
+    app_chip = _app_chip_html(app) if live else ""
+    app_panel = _app_panel_html(app, hidden=False) if live else ""
     feedback_buttons = _feedback_buttons_html(
         source_key=row["source_key"], job_id=row["job_id"], company=row["company"],
         title=row["title"], department=row.get("department"), score_attr=str(row["score"]),
@@ -306,7 +347,7 @@ def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, di
         _live_row_attrs(
             source_key=row["source_key"], job_id=row["job_id"], score=row["score"],
             posted_at=row["posted_at"], state=row.get("state"), country=row.get("country"),
-            salary_evidence=row.get("salary_evidence"),
+            salary_evidence=row.get("salary_evidence"), app_status=app["status"] if app else "",
         )
         if live
         else ""
@@ -327,7 +368,7 @@ def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, di
         {tags_col}
         <span class="row-end">
           <span class="job-date">{date_display}</span>
-          {feedback_buttons}
+          {feedback_buttons}{app_chip}
           <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </span>
       </summary>
@@ -340,23 +381,24 @@ def _row_html(row: dict[str, Any], *, live: bool = False, feedback: dict[str, di
           <h3>Gaps</h3>
           <ul>{gaps_html}</ul>
         </div>
-        {f'<div class="detail-meta">{sponsorship_note}</div>' if sponsorship_note else ""}
+        {f'<div class="detail-meta">{sponsorship_note}</div>' if sponsorship_note else ""}{app_panel}
       </div>
     </details>'''
 
 
 def _rows_html(
     rows: list[dict[str, Any]], *, empty_message: str, live: bool = False,
-    feedback: dict[str, dict[str, Any]] | None = None,
+    feedback: dict[str, dict[str, Any]] | None = None, apps: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if not rows:
         return f'<p class="empty-state">{_e(empty_message)}</p>'
-    return "".join(_row_html(row, live=live, feedback=feedback) for row in rows)
+    return "".join(_row_html(row, live=live, feedback=feedback, apps=apps) for row in rows)
 
 
 def _never_reviewed_row_html(
     candidate: dict[str, Any], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int,
     live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
+    apps: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """A candidate with no assessment at all — no matches/gaps to expand into, so this
     stays a plain (non-expandable) row rather than a <details> with nothing to reveal —
@@ -385,6 +427,9 @@ def _never_reviewed_row_html(
     meta_html = _job_meta_html(candidate.get("location_raw"), candidate.get("salary_evidence"))
     job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
     label = _live_label(feedback, candidate["source_key"], candidate["job_id"]) if live else None
+    app = apps.get(f"{candidate['source_key']}|{candidate['job_id']}") if (live and apps) else None
+    app_chip = _app_chip_html(app) if live else ""
+    app_panel = _app_panel_html(app, hidden=True) if live else ""
     feedback_buttons = _feedback_buttons_html(
         source_key=candidate["source_key"], job_id=candidate["job_id"], company=candidate.get("company"),
         title=candidate.get("title"), department=candidate.get("department"), score_attr="",
@@ -394,7 +439,7 @@ def _never_reviewed_row_html(
         _live_row_attrs(
             source_key=candidate["source_key"], job_id=candidate["job_id"], score=None,
             posted_at=posted_at, state=candidate.get("state"), country=candidate.get("country"),
-            salary_evidence=candidate.get("salary_evidence"),
+            salary_evidence=candidate.get("salary_evidence"), app_status=app["status"] if app else "",
         )
         if live
         else ""
@@ -415,23 +460,24 @@ def _never_reviewed_row_html(
         <span class="tags">{other_tags}</span>
         <span class="row-end">
           <span class="job-date">{date_display}</span>
-          {feedback_buttons}
+          {feedback_buttons}{app_chip}
           <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </span>
-      </div>
+      </div>{app_panel}
     </div>'''
 
 
 def _never_reviewed_rows_html(
     candidates: list[dict[str, Any]], *, now: datetime, new_days: int, undated_new_days: int, undated_stale_days: int,
     live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
+    apps: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if not candidates:
         return '<p class="empty-state">Every candidate has been reviewed.</p>'
     return "".join(
         _never_reviewed_row_html(
             c, now=now, new_days=new_days, undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
-            live=live, feedback=feedback,
+            live=live, feedback=feedback, apps=apps,
         )
         for c in candidates
     )
@@ -575,6 +621,16 @@ _LIVE_STYLE = """
   .live-notice, .live-reload, .live-archive { padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
   .live-notice:empty { display: none; }
   .live-archive { color: var(--muted); }
+  .app-chip { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px dashed var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .app-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .app-chip-on { border-style: solid; border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .app-panel { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; padding: 10px 16px 14px 74px; }
+  .plain-row > .app-panel { padding-left: 74px; border-top: 1px dashed var(--line); }
+  .app-panel[hidden] { display: none; }
+  .app-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
+  .app-field select, .app-field input, .app-field textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
+  .app-field-notes { flex: 1 1 260px; }
+  .live-link { color: var(--accent); font-weight: 600; text-decoration: none; padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
 """
 
 _LIVE_TOOLBAR = """<span class="live-toolbar-extra">
@@ -584,6 +640,8 @@ _LIVE_TOOLBAR = """<span class="live-toolbar-extra">
       <label class="toolbar-field">Location <input type="search" id="live-location" class="toolbar-select" placeholder="state or city" autocomplete="off"></label>
       <label class="toolbar-field"><input type="checkbox" id="live-has-salary"> Has salary</label>
       <label class="toolbar-field">Feedback <select id="live-feedback" class="toolbar-select"><option value="">any</option><option value="untagged">untagged</option><option value="relevant">relevant</option><option value="okay">okay</option><option value="irrelevant">irrelevant</option></select></label>
+      <label class="toolbar-field">Application <select id="live-app" class="toolbar-select"><option value="">any</option><option value="untracked">not tracked</option><option value="saved">saved</option><option value="applied">applied</option><option value="interviewing">interviewing</option><option value="offer">offer</option><option value="rejected">rejected</option><option value="withdrawn">withdrawn</option></select></label>
+      <label class="toolbar-field"><input type="checkbox" id="live-hide-applied"> Hide applied</label>
       <label class="toolbar-field">Sort <select id="live-sort" class="toolbar-select"><option value="default">default</option><option value="score">score</option><option value="newest">newest</option><option value="company">company</option></select></label>
     </span>"""
 
@@ -613,6 +671,7 @@ def _live_bar_html(live_state: LiveState, sources: str) -> str:
     rendered = datetime.now().astimezone().strftime("%H:%M:%S")
     return (
         '<div class="live-bar">'
+        '<a class="live-link" href="/applications">Applications</a>'
         '<span id="live-status" class="live-pill" role="status" data-state="live">Live</span>'
         '<span id="live-notice" class="live-notice" role="alert"></span>'
         '<span id="live-reload" class="live-reload" hidden>New results &mdash; '
@@ -627,6 +686,10 @@ def _live_script_html(live_state: LiveState, stem: str) -> str:
         "stem": stem,
         "feedback": {k: {"label": v["label"]} for k, v in live_state.feedback.items()},
         "versions": live_state.versions,
+        "applications": {
+            k: {"status": v["status"], "applied_at": v.get("applied_at"), "notes": v.get("notes")}
+            for k, v in live_state.applications.items()
+        },
     }
     parts = [f"<script>window.__RADAR_LIVE__ = {_json_for_script(boot)};</script>"]
     for name in ("radar_live_core.js", "radar_live_sync.js", "radar_live_ui.js"):
@@ -805,6 +868,7 @@ def render(
             .replace("__LIVE_SCRIPT__", "")
         )
     feedback = live_state.feedback if live_state else None
+    apps = live_state.applications if live_state else None
     out = (
         template.replace("__TITLE__", _e(title))
         .replace("__SEARCH_STEM__", _e(search_path.stem))
@@ -829,21 +893,21 @@ def render(
             "__STRONG_ROWS__",
             _rows_html(
                 strong, empty_message="No candidates scored 75 or above for this search.",
-                live=live, feedback=feedback,
+                live=live, feedback=feedback, apps=apps,
             ),
         )
         .replace(
             "__REVIEW_ROWS__",
             _rows_html(
                 review, empty_message="No candidates scored 50-74 for this search.",
-                live=live, feedback=feedback,
+                live=live, feedback=feedback, apps=apps,
             ),
         )
         .replace(
             "__BELOW_50_ROWS__",
             _rows_html(
                 below_50_rows, empty_message="No candidates scored below 50 for this search.",
-                live=live, feedback=feedback,
+                live=live, feedback=feedback, apps=apps,
             ),
         )
         .replace(
@@ -851,7 +915,7 @@ def render(
             _never_reviewed_rows_html(
                 never_reviewed_candidates, now=now, new_days=new_days,
                 undated_new_days=undated_new_days, undated_stale_days=undated_stale_days,
-                live=live, feedback=feedback,
+                live=live, feedback=feedback, apps=apps,
             ),
         )
         .replace("__SOURCE_ISSUES_ROWS__", _source_issue_rows_html(source_issues))
