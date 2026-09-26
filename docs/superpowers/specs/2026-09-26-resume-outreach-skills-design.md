@@ -237,8 +237,9 @@ Both are `skills/<name>/SKILL.md` with frontmatter `name`, `version: 1.0.0`, `de
 - Remove: `model:` pin, version-history tables (replaced by a short changelog line),
   `CLAUDE.local.md`, hook reliance, MCP/`ToolSearch`, `@file` syntax, absolute `D:\` paths,
   hard-coded first name in filenames.
-- Inputs: JD = a path to a `JD_*.txt` (from the button/`export-jd`) or pasted JD text; master
-  resume = `job-hunter resume-path --project "$JOB_HUNTER_ROOT"`; contact = `job-hunter contact`
+- Inputs: JD = a path to a `JD_*.txt` (from the button/`export-jd`) or pasted JD text, plus any
+  free-text instructions in the request (§6.8); master resume, `personalization.md` and cover-letter
+  sample = `job-hunter resume-files --project <project path>`; contact = `job-hunter contact`
   (stop and report missing fields); output folder = the JD file's folder (else
   `data/output/<Company_Name>/`).
 - Commands run explicitly by the skill: `uv run python scripts/measure_resume.py ...`,
@@ -371,7 +372,7 @@ data/output/resume_log.csv
 - Additive: no existing command/route/table changes; `job-hunter search`/pipeline untouched.
   The only behavior touch is the reviewer's resume resolution (falls back to today's
   `profile.resume_path` when no dated file exists, so an existing setup keeps working).
-- Docs: `docs/SPEC.md` (new sections: resume/outreach feature, CLI `export-jd`/`resume-path`/
+- Docs: `docs/SPEC.md` (new sections: resume/outreach feature, CLI `export-jd`/`resume-files`/
   `contact`, routes, scripts, data layout, deps), `README.md` (setup and workflow), `CLAUDE.md`
   (architecture bullets, safe-testing note: output/resume files are personal data), and
   `scripts/install_skill.sh`'s help/`SKILL_NAMES`; `.claude/skills/*` symlinks for the two skills.
