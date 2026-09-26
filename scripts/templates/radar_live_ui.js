@@ -102,6 +102,14 @@
     });
   }
 
+  function scheduleRetry() {
+    flushing = false;
+    attempt += 1;
+    setStatus();
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(flush, L.backoffMs(attempt - 1));
+  }
+
   function flush() {
     if (flushing || !outbox.length) { setStatus(); return; }
     flushing = true;
@@ -109,7 +117,7 @@
     var item = outbox[0];
     send(item).then(function (res) {
       var kind = L.classifyStatus(res.status);
-      if (kind === 'retry') throw new Error('retry');
+      if (kind === 'retry') { scheduleRetry(); return; }
       // Remove only this exact entry: a newer write for the same key may have replaced it
       // while the request was in flight, and must stay queued.
       outbox = outbox.filter(function (o) { return o !== item; });
@@ -126,14 +134,11 @@
       flush();
     }, function () {
       // Network failure only (not post-processing errors)
-      flushing = false;
-      attempt += 1;
-      setStatus();
-      clearTimeout(retryTimer);
-      retryTimer = setTimeout(flush, L.backoffMs(attempt - 1));
+      scheduleRetry();
     }).catch(function (e) {
       // Post-processing errors: reset flushing and surface asynchronously
       flushing = false;
+      setStatus();
       setTimeout(function () { throw e; });
     });
   }
