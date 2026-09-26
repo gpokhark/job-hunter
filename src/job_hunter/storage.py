@@ -3,12 +3,21 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from .location import code_appears_in_own_text, evaluate_location, is_ambiguous_state_country_code
-from .models import Assessment, HealthStatus, Job, JobFeedback, SourceHealth, WorkArrangement
+from .models import (
+    Application,
+    ApplicationStatus,
+    Assessment,
+    HealthStatus,
+    Job,
+    JobFeedback,
+    SourceHealth,
+    WorkArrangement,
+)
 from .salary import evaluate_salary
 from .sponsorship import evaluate_sponsorship
 
@@ -51,6 +60,29 @@ def _migrate_v3_create_feedback_tombstones(connection: sqlite3.Connection) -> No
     )
 
 
+def _migrate_v4_create_application_tables(connection: sqlite3.Connection) -> None:
+    """`applications` (a human-tracked application per job; the job's facts are a snapshot, so
+    there is deliberately no foreign key to `jobs` and `cleanup` can never delete a row) and
+    `application_tombstones` (a deleted application's event time, so a late write cannot
+    resurrect it — same rule as `feedback_tombstones`)."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS applications (
+            source_key TEXT NOT NULL, job_id TEXT NOT NULL, status TEXT NOT NULL,
+            applied_at TEXT, notes TEXT,
+            company TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+            location TEXT, posted_at TEXT, score INTEGER, salary_evidence TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (source_key, job_id)
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS application_tombstones (
+            source_key TEXT NOT NULL, job_id TEXT NOT NULL, deleted_at TEXT NOT NULL,
+            PRIMARY KEY (source_key, job_id)
+        )"""
+    )
+
+
 #: Ordered, 1-indexed migration steps — entry `N` (1-based) upgrades a database from schema
 #: version `N-1` to version `N`. Tracked via SQLite's own built-in `PRAGMA user_version` integer
 #: (docs/agent-runtime-audit.md's "no explicit schema-version marker" finding) rather than a
@@ -66,12 +98,31 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_add_sponsorship_columns,
     _migrate_v2_add_salary_evidence_column,
     _migrate_v3_create_feedback_tombstones,
+    _migrate_v4_create_application_tables,
 ]
+
+
+_MISSING = object()
 
 
 def _parse_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _resolve_applied_at(
+    status: ApplicationStatus, existing: str | None, requested: Any, today: date
+) -> date | None:
+    """`requested` is `_MISSING` (caller said nothing), None (explicit clear) or a date."""
+    if status is ApplicationStatus.SAVED:
+        if requested is not _MISSING and requested is not None:
+            raise ValueError("a saved application cannot have an applied date")
+        return None
+    if requested is None:
+        raise ValueError("applied_at cannot be cleared; move the application back to 'saved' instead")
+    if requested is not _MISSING:
+        return requested
+    return date.fromisoformat(existing) if existing else today
 
 
 class Storage:
@@ -711,6 +762,129 @@ class Storage:
             "SELECT score FROM assessments WHERE source_key=? AND job_id=?", (source_key, job_id)
         ).fetchone()
         return int(row["score"]) if row else None
+
+    def get_feedback_tombstone(self, source_key: str, job_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT deleted_at FROM feedback_tombstones WHERE source_key=? AND job_id=?",
+            (source_key, job_id),
+        ).fetchone()
+        return row["deleted_at"] if row else None
+
+    def get_application_tombstone(self, source_key: str, job_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT deleted_at FROM application_tombstones WHERE source_key=? AND job_id=?",
+            (source_key, job_id),
+        ).fetchone()
+        return row["deleted_at"] if row else None
+
+    def get_application(self, source_key: str, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM applications WHERE source_key=? AND job_id=?", (source_key, job_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def export_applications(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM applications ORDER BY updated_at DESC, source_key, job_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def application_map(self) -> dict[str, dict[str, Any]]:
+        return {f"{r['source_key']}|{r['job_id']}": r for r in self.export_applications()}
+
+    def job_statuses(self, pairs: Any) -> dict[str, str]:
+        """`jobs.status` for each (source_key, job_id) that still has a job row; a pair whose
+        job was deleted (cleanup) is simply absent — callers treat that as "removed"."""
+        found: dict[str, str] = {}
+        for source_key, job_id in pairs:
+            row = self.connection.execute(
+                "SELECT status FROM jobs WHERE source_key=? AND job_id=?", (source_key, job_id)
+            ).fetchone()
+            if row:
+                found[f"{source_key}|{job_id}"] = row["status"]
+        return found
+
+    def apply_application(
+        self, source_key: str, job_id: str, *, event_at: datetime,
+        changes: dict[str, Any], snapshot: dict[str, Any] | None, today: date,
+    ) -> tuple[Literal["applied", "deleted", "stale"], dict[str, Any] | None]:
+        """One application write, last-writer-wins by event time (same rule as feedback): a
+        write applies only if `event_at` is strictly newer than the row's `updated_at` and any
+        tombstone. `changes` keys that are absent mean "unchanged"; `status: None` deletes.
+        `snapshot` (company/title/url/location_raw/posted_at/score/salary_evidence) is used only
+        when creating. Everything happens in one BEGIN IMMEDIATE transaction; any failure
+        (including validation) rolls back and raises."""
+        if event_at.tzinfo is None:
+            raise ValueError("event_at must be timezone-aware")
+        event_at = event_at.astimezone(UTC)
+        key = (source_key, job_id)
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            existing = self.get_application(*key)
+            times: list[datetime] = []
+            if existing:
+                times.append(_parse_utc(existing["updated_at"]))
+            tomb = self.get_application_tombstone(*key)
+            if tomb:
+                times.append(_parse_utc(tomb))
+            if times and event_at <= max(times):
+                self.connection.rollback()
+                return "stale", existing
+            if "status" in changes and changes["status"] is None:
+                self.connection.execute(
+                    "DELETE FROM applications WHERE source_key=? AND job_id=?", key
+                )
+                self.connection.execute(
+                    """INSERT INTO application_tombstones(source_key, job_id, deleted_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(source_key, job_id) DO UPDATE SET deleted_at=excluded.deleted_at""",
+                    (*key, event_at.isoformat()),
+                )
+                self.connection.commit()
+                return "deleted", None
+            if existing is None:
+                if changes.get("status") is None:
+                    raise ValueError("status is required to start tracking a job")
+                if snapshot is None:
+                    raise ValueError("unknown job")
+                base: dict[str, Any] = {
+                    "source_key": source_key, "job_id": job_id, "company": snapshot["company"],
+                    "title": snapshot["title"], "url": snapshot["url"],
+                    "location": snapshot.get("location_raw"), "posted_at": snapshot.get("posted_at"),
+                    "score": snapshot.get("score"), "salary_evidence": snapshot.get("salary_evidence"),
+                    "status": None, "applied_at": None, "notes": None,
+                    "created_at": event_at.isoformat(),
+                }
+            else:
+                base = dict(existing)
+            status = ApplicationStatus(changes.get("status", base["status"]))
+            applied_at = _resolve_applied_at(
+                status, base["applied_at"], changes.get("applied_at", _MISSING), today
+            )
+            notes = changes["notes"] if "notes" in changes else base["notes"]
+            row = {
+                **base, "status": status.value, "applied_at": applied_at.isoformat() if applied_at else None,
+                "notes": notes, "updated_at": event_at.isoformat(),
+            }
+            Application.model_validate(row)  # invariants: blank fields, notes cap, saved => no date
+            self.connection.execute(
+                """INSERT INTO applications(source_key, job_id, status, applied_at, notes, company,
+                   title, url, location, posted_at, score, salary_evidence, created_at, updated_at)
+                   VALUES (:source_key, :job_id, :status, :applied_at, :notes, :company, :title,
+                   :url, :location, :posted_at, :score, :salary_evidence, :created_at, :updated_at)
+                   ON CONFLICT(source_key, job_id) DO UPDATE SET status=excluded.status,
+                   applied_at=excluded.applied_at, notes=excluded.notes,
+                   updated_at=excluded.updated_at""",
+                row,
+            )
+            self.connection.execute(
+                "DELETE FROM application_tombstones WHERE source_key=? AND job_id=?", key
+            )
+            self.connection.commit()
+            return "applied", row
+        except BaseException:
+            self.connection.rollback()
+            raise
 
     def find_stale_closed_jobs(self, before: datetime) -> list[dict[str, Any]]:
         """Jobs eligible for `job-hunter cleanup`: `status='closed'` and not observed

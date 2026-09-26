@@ -1,11 +1,18 @@
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
 
 from job_hunter import storage as storage_module
-from job_hunter.models import Assessment, Job, JobFeedback, LocationConfidence
+from job_hunter.models import (
+    Application,
+    ApplicationStatus,
+    Assessment,
+    Job,
+    JobFeedback,
+    LocationConfidence,
+)
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
 
@@ -522,3 +529,195 @@ def test_delete_closed_jobs_leaves_feedback_tombstones_alone(tmp_path):
             "SELECT job_id FROM feedback_tombstones"
         ).fetchall()
     assert [row["job_id"] for row in remaining] == ["stale"]
+
+
+# --- live-radar application tracking (Phase B) ---
+
+TODAY = date(2026, 9, 26)
+
+
+def _snap(**over):
+    values = {
+        "company": "Acme", "title": "Engineer", "url": "https://example.com/42",
+        "location_raw": "Detroit, MI", "posted_at": "2026-09-20T00:00:00Z", "score": 82,
+        "salary_evidence": "$100,000 - $120,000",
+    }
+    values.update(over)
+    return values
+
+
+def _apply(storage, minutes, changes, snapshot="default", key=("acme", "42")):
+    return storage.apply_application(
+        *key, event_at=_t(minutes), changes=changes,
+        snapshot=_snap() if snapshot == "default" else snapshot, today=TODAY,
+    )
+
+
+def test_application_model_enforces_invariants():
+    base = dict(
+        source_key="a", job_id="1", status="saved", company="Acme", title="T", url="https://x",
+        created_at=_t(0), updated_at=_t(0),
+    )
+    assert Application(**base).applied_at is None
+    with pytest.raises(ValidationError):
+        Application(**{**base, "applied_at": date(2026, 9, 1)})  # saved cannot have a date
+    with pytest.raises(ValidationError):
+        Application(**{**base, "status": "hired"})
+    with pytest.raises(ValidationError):
+        Application(**{**base, "notes": "x" * 4001})
+    with pytest.raises(ValidationError):
+        Application(**{**base, "title": "  "})
+
+
+def test_pre_v4_database_gains_the_application_tables_on_open(tmp_path):
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.connection.execute("DROP TABLE applications")
+        storage.connection.execute("DROP TABLE application_tombstones")
+        storage.connection.execute("PRAGMA user_version = 3")
+        storage.connection.commit()
+    with Storage(db_path) as storage:
+        for table in ("applications", "application_tombstones"):
+            assert storage.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert storage.connection.execute("PRAGMA user_version").fetchone()[0] == len(
+            storage_module._MIGRATIONS
+        )
+
+
+def test_first_write_creates_a_row_with_a_server_snapshot(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        outcome, row = _apply(storage, 0, {"status": ApplicationStatus.SAVED})
+        assert outcome == "applied"
+        assert (row["status"], row["applied_at"], row["notes"]) == ("saved", None, None)
+        assert (row["company"], row["title"], row["url"], row["score"]) == (
+            "Acme", "Engineer", "https://example.com/42", 82,
+        )
+        assert row["location"] == "Detroit, MI" and row["salary_evidence"] == "$100,000 - $120,000"
+        assert row["created_at"] == row["updated_at"] == _t(0).isoformat()
+        assert storage.get_application("acme", "42") == row
+
+
+def test_creating_requires_a_status_and_a_known_job(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        with pytest.raises(ValueError, match="status"):
+            _apply(storage, 0, {"notes": "hello"})
+        with pytest.raises(ValueError, match="unknown job"):
+            _apply(storage, 0, {"status": ApplicationStatus.SAVED}, snapshot=None)
+
+
+def test_applied_date_rules(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _apply(storage, 0, {"status": ApplicationStatus.SAVED})
+        # first move to a non-saved status defaults to the caller's local today
+        _, row = _apply(storage, 1, {"status": ApplicationStatus.APPLIED})
+        assert row["applied_at"] == "2026-09-26"
+        # a later status keeps the existing date
+        _, row = _apply(storage, 2, {"status": ApplicationStatus.INTERVIEWING})
+        assert row["applied_at"] == "2026-09-26"
+        # an explicit date wins
+        _, row = _apply(storage, 3, {"applied_at": date(2026, 9, 1)})
+        assert (row["status"], row["applied_at"]) == ("interviewing", "2026-09-01")
+        # back to saved clears the date
+        _, row = _apply(storage, 4, {"status": ApplicationStatus.SAVED})
+        assert row["applied_at"] is None
+        # saved cannot take an explicit date, and a date can never be cleared explicitly
+        with pytest.raises(ValueError, match="saved"):
+            _apply(storage, 5, {"applied_at": date(2026, 9, 2)})
+        _apply(storage, 6, {"status": ApplicationStatus.APPLIED})
+        with pytest.raises(ValueError, match="cleared"):
+            _apply(storage, 7, {"applied_at": None})
+
+
+def test_partial_updates_change_only_the_named_fields_and_never_the_snapshot(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _apply(storage, 0, {"status": ApplicationStatus.APPLIED, "notes": "first"})
+        _, row = _apply(storage, 1, {"notes": "second"}, snapshot=_snap(company="Changed", score=1))
+        assert (row["status"], row["notes"]) == ("applied", "second")
+        assert (row["company"], row["score"]) == ("Acme", 82)  # snapshot is immutable
+        assert row["created_at"] == _t(0).isoformat() and row["updated_at"] == _t(1).isoformat()
+        _, row = _apply(storage, 2, {"notes": None})
+        assert row["notes"] is None and row["status"] == "applied"
+
+
+def test_notes_are_capped(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        with pytest.raises(ValueError):
+            _apply(storage, 0, {"status": ApplicationStatus.SAVED, "notes": "x" * 4001})
+        assert storage.get_application("acme", "42") is None  # nothing half-written
+
+
+def test_stale_writes_are_rejected_and_return_the_current_row(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _apply(storage, 10, {"status": ApplicationStatus.APPLIED})
+        outcome, row = _apply(storage, 10, {"status": ApplicationStatus.OFFER})  # equal → stale
+        assert outcome == "stale" and row["status"] == "applied"
+        outcome, row = _apply(storage, 5, {"notes": "late"})  # older → stale
+        assert outcome == "stale" and row["notes"] is None
+        outcome, row = _apply(storage, 11, {"status": ApplicationStatus.OFFER})
+        assert outcome == "applied" and row["status"] == "offer"
+
+
+def test_delete_leaves_a_tombstone_that_blocks_older_writes(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _apply(storage, 0, {"status": ApplicationStatus.APPLIED, "notes": "keep?"})
+        outcome, row = _apply(storage, 10, {"status": None})
+        assert (outcome, row) == ("deleted", None)
+        assert storage.get_application("acme", "42") is None
+        assert storage.get_application_tombstone("acme", "42") == _t(10).isoformat()
+        outcome, row = _apply(storage, 5, {"status": ApplicationStatus.APPLIED})
+        assert (outcome, row) == ("stale", None)
+        # a newer write recreates it (fresh snapshot, fresh created_at) and clears the tombstone
+        outcome, row = _apply(storage, 20, {"status": ApplicationStatus.SAVED})
+        assert outcome == "applied" and row["created_at"] == _t(20).isoformat()
+        assert storage.get_application_tombstone("acme", "42") is None
+
+
+def test_deleting_something_that_was_never_tracked_still_records_a_tombstone(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert _apply(storage, 10, {"status": None}, snapshot=None) == ("deleted", None)
+        assert _apply(storage, 5, {"status": ApplicationStatus.SAVED})[0] == "stale"
+
+
+def test_naive_event_time_is_rejected(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage, pytest.raises(ValueError):
+        storage.apply_application(
+            "acme", "42", event_at=datetime(2026, 9, 26, 12, 0),
+            changes={"status": ApplicationStatus.SAVED}, snapshot=_snap(), today=TODAY,
+        )
+
+
+def test_application_map_export_order_and_job_statuses(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(job_id="a"))
+        storage.upsert_job(make_job(job_id="b"))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='b'")
+        storage.connection.commit()
+        _apply(storage, 0, {"status": ApplicationStatus.SAVED}, key=("acme", "a"))
+        _apply(storage, 5, {"status": ApplicationStatus.APPLIED}, key=("acme", "b"))
+        _apply(storage, 9, {"status": ApplicationStatus.APPLIED}, key=("acme", "gone"))
+        assert set(storage.application_map()) == {"acme|a", "acme|b", "acme|gone"}
+        assert [r["job_id"] for r in storage.export_applications()] == ["gone", "b", "a"]
+        statuses = storage.job_statuses([("acme", "a"), ("acme", "b"), ("acme", "gone")])
+        assert statuses == {"acme|a": "active", "acme|b": "closed"}  # "gone" is absent
+
+
+def test_feedback_tombstone_reader(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.get_feedback_tombstone("apple", "99") is None
+        storage.delete_feedback("apple", "99", event_at=_t(3))
+        assert storage.get_feedback_tombstone("apple", "99") == _t(3).isoformat()
+
+
+def test_cleanup_never_touches_applications_or_their_tombstones(tmp_path):
+    now = datetime.now(UTC)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(job_id="stale", last_seen_at=now - timedelta(days=30)))
+        storage.connection.execute("UPDATE jobs SET status='closed' WHERE job_id='stale'")
+        storage.connection.commit()
+        _apply(storage, 0, {"status": ApplicationStatus.APPLIED}, key=("acme", "stale"))
+        _apply(storage, 1, {"status": None}, key=("acme", "other"), snapshot=None)
+        deleted = storage.delete_closed_jobs(now - timedelta(days=7))
+        assert [j["job_id"] for j in deleted["jobs"]] == ["stale"]
+        assert set(deleted) == {"jobs", "assessments", "job_feedback"}  # return shape unchanged
+        assert storage.get_application("acme", "stale")["status"] == "applied"
+        assert storage.get_application_tombstone("acme", "other") is not None
