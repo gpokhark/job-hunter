@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .adapters import adapter_class
+from .applications_export import write_applications_exports
 from .atomic import atomic_write_text
 from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
@@ -85,6 +86,7 @@ def parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("export-assessments")
     sub.add_parser("export-feedback")
+    sub.add_parser("export-applications")
     sub.add_parser(
         "reevaluate-sponsorship",
         help=(
@@ -434,6 +436,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
+        if args.command == "export-applications":
+            with Storage(settings.database_path) as storage:
+                rows = storage.export_applications()
+            write_applications_exports(settings.database_path.parent, rows)
+            print(_json(rows))
+            return 0
         if args.command in {
             "source-status", "db-stats", "export", "export-assessments", "export-feedback",
         }:

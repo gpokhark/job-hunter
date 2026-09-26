@@ -9,9 +9,16 @@ import pytest
 
 from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_path, main, parser
 from job_hunter.config import CompanyConfig
-from job_hunter.models import PipelineManifest, PipelineStatus, SearchSummary, format_search_summary
+from job_hunter.models import (
+    ApplicationStatus,
+    PipelineManifest,
+    PipelineStatus,
+    SearchSummary,
+    format_search_summary,
+)
 from job_hunter.pipeline import write_manifest
 from job_hunter.search_archive import resolve_search_path
+from job_hunter.storage import Storage
 
 
 def test_format_search_summary_reports_sources_and_jobs():
@@ -548,3 +555,26 @@ def test_all_companies_flag_was_removed():
     default. Regression test for the removal, not the flag itself."""
     with pytest.raises(SystemExit):
         parser().parse_args(["search", "--all-companies"])
+
+
+def test_export_applications_writes_json_and_csv_next_to_the_database(tmp_path, monkeypatch, capsys):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(
+        f"database_path: {tmp_path}/data/jobs.sqlite3\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+    with Storage(tmp_path / "data" / "jobs.sqlite3") as storage:
+        storage.apply_application(
+            "acme", "42", event_at=datetime(2026, 9, 26, 12, 0, tzinfo=UTC),
+            changes={"status": ApplicationStatus.SAVED, "notes": "=BAD()"},
+            snapshot={"company": "Acme", "title": "Engineer", "url": "https://example.com/42",
+                      "location_raw": None, "posted_at": None, "score": None, "salary_evidence": None},
+            today=datetime(2026, 9, 26).date(),
+        )
+    assert main(["export-applications"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert [r["job_id"] for r in printed] == ["42"]
+    data = tmp_path / "data"
+    assert json.loads((data / "applications.json").read_text())[0]["status"] == "saved"
+    assert "'=BAD()" in (data / "applications.csv").read_text()
