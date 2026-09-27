@@ -510,3 +510,17 @@ def test_a_write_failure_is_a_generic_500_that_leaks_no_path(jd_env, monkeypatch
     monkeypatch.setattr(serve_radar, "export_jd", boom)
     status, _, body = post_jd(jd_env)
     assert status == 500 and body == {"ok": False, "error": "internal error"}
+
+
+@pytest.mark.parametrize("exc_type", [RuntimeError, OSError, FileNotFoundError])
+def test_jd_failures_never_leak_an_absolute_path_to_the_client_or_the_log(jd_env, monkeypatch, capfd, exc_type):
+    secret = f"{jd_env.root}/secret/file.txt"
+
+    def boom(*_args, **_kwargs):
+        raise exc_type(f"failed at '{secret}'")
+
+    monkeypatch.setattr(serve_radar, "export_jd", boom)
+    status, _, body = post_jd(jd_env)
+    out, err = capfd.readouterr()
+    assert status == 500 and body == {"ok": False, "error": "internal error"}
+    assert str(jd_env.root) not in out + err + json.dumps(body)

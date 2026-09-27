@@ -316,6 +316,11 @@ def write_jd(
         return 404, {"ok": False, "error": "unknown job"}
     except JobHasNoDescription:
         return 409, {"ok": False, "error": "job has no description"}
+    except sqlite3.OperationalError:
+        raise  # database busy/unavailable keeps the shared 503 handling (message has no file path)
+    except Exception as exc:  # noqa: BLE001 - OSError text and tracebacks can carry absolute paths
+        print(f"jd export failed: {type(exc).__name__}", file=sys.stderr)
+        return 500, {"ok": False, "error": "internal error"}
     return 200, {"ok": True, "path": result.relative_path, "created": result.created, "prompt": result.prompt}
 
 
