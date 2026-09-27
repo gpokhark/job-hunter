@@ -13,6 +13,7 @@
     "bonus": {"target_pct": 8, "expected_payout_pct_of_target": 100},
     "annual_equity_value": 0,
     "sign_on_bonus": 0,
+    "retention_bonuses": [],
     "retirement": {
       "employee_contribution_pct": 6,
       "match_rate": 1.0,
@@ -37,5 +38,6 @@
   "one_time_costs": [
     {"name": "Unreimbursed relocation", "amount": 0},
     {"name": "Forfeited current-year bonus", "amount": 0}
-  ]
+  ],
+  "user_walkaway_base": null
 }

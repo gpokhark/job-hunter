@@ -1,10 +1,13 @@
 {
   "_readme": "Reference tax data for scripts/salary_compare.py. Federal/FICA figures are recalled from IRS Rev. Proc. 2025-32 and SSA announcements; state figures are best-known 2026 rates. The salary-compare skill re-verifies every state it uses against the state revenue department and updates the entry (rate, source, verified_on) before any number is trusted. A state missing here can be handled with location.state_tax_rate_pct in the config.",
-  "as_of": "2026-09-24",
-  "verified": false,
+  "as_of": "2026-09-27",
+  "verified": true,
+  "_verification_note": "verified=true covers federal/single, FICA, and MI (the only filing status/state actually in use so far) -- confirmed live 2026-09-27 against Michigan Treasury and IRS 2026 inflation-adjustment figures (see per-entry source/verified_on). federal/mfj and every other state remain unverified. Per SKILL.md Step 3, re-verify (and update the relevant entry) whenever a real offer introduces a new state or filing status.",
   "federal": {
     "single": {
       "standard_deduction": 16100,
+      "source": "IRS 2026 inflation adjustments (Tax Foundation summary, confirmed $16,100 single standard deduction and $12,400/$50,400/$105,700 bracket thresholds)",
+      "verified_on": "2026-09-27",
       "brackets": [
         [
           12400,
@@ -114,9 +117,9 @@
     "MI": {
       "type": "flat",
       "rate": 0.0425,
-      "note": "Personal exemption (~$5,900) ignored, overstates tax by ~$250. City taxes go in location.local_tax_pct (e.g. Detroit 2.4%).",
+      "note": "Personal exemption (~$5,400/filer for 2026, indexed annually) ignored, overstates tax by ~$230. Confirmed 4.25%: FY2025 general-fund growth did not exceed inflation, so no rate-adjustment trigger for 2026. City taxes go in location.local_tax_pct (e.g. Detroit 2.4%; Northville and Ann Arbor have none).",
       "source": "https://www.michigan.gov/treasury/news/2026/04/15/state-individual-income-tax-rate-for-2026-tax-year-determined",
-      "verified_on": "2026-09-24"
+      "verified_on": "2026-09-27"
     },
     "OH": {
       "type": "flat",

@@ -13,6 +13,9 @@
     "base_salary": 100000,
     "bonus": {"target_pct": 10, "expected_payout_pct_of_target": 100},
     "annual_equity_value": 0,
+    "retention_bonuses": [
+      {"name": "Sign-on retention award", "total_amount": 60000, "vesting_years": 3, "start_date": "2025-01-15", "_note": "Fixed-dollar award paid over several years, e.g. a new-hire or performance retention bonus. Annualized as total_amount / vesting_years and taxed as ordinary cash income (unlike perks). Remove this whole list if you don't have one."}
+    ],
     "retirement": {
       "employee_contribution_pct": 6,
       "match_rate": 1.0,
