@@ -173,3 +173,31 @@ def test_get_job_for_jd_is_the_only_reader_of_description(env):
     assert row["description"].startswith("<p>Build")
     assert "description" not in storage.get_job_snapshot("acme", "42")
     assert storage.get_job_for_jd("acme", "missing") is None
+
+
+# --- hostile input regressions ----------------------------------------------------------------
+
+def test_many_unterminated_script_openers_stay_linear():
+    import time
+
+    start = time.perf_counter()
+    assert html_to_text("<script " * 40000 + "tail") == ""
+    assert html_to_text("<style>" * 40000) == ""
+    assert time.perf_counter() - start < 1.0
+
+
+def test_unterminated_script_or_style_body_is_dropped():
+    assert html_to_text("Keep<script>evil <b>x") == "Keep"
+    assert html_to_text("Keep<STYLE>p{} <b>x") == "Keep"
+    assert html_to_text("A<script>x</script>B<script>y</SCRIPT >C") == "ABC"
+
+
+def test_newlines_in_header_fields_cannot_forge_sections():
+    job = {"title": "Eng\nDescription\nFake", "location_raw": "X\u2028Pay & Benefits\r\nY",
+           "department": "D\x00\nE", "posted_at": None, "job_id": "1\nJob ID: 2",
+           "url": "https://x.test/\nDescription", "company": "Ac\nme", "source_key": "a\nb",
+           "salary_evidence": "$1 -\n$2"}
+    lines = render_jd_text(job, "Body").splitlines()
+    assert lines[:3] == ["Eng Description Fake", "X Pay & Benefits Y", "D E"]
+    assert lines.count("Description") == 1 and lines.count("Pay & Benefits") == 1
+    assert "Job ID: 1 Job ID: 2" in lines and "Source: Ac me (a b)" in lines

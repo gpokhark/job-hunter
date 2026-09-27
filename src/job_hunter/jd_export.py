@@ -35,7 +35,12 @@ class ExportResult:
     prompt: str
 
 
-_SCRIPT_STYLE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.I | re.S)
+_SCRIPT_OPEN = re.compile(r"<(script|style)\b", re.I)
+_CLOSERS = {
+    "script": re.compile(r"</script\s*>", re.I),
+    "style": re.compile(r"</style\s*>", re.I),
+}
+_HEADER_WS = re.compile(r"[\s\x00-\x1f\x7f\u2028\u2029]+")
 _BREAK = re.compile(r"<br\b[^>]*>", re.I)
 _LI_START = re.compile(r"<li\b[^>]*>", re.I)
 _BLOCK_END = re.compile(r"</(?:p|div|h[1-6]|ul|ol|table|tr|section|article|blockquote)\s*>", re.I)
@@ -45,11 +50,35 @@ _ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MAX_PART = 60
 
 
+def _strip_script_style(value: str) -> str:
+    """Drop <script>/<style> elements in linear time; an unterminated one is dropped to the end of
+    the input (its body must never leak into the JD)."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        opener = _SCRIPT_OPEN.search(value, pos)
+        if opener is None:
+            out.append(value[pos:])
+            break
+        out.append(value[pos:opener.start()])
+        closer = _CLOSERS[opener.group(1).lower()].search(value, opener.end())
+        if closer is None:
+            break
+        pos = closer.end()
+    return "".join(out)
+
+
+def _header(value: object, fallback: str = "Not specified") -> str:
+    """One physical line: whitespace/control characters (newlines, U+2028/2029...) collapse to a
+    single space so job text can't forge a section line."""
+    return _HEADER_WS.sub(" ", str(value or "")).strip() or fallback
+
+
 def html_to_text(value: str) -> str:
     """Readable plain text from an HTML (or already-plain) job description: paragraph/list/line
     breaks are kept, bullets become '- ', entities are decoded, scripts/styles are dropped. A bare
     '<' that isn't a tag (e.g. 'salary < 100k') is left alone."""
-    text = _SCRIPT_STYLE.sub("", value)
+    text = _strip_script_style(value)
     text = _BREAK.sub("\n", text)
     text = _LI_START.sub("\n- ", text)
     text = _BLOCK_END.sub("\n\n", text)
@@ -73,20 +102,20 @@ def _first_words(title: str | None, count: int = 4) -> str:
 def render_jd_text(job: dict, description_text: str) -> str:
     posted = (job.get("posted_at") or "")[:10]
     posted = posted if _ISO_DAY.fullmatch(posted) else "Not specified"
-    header = [job.get("title") or "Not specified", job.get("location_raw") or "Not specified"]
-    if job.get("department"):
-        header.append(job["department"])
+    header = [_header(job.get("title")), _header(job.get("location_raw"))]
+    if _header(job.get("department"), ""):
+        header.append(_header(job["department"]))
     parts = [
         "\n".join(header),
         "Summary\n"
         f"Posted: {posted}\n"
-        f"Job ID: {job['job_id']}\n"
-        f"Job URL: {job.get('url') or 'Not specified'}\n"
-        f"Source: {job['company']} ({job['source_key']})",
+        f"Job ID: {_header(job['job_id'])}\n"
+        f"Job URL: {_header(job.get('url'))}\n"
+        f"Source: {_header(job['company'])} ({_header(job['source_key'])})",
         f"Description\n{description_text}",
     ]
     if job.get("salary_evidence"):
-        parts.append(f"Pay & Benefits\n{job['salary_evidence']}")
+        parts.append(f"Pay & Benefits\n{_header(job['salary_evidence'])}")
     return "\n\n".join(parts) + "\n"
 
 
