@@ -757,6 +757,17 @@ class Storage:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_job_for_jd(self, source_key: str, job_id: str) -> dict[str, Any] | None:
+        """The one reader of `description` for JD export — the fields a resume/outreach skill needs
+        to tailor against a job, by primary key."""
+        row = self.connection.execute(
+            """SELECT source_key, job_id, company, title, department, location_raw, posted_at,
+               canonical_url AS url, salary_evidence, description
+               FROM jobs WHERE source_key=? AND job_id=?""",
+            (source_key, job_id),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get_assessment_score(self, source_key: str, job_id: str) -> int | None:
         row = self.connection.execute(
             "SELECT score FROM assessments WHERE source_key=? AND job_id=?", (source_key, job_id)

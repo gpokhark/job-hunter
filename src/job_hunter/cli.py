@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from .atomic import atomic_write_text
 from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
 from .config import contact_problems, load_companies, load_profile, load_settings
+from .jd_export import JobHasNoDescription, JobNotFound, export_jd
 from .logging_config import configure_logging
 from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus, format_search_summary
 from .pipeline import latest_run_id, read_manifest, run_pipeline
@@ -89,6 +91,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("export-feedback")
     sub.add_parser("export-applications")
     sub.add_parser("contact")
+    export_jd_cmd = sub.add_parser("export-jd")
+    export_jd_cmd.add_argument("source_key")
+    export_jd_cmd.add_argument("job_id")
     resume_files = sub.add_parser("resume-files")
     resume_files.add_argument("--resume", type=Path, default=None)
     sub.add_parser(
@@ -463,6 +468,21 @@ def main(argv: list[str] | None = None) -> int:
             payload["first_name"] = contact.first_name
             payload["last_name"] = contact.last_name
             print(_json(payload))
+            return 0
+        if args.command == "export-jd":
+            try:
+                with Storage(settings.database_path) as storage:
+                    result = export_jd(
+                        storage, args.source_key, args.job_id, project_root=Path.cwd(),
+                        output_root=settings.database_path.parent / "output", today=date.today(),
+                    )
+            except (JobNotFound, JobHasNoDescription) as exc:
+                print(f"job-hunter: {exc}", file=sys.stderr)
+                return 1
+            print(_json({
+                "path": str(result.path), "relative_path": result.relative_path,
+                "created": result.created, "prompt": result.prompt,
+            }))
             return 0
         if args.command == "resume-files":
             root = Path.cwd()

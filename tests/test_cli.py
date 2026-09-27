@@ -11,6 +11,8 @@ from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_p
 from job_hunter.config import CompanyConfig
 from job_hunter.models import (
     ApplicationStatus,
+    Job,
+    LocationConfidence,
     PipelineManifest,
     PipelineStatus,
     SearchSummary,
@@ -654,3 +656,25 @@ def test_contact_with_no_profile_file_at_all_exits_2(tmp_path, monkeypatch, caps
     _bare_project(tmp_path, monkeypatch)
     assert main(["contact"]) == 2
     assert "contact:" in capsys.readouterr().err
+
+
+def test_export_jd_writes_the_file_and_prints_json(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    with Storage(tmp_path / "data" / "jobs.sqlite3") as storage:
+        storage.upsert_job(Job(
+            source_key="acme", source_platform="t", company="Acme", job_id="1", title="Engineer",
+            url="https://example.com/1", us_eligible=True, location_confidence=LocationConfidence.HIGH,
+            description="<p>Do work.</p>", content_hash="h",
+        ))
+    assert main(["export-jd", "acme", "1"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is True
+    assert payload["relative_path"].startswith("data/output/Acme/JD_Acme_Engineer_")
+    assert (tmp_path / payload["relative_path"]).read_text(encoding="utf-8").startswith("Engineer\n")
+    assert payload["prompt"].startswith("Use the resume-generator skill on data/output/Acme/")
+
+
+def test_export_jd_unknown_job_exits_1(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["export-jd", "acme", "nope"]) == 1
+    assert "not found" in capsys.readouterr().err
