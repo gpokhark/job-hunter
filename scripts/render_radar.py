@@ -342,8 +342,10 @@ def _row_html(
     tags_col = f'<span class="tags">{other_tags}</span>'
     label = _live_label(feedback, row["source_key"], row["job_id"]) if live else None
     app = apps.get(f"{row['source_key']}|{row['job_id']}") if (live and apps) else None
-    app_chip = _app_chip_html(app) if live else ""
-    resume_btn = _RESUME_BTN if live else ""
+    # Track + Resume live on the left under the meta line; empty string (no whitespace) when static.
+    job_actions = (
+        f'<span class="job-actions">{_app_chip_html(app)}{_RESUME_BTN}</span>' if live else ""
+    )
     app_panel = _app_panel_html(app, hidden=False) if live else ""
     feedback_buttons = _feedback_buttons_html(
         source_key=row["source_key"], job_id=row["job_id"], company=row["company"],
@@ -370,12 +372,12 @@ def _row_html(
             <span class="job-title">{_e(row["title"])}</span>
           </span>
           <span class="job-company">{_e(row["company"])}</span>
-          {job_meta}
+          {job_meta}{job_actions}
         </span>
         {tags_col}
         <span class="row-end">
           <span class="job-date">{date_display}</span>
-          {feedback_buttons}{app_chip}{resume_btn}
+          {feedback_buttons}
           <a class="apply-link" href="{html.escape(row["url"], quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </span>
       </summary>
@@ -435,8 +437,10 @@ def _never_reviewed_row_html(
     job_meta = f'<span class="job-meta">{meta_html}</span>' if meta_html else ""
     label = _live_label(feedback, candidate["source_key"], candidate["job_id"]) if live else None
     app = apps.get(f"{candidate['source_key']}|{candidate['job_id']}") if (live and apps) else None
-    app_chip = _app_chip_html(app) if live else ""
-    resume_btn = _RESUME_BTN if live else ""
+    # Track + Resume live on the left under the meta line; empty string (no whitespace) when static.
+    job_actions = (
+        f'<span class="job-actions">{_app_chip_html(app)}{_RESUME_BTN}</span>' if live else ""
+    )
     app_panel = _app_panel_html(app, hidden=True) if live else ""
     feedback_buttons = _feedback_buttons_html(
         source_key=candidate["source_key"], job_id=candidate["job_id"], company=candidate.get("company"),
@@ -463,12 +467,12 @@ def _never_reviewed_row_html(
             <span class="job-title">{_e(candidate.get("title"))}</span>
           </span>
           <span class="job-company">{_e(candidate.get("company"))}</span>
-          {job_meta}
+          {job_meta}{job_actions}
         </span>
         <span class="tags">{other_tags}</span>
         <span class="row-end">
           <span class="job-date">{date_display}</span>
-          {feedback_buttons}{app_chip}{resume_btn}
+          {feedback_buttons}
           <a class="apply-link" href="{html.escape(candidate.get("url", ""), quote=True)}" target="_blank" rel="noopener">View posting &#8599;</a>
         </span>
       </div>{app_panel}
@@ -633,7 +637,9 @@ _LIVE_STYLE = """
   .live-notice, .live-reload, .live-archive { padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
   .live-notice:empty { display: none; }
   .live-archive { color: var(--muted); }
-  .app-chip { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px dashed var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .app-chip, .resume-btn { box-sizing: border-box; height: 26px; display: inline-flex; align-items: center; font: inherit; font-size: 12px; line-height: 1; padding: 0 12px; border-radius: 999px; cursor: pointer; }
+  .app-chip { border: 1px dashed var(--line); background: transparent; color: var(--ink-soft); }
   .app-chip:hover { border-color: var(--accent); color: var(--accent); }
   .app-chip-on { border-style: solid; border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .app-panel { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; padding: 10px 16px 14px 74px; }
@@ -642,7 +648,7 @@ _LIVE_STYLE = """
   .app-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
   .app-field select, .app-field input, .app-field textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
   .app-field-notes { flex: 1 1 260px; }
-  .resume-btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .resume-btn { border: 1px solid var(--line); background: transparent; color: var(--ink-soft); }
   .resume-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .resume-btn:disabled { opacity: 0.6; cursor: progress; }
   .live-link { color: var(--accent); font-weight: 600; text-decoration: none; padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }

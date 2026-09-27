@@ -1412,22 +1412,57 @@ def test_static_render_has_no_resume_button(tmp_path):
     assert "resume-btn" not in html
 
 
-def test_live_rows_get_a_resume_button_after_the_track_chip_in_both_row_types(tmp_path):
+def _assert_actions_on_left(block: str) -> None:
+    """Track + Resume sit in .job-actions inside .job, before .row-end; .row-end has neither."""
+    job = block.split('<span class="job">')[1].split('<span class="tags">')[0]
+    assert job.count('class="job-actions"') == 1
+    actions = job.split('class="job-actions"')[1]
+    assert actions.index('class="app-chip"') < actions.index('class="resume-btn"')
+    assert ">Resume</button>" in actions
+    assert block.index('class="job-actions"') < block.index('class="row-end"')
+    row_end = block.split('class="row-end"')[1]
+    assert "app-chip" not in row_end and "resume-btn" not in row_end
+    assert 'class="fb-btn' in row_end and 'class="apply-link"' in row_end
+
+
+def test_live_rows_put_track_and_resume_left_below_the_meta_in_both_row_types(tmp_path):
     html = _live_apps_html(tmp_path)
     scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
     summary = scored.split("</summary>")[0]
     assert summary.count('class="resume-btn"') == 1
-    row_end = summary.split('class="row-end"')[1]
-    assert row_end.index('class="app-chip"') < row_end.index('class="resume-btn"') < row_end.index('class="apply-link"')
-    assert ">Resume</button>" in summary
+    _assert_actions_on_left(summary)
     plain = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>.*?\n    </div>', html, re.S).group(0)
     assert plain.count('class="resume-btn"') == 1
-    assert 'data-source-key="x"' in plain.split(">")[0] or 'data-source-key="x"' in plain[:300]
+    _assert_actions_on_left(plain)
+    assert plain.split(">")[0].count('data-source-key="x"') == 1
+
+
+def test_job_actions_follow_job_meta_when_present_and_the_company_when_absent(tmp_path):
+    html = _live_apps_html(tmp_path)
+    blocks = re.findall(r'<(?:details class="row|div class="plain-row)[^>]*>.*?(?=<(?:details class="row|div class="plain-row)|\Z)', html, re.S)
+    seen_meta = False
+    for block in blocks:
+        if 'class="job-actions"' not in block:
+            continue
+        job = block.split('<span class="job">')[1].split('<span class="tags">')[0]
+        if 'class="job-meta"' in job:
+            seen_meta = True
+            assert job.index('class="job-meta"') < job.index('class="job-actions"')
+        else:
+            assert job.index('class="job-company"') < job.index('class="job-actions"')
+    assert seen_meta
+
+
+def test_static_render_has_no_job_actions_chip_or_resume(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    for needle in ("job-actions", "app-chip", "resume-btn"):
+        assert needle not in html
 
 
 def test_the_resume_button_slot_adds_no_whitespace_between_neighbours(tmp_path):
     html = _live_apps_html(tmp_path)
     assert re.search(r"</button><button type=\"button\" class=\"resume-btn\"", html)
+    assert '<span class="job-actions"><button' in html
 
 
 def test_live_render_has_a_stop_server_button_and_static_does_not(tmp_path):
