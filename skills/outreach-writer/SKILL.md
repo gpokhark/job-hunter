@@ -75,10 +75,14 @@ uv run job-hunter resume-files --project "$CLAUDE_PROJECT_DIR"
 uv run job-hunter contact --project "$CLAUDE_PROJECT_DIR"
 ```
 
+`resume-files` prints JSON: `master_resume`, `personalization`, `cover_letter_sample` (each a path or
+`null`). If it exits non-zero, stop and relay its message (typically: add
+`data/resume/main_resume_<YYYY-MM-DD>.md`, or it found only the example resume). Never write from the
+example resume and never proceed without a master resume. If `personalization` is set, read it.
+
 `contact` gives name, email, phone, LinkedIn, GitHub, `first_name`, `last_name`; if it exits non-zero,
 stop and relay which `contact:` fields to fix in `config/candidate_profile.yaml` (never invent
-details). `resume-files` gives `master_resume`, `personalization`, `cover_letter_sample` (each a path
-or `null`); if `personalization` is set, read it.
+details).
 
 ### Step 1 — Determine what to generate
 
@@ -316,6 +320,8 @@ Integrity rules (never overridable):
    supply it, use the generic salutation.
 3. **Always tied to a real JD** — never generate generic, un-tailored outreach copy.
 4. **Stay inside `data/output/`.**
+5. **Never write without a real master resume** — if `resume-files` fails, stop and relay its message;
+   never use the example resume as a source.
 
 Defaults (the user may change any of these by asking, or in `personalization.md`): email 200–250
 words with exactly 3 points; cover letter ~220 words (200–260) with exactly 5 bold-labeled bullets;
