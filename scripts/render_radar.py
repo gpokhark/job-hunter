@@ -626,6 +626,10 @@ _LIVE_STYLE = """
   .live-pill[data-state="live"] { color: var(--accent); }
   .live-pill[data-state="saving"] { color: var(--ink-soft); }
   .live-pill[data-state="offline"] { background: var(--accent); color: var(--surface); }
+  .live-pill[data-state="stopped"] { color: var(--muted); border-style: dashed; }
+  .live-stop { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+  .live-stop:hover:not(:disabled) { border-color: #c0392b; color: #c0392b; }
+  .live-stop:disabled { opacity: 0.6; cursor: default; }
   .live-notice, .live-reload, .live-archive { padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
   .live-notice:empty { display: none; }
   .live-archive { color: var(--muted); }
@@ -684,6 +688,7 @@ def _live_bar_html(live_state: LiveState, sources: str) -> str:
         '<div class="live-bar">'
         '<a class="live-link" href="/applications">Applications</a>'
         '<span id="live-status" class="live-pill" role="status" data-state="live">Live</span>'
+        '<button type="button" id="live-stop" class="live-stop">Stop server</button>'
         '<span id="live-notice" class="live-notice" role="alert"></span>'
         '<span id="live-reload" class="live-reload" hidden>New results &mdash; '
         '<a href="#" id="live-reload-link">Reload</a></span>'

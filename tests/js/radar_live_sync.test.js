@@ -138,3 +138,16 @@ test('pending(kind) lists queued keys of that kind only', () => {
   assert.deepEqual(h.sync.pending('application'), ['b|2']);
   assert.deepEqual(h.sync.pending('feedback'), ['a|1']);
 });
+
+test('stop() cancels the pending retry and stops further flushing, keeping unsent items stored', async () => {
+  const h = harness();
+  h.sync.queue(fb('a|1', 'okay'));
+  h.pending[0].reject(new Error('offline'));
+  await tick();
+  assert.equal(h.active().length, 1);
+  h.sync.stop();
+  assert.equal(h.active().length, 0);
+  h.sync.flush();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.saved().length, 1);
+});

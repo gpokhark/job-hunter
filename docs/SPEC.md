@@ -1170,7 +1170,7 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all eight skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`, `resume-generator`, `outreach-writer`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
 | `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` via `scripts/run_profile_hook.sh "${CLAUDE_PROJECT_DIR}"` — a portable POSIX-`sh` launcher (docs/agent-runtime-audit.md's "Claude hook coverage" finding) that finds `uv` itself and falls back to a clear stderr diagnostic (then, best-effort, bare `python3`) instead of the shell failing outright with "command not found" when `uv` isn't on the invoking process's `PATH` — before this script (or `hook_adapter.run_diff`'s own `shutil.which("uv")` check, which only covers the *second*, inner `uv run` call that runs `diff_profile.py`) ever gets a chance to run at all. |
 | `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
-| `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
+| `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`, `/api/shutdown`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
 | `measure_resume.py` | Renders an HTML resume/cover letter in headless Chromium at US Letter with 0.5" margins and prints JSON (`status` `ok`/`underflow`/`overflow`, `pages`, `last_page_fill_pct`, `fill_pct`, `content_height_px`, `delta_lines`, `guidance`); `--target-pages` (1, 1.5, 2), `--save-pdf OUT.pdf`, `--project`. Needs the optional `resume` extra (§11.2). |
 | `log_resume.py` | Appends one row to `data/output/resume_log.csv` (`--file --company --date` required; `--role --url --fill --pages --iterations` optional; `--project`). Formula-looking cells are prefixed with `'`. |
 | `render_applications.py` | Renders the live Applications page (`/applications`) from `Storage.export_applications()` plus each posting's current state (open/closed/removed); imported by `serve_radar.py`, not a standalone deliverable. Client script: `templates/applications_ui.js`; shared outbox engine: `templates/radar_live_sync.js`. |
@@ -1433,6 +1433,17 @@ no description, `500 internal error` (no path in the message). Reuses every exis
 (Host, Origin, Content-Type, size limit, body drain). No outbox: a failed export is shown, not queued.
 The live radar's per-row **Resume** button calls it, copies the prompt to the clipboard and shows
 where the JD was saved; the static report has no button.
+
+**`POST /api/shutdown`** (`serve_radar.py`): body `{}` only (`extra="forbid"`), through the same POST
+guards as every other route (Host, Content-Type 415, Origin 403, Content-Length, size limit, body drain);
+GET is 404. Only honored when the server is bound to loopback (`is_loopback_bind`: 127.0.0.0/8, `::1`,
+`localhost`; wildcard binds such as `0.0.0.0`/`::` are not loopback): otherwise `403
+{"ok": false, "error": "shutdown disabled on non-loopback bind"}` and the server keeps running. On success it
+replies `200 {"ok": true}` first, then a short-lived thread calls `server.shutdown()`; `main()` prints
+`Stopping.`, closes the socket and releases `run_lock("radar-server")` exactly as on Ctrl+C. A repeated
+request is a no-op. The live radar page's **Stop server** button (not on the Applications page or the
+static report) confirms, POSTs it outside the outbox, then shows a `Stopped` status pill, stops polling and
+retry timers, and leaves unsent edits in the localStorage outbox.
 
 **`measure_resume.py` / `log_resume.py`**: see the scripts table (§10) for flags and JSON fields. Both
 take `--project`. `measure_resume.py` needs the optional `resume` extra (`playwright`, `pypdf`):

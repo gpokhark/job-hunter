@@ -76,9 +76,10 @@
   }
   var SEND_URL = { feedback: '/api/feedback', application: '/api/application' };
 
+  var stopped = false;
   function renderStatus(state, unsaved) {
     var el = $('live-status');
-    if (!el) return;
+    if (!el || stopped) return;
     el.dataset.state = state;
     el.textContent = state === 'saving' ? 'Saving\u2026'
       : state === 'offline' ? 'Offline (' + unsaved + ' unsaved)' : 'Live';
@@ -310,7 +311,7 @@
     if (banner) banner.hidden = false;
   }
   function poll() {
-    if (document.visibilityState !== 'visible') return;
+    if (stopped || document.visibilityState !== 'visible') return;
     fetch('/api/state').then(function (r) { return r.json(); }).then(function (s) {
       var v = s.versions || {};
       if (v.archive !== known.archive || v.assessments !== known.assessments) showReload();
@@ -318,13 +319,36 @@
       if (v.applications !== known.applications) { known.applications = v.applications; pullApplications(); }
     }).catch(function () { /* server briefly unreachable; the next tick retries */ });
   }
-  setInterval(poll, 10000);
+  var pollTimer = setInterval(poll, 10000);
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') { poll(); pullFeedback(); pullApplications(); sync.flush(); }
+    if (!stopped && document.visibilityState === 'visible') { poll(); pullFeedback(); pullApplications(); sync.flush(); }
   });
-  window.addEventListener('focus', sync.flush);
+  window.addEventListener('focus', function () { if (!stopped) sync.flush(); });
   var reloadLink = $('live-reload-link');
   if (reloadLink) reloadLink.addEventListener('click', function (evt) { evt.preventDefault(); location.reload(); });
+
+  // ---- Stop server button: POST /api/shutdown (loopback binds only; the server enforces it) ----
+  var stopBtn = $('live-stop');
+  function markStopped() {
+    stopped = true;
+    clearInterval(pollTimer);
+    sync.stop();
+    var pill = $('live-status'), banner = $('live-reload');
+    if (pill) { pill.dataset.state = 'stopped'; pill.textContent = 'Stopped'; }
+    if (banner) banner.hidden = true;
+  }
+  if (stopBtn) stopBtn.addEventListener('click', function () {
+    if (stopped || stopBtn.disabled) return;
+    if (!window.confirm('Stop the radar server?')) return;
+    stopBtn.disabled = true;
+    fetch('/api/shutdown', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    }).then(function (res) { return res.status; }, function () { return 0; }).then(function (status) {
+      if (status === 200) markStopped();
+      else stopBtn.disabled = false;
+      notice(L.shutdownNotice(status), status === 200 ? 600000 : 15000);
+    });
+  });
 
   // ---- filters, sort, counts, hash -------------------------------------------------------
   var toolbar = $('radar-toolbar');

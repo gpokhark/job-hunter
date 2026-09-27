@@ -1,3 +1,4 @@
+import contextlib
 import http.client
 import json
 import os
@@ -42,7 +43,7 @@ def _ts(seconds_ago: float) -> str:
 
 
 class Env:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, extra_args=()):
         self.root = tmp_path
         self.db = tmp_path / "data" / "jobs.sqlite3"
         self.archive = tmp_path / "data" / "searches" / "default_2026-09-26.json"
@@ -67,6 +68,7 @@ class Env:
             ))
         args = serve_radar.build_parser().parse_args([
             "--search", str(self.archive), "--assessments", str(self.assessments), "--port", "0",
+            *extra_args,
         ])
         cfg = serve_radar.ServerConfig(
             args=args, settings=Settings(database_path=self.db), profile_loader=lambda: None
@@ -524,3 +526,106 @@ def test_jd_failures_never_leak_an_absolute_path_to_the_client_or_the_log(jd_env
     out, err = capfd.readouterr()
     assert status == 500 and body == {"ok": False, "error": "internal error"}
     assert str(jd_env.root) not in out + err + json.dumps(body)
+
+
+# ---- POST /api/shutdown ---------------------------------------------------------------------
+
+
+def post_shutdown(env, body=None, headers=None, **kw):
+    return env.request("POST", "/api/shutdown", {} if body is None else body, headers, **kw)
+
+
+def _still_serving(env):
+    return env.thread.is_alive() and env.request("GET", "/api/state")[0] == 200
+
+
+def test_is_loopback_bind():
+    f = serve_radar.is_loopback_bind
+    for host in ("127.0.0.1", "127.1.2.3", "::1", "localhost", "LOCALHOST"):
+        assert f(host), host
+    for host in ("0.0.0.0", "::", "192.168.1.5", "fe80::1", "example.com", ""):
+        assert not f(host), host
+
+
+def test_shutdown_replies_ok_then_the_serve_loop_exits(env):
+    status, _, body = post_shutdown(env)
+    assert status == 200 and body == {"ok": True}
+    env.thread.join(timeout=10)
+    assert not env.thread.is_alive()
+
+
+def test_shutdown_guards_reject_and_keep_the_server_running(env):
+    host = f"127.0.0.1:{env.port}"
+    assert post_shutdown(env, headers={"Origin": "http://evil.example"})[0] == 403
+    assert post_shutdown(env, headers={"Host": "evil.example"})[0] == 403
+    assert env.request("POST", "/api/shutdown", raw="{}", headers={"Content-Type": "text/plain"})[0] == 415
+    assert post_shutdown(env, {"x": 1})[0] == 400
+    assert env.request("POST", "/api/shutdown", raw="nope", headers={"Content-Type": "application/json"})[0] == 400
+    assert env.request("GET", "/api/shutdown")[0] == 404
+    assert post_shutdown(env, headers={"Origin": f"http://{host}"})[0] == 200  # sanity: same-origin is fine
+
+
+def test_shutdown_guards_leave_the_server_running(env):
+    post_shutdown(env, headers={"Origin": "http://evil.example"})
+    post_shutdown(env, {"x": 1})
+    env.request("GET", "/api/shutdown")
+    assert _still_serving(env)
+
+
+def test_shutdown_is_refused_on_a_non_loopback_bind(tmp_path):
+    e = Env(tmp_path, extra_args=["--host", "0.0.0.0"])
+    try:
+        status, _, body = post_shutdown(e)
+        assert status == 403
+        assert body == {"ok": False, "error": "shutdown disabled on non-loopback bind"}
+        assert _still_serving(e)
+    finally:
+        e.close()
+
+
+def test_a_second_shutdown_never_crashes(env, capfd):
+    assert post_shutdown(env)[0] == 200
+    with contextlib.suppress(OSError):  # listener may already be closed: acceptable
+        post_shutdown(env)
+    env.server.request_shutdown()  # direct repeat is a no-op
+    env.thread.join(timeout=10)
+    assert not env.thread.is_alive()
+    assert "Traceback" not in capfd.readouterr().err
+
+
+def test_main_exits_cleanly_and_releases_the_lock_after_shutdown(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(f"database_path: {tmp_path}/data/jobs.sqlite3\n")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "searches").mkdir(parents=True)
+    (tmp_path / "data" / "searches" / "default_2026-09-26.json").write_text(
+        json.dumps({"summary": {"sources_attempted": 1}, "candidates": [], "source_health": []})
+    )
+    # Reserve a free port, release it, and hand it to main().
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    result = {}
+    t = threading.Thread(
+        target=lambda: result.update(rc=serve_radar.main(["--project", str(tmp_path), "--port", str(port)])),
+        daemon=True,
+    )
+    t.start()
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline and status is None:
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("POST", "/api/shutdown", body="{}", headers={"Content-Type": "application/json"})
+            status = conn.getresponse().status
+            conn.close()
+        except OSError:
+            time.sleep(0.05)
+    t.join(timeout=10)
+    assert status == 200 and not t.is_alive() and result["rc"] == 0
+    assert "Stopping." in capsys.readouterr().out
+    with run_lock("radar-server"):  # lock was released
+        pass

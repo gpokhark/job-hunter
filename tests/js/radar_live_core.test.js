@@ -242,3 +242,12 @@ test('resumeNotice never throws on a malformed success body', () => {
   assert.match(core.resumeNotice(200, null, true), /Could not reach|unexpected/i);
   assert.match(core.resumeNotice(200, {}, true), /Could not reach|unexpected/i);
 });
+
+test('shutdownNotice: success, non-loopback refusal, and generic failure', () => {
+  assert.match(core.shutdownNotice(200), /Server stopped/);
+  assert.match(core.shutdownNotice(200), /close this tab/);
+  assert.match(core.shutdownNotice(403), /only.*local|loopback|Ctrl\+C/i);
+  assert.match(core.shutdownNotice(0), /Could not stop/);
+  assert.match(core.shutdownNotice(500), /Could not stop/);
+  assert.match(core.shutdownNotice(415), /Could not stop/);
+});

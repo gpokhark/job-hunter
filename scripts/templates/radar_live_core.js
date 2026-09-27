@@ -196,11 +196,21 @@
     return 'Could not reach the radar server; try again.';
   }
 
+  // Text for the notice shown after clicking Stop server (POST /api/shutdown). Only a 200 means
+  // the server is actually stopping; 403 is the loopback-only refusal.
+  function shutdownNotice(status) {
+    if (status === 200) return 'Server stopped \u2014 you can close this tab.';
+    if (status === 403) {
+      return 'The server refused to stop: Stop server only works on a local (loopback) bind. Press Ctrl+C in its terminal instead.';
+    }
+    return 'Could not stop the server (HTTP ' + status + '); try again or press Ctrl+C in its terminal.';
+  }
+
   var api = {
     SORT_MODES: SORT_MODES, APP_STATUSES: APP_STATUSES, emptyFilters: emptyFilters, filtersActive: filtersActive,
     rowPasses: rowPasses, sortOrder: sortOrder, encodeHash: encodeHash, decodeHash: decodeHash,
     enqueue: enqueue, classifyStatus: classifyStatus, backoffMs: backoffMs, isoNow: isoNow,
-    reconcile: reconcile, reconcileApps: reconcileApps, resumeNotice: resumeNotice
+    reconcile: reconcile, reconcileApps: reconcileApps, resumeNotice: resumeNotice, shutdownNotice: shutdownNotice
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RadarLive = api;

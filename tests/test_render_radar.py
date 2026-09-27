@@ -1212,7 +1212,7 @@ def test_live_render_requires_live_state(tmp_path):
 
 def test_static_render_has_no_live_machinery(tmp_path):
     html, _ = render(**_golden_inputs(tmp_path))
-    for needle in ("fetch(", "__RADAR_LIVE__", "live-status", "live-toolbar-extra", "__LIVE_"):
+    for needle in ("fetch(", "__RADAR_LIVE__", "live-status", "live-stop", "live-toolbar-extra", "__LIVE_"):
         assert needle not in html
 
 
@@ -1428,3 +1428,10 @@ def test_live_rows_get_a_resume_button_after_the_track_chip_in_both_row_types(tm
 def test_the_resume_button_slot_adds_no_whitespace_between_neighbours(tmp_path):
     html = _live_apps_html(tmp_path)
     assert re.search(r"</button><button type=\"button\" class=\"resume-btn\"", html)
+
+
+def test_live_render_has_a_stop_server_button_and_static_does_not(tmp_path):
+    html, _ = _live_html(tmp_path)
+    assert '<button type="button" id="live-stop" class="live-stop">Stop server</button>' in html
+    static, _ = render(**_golden_inputs(tmp_path))
+    assert "live-stop" not in static and "Stop server" not in static

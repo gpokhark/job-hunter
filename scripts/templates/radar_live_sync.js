@@ -11,7 +11,7 @@
     var clearT = opts.clearTimeout || function (id) { return clearTimeout(id); };
     var outbox = load();
     var loaded = outbox.slice();
-    var flushing = false, attempt = 0, retryTimer = null;
+    var flushing = false, attempt = 0, retryTimer = null, stopped = false;
 
     function load() {
       try {
@@ -26,6 +26,7 @@
     function notify() { if (opts.onState) opts.onState(state(), outbox.length); }
 
     function scheduleRetry() {
+      if (stopped) return;
       flushing = false;
       attempt += 1;
       notify();
@@ -34,6 +35,7 @@
     }
 
     function flush() {
+      if (stopped) return;
       if (flushing || !outbox.length) { notify(); return; }
       flushing = true;
       notify();
@@ -65,6 +67,8 @@
     return {
       queue: function (item) { outbox = core.enqueue(outbox, item); save(); notify(); flush(); },
       flush: flush,
+      // The server is gone: cancel the pending retry and stop flushing. Unsent writes stay in storage.
+      stop: function () { stopped = true; clearT(retryTimer); },
       restored: function () { return loaded.slice(); },
       items: function () { return outbox.slice(); },
       pending: function (kind) {

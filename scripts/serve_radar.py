@@ -2,7 +2,7 @@
 """Serve the radar report live on localhost: fresh HTML on every load, feedback clicks saved to
 SQLite immediately (with stale-write protection), job application tracking (statuses, dates,
 notes, an Applications page, CSV/JSON exports), job-description file export for the resume
-skill (POST /api/jd), change polling. Opt-in; the static
+skill (POST /api/jd), a loopback-only Stop server button (POST /api/shutdown), change polling. Opt-in; the static
 `render_radar.py` file:// report is unchanged. See docs/live-radar-dashboard-plan.md.
 
 Unauthenticated by design: it binds to loopback by default and rejects foreign Host/Origin
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import socket
 import sqlite3
@@ -103,6 +104,18 @@ def allowed_hosts(host: str, port: int, extra: Iterable[str] = ()) -> frozenset[
     return frozenset(allowed)
 
 
+def is_loopback_bind(host: str) -> bool:
+    """True only for a bind that cannot be reached from another machine: 127.0.0.0/8, ::1 or
+    "localhost". Wildcard binds (0.0.0.0, ::) listen on every interface and are NOT loopback."""
+    host = host.strip().lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def non_loopback_warning(host: str) -> str | None:
     if host in _LOOPBACK_HOSTS:
         return None
@@ -135,6 +148,12 @@ class _KeyedWrite(_JobKey):
         if value.tzinfo is None:
             raise ValueError("client_ts must include a UTC offset")
         return value.astimezone(UTC)
+
+
+class ShutdownRequest(BaseModel):
+    """POST /api/shutdown carries no data; the empty object still rides the shared request guards."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class JdExport(_JobKey):
@@ -324,7 +343,10 @@ def write_jd(
     return 200, {"ok": True, "path": result.relative_path, "created": result.created, "prompt": result.prompt}
 
 
-_POST_ROUTES = {"/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite, "/api/jd": JdExport}
+_POST_ROUTES = {
+    "/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite, "/api/jd": JdExport,
+    "/api/shutdown": ShutdownRequest,
+}
 
 
 class RadarServer(ThreadingHTTPServer):
@@ -338,6 +360,17 @@ class RadarServer(ThreadingHTTPServer):
         self.allowed = allowed_hosts(cfg.args.host, self.server_address[1], cfg.extra_hosts)
         self._announced: Path | None = None
         self._announce_lock = threading.Lock()
+        self._stop_lock = threading.Lock()
+        self.stop_requested = False
+
+    def request_shutdown(self) -> None:
+        """Stop serve_forever() from a short-lived thread (shutdown() blocks until the loop exits,
+        so it must never run on the serving thread or inside a handler). Repeats are no-ops."""
+        with self._stop_lock:
+            if self.stop_requested:
+                return
+            self.stop_requested = True
+        threading.Thread(target=self.shutdown, name="radar-shutdown").start()
 
     def note_archive(self, archive: Path) -> None:
         """Print the resolved archive and its attempted-source count whenever it changes
@@ -468,6 +501,15 @@ class RadarHandler(BaseHTTPRequestHandler):
             )
             self._json(400, {"ok": False, "error": "invalid request", "details": detail})
             return
+        if isinstance(req, ShutdownRequest):
+            if not is_loopback_bind(self.server.cfg.args.host):
+                self._json(403, {"ok": False, "error": "shutdown disabled on non-loopback bind"})
+                return
+            try:
+                self._json(200, {"ok": True})  # reply first; the response is on the wire before we stop
+            finally:
+                self.server.request_shutdown()
+            return
         try:
             with Storage(self.server.cfg.settings.database_path) as storage:
                 if isinstance(req, FeedbackWrite):
@@ -533,6 +575,8 @@ def main(argv: list[str] | None = None) -> int:
                 webbrowser.open(url)
             try:
                 server.serve_forever()
+                if server.stop_requested:
+                    print("Stopping.", flush=True)
             except KeyboardInterrupt:
                 print("\nStopping.")
             finally:
