@@ -410,13 +410,17 @@ ranked `SearchResult` JSON.
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.
 
-- **`skills/`** — agent-facing half, eight independently-invocable skills
+- **`skills/`** — agent-facing half, nine independently-invocable skills
   (`docs/skill-split-plan.md`): `job-scout` (search → archive), `job-reviewer` (local-LLM
   scoring), `job-radar` (compile + render), `job-feedback` (turn radar feedback/profile edits into
   a confirmed profile update via `diff_profile.py` check mode), `job-hunter` (orchestrator),
   `onboard-source` (repo-maintenance skill for adding a new employer source, not end-user;
   `.claude/skills/onboard-source` symlinks to `skills/onboard-source` so it installs for every
-  runtime), `resume-generator` and `outreach-writer` (see "Resume and outreach" above). Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
+  runtime), `resume-generator` and `outreach-writer` (see "Resume and outreach" above), and
+  `salary-compare` (compare a job offer's total compensation against the user's current package
+  and draft a negotiation plan — `scripts/salary_compare.py` is a deterministic, stdlib-only
+  calculator; the skill supplies market/cost-of-living research and writing, never the arithmetic).
+  Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
   `candidates`, never recommend `us_eligible=false`, never invent salary/sponsorship/
   qualifications. Scoring is delegated entirely to `scripts/review_with_lm_studio.py`
   (deterministic script, not a sub-agent) — sends each unassessed candidate to a **local** LM

@@ -1,0 +1,219 @@
+{
+  "_readme": "Reference tax data for scripts/salary_compare.py. Federal/FICA figures are recalled from IRS Rev. Proc. 2025-32 and SSA announcements; state figures are best-known 2026 rates. The salary-compare skill re-verifies every state it uses against the state revenue department and updates the entry (rate, source, verified_on) before any number is trusted. A state missing here can be handled with location.state_tax_rate_pct in the config.",
+  "as_of": "2026-09-24",
+  "verified": false,
+  "federal": {
+    "single": {
+      "standard_deduction": 16100,
+      "brackets": [
+        [
+          12400,
+          0.1
+        ],
+        [
+          50400,
+          0.12
+        ],
+        [
+          105700,
+          0.22
+        ],
+        [
+          201775,
+          0.24
+        ],
+        [
+          256225,
+          0.32
+        ],
+        [
+          640600,
+          0.35
+        ],
+        [
+          null,
+          0.37
+        ]
+      ]
+    },
+    "mfj": {
+      "standard_deduction": 32200,
+      "brackets": [
+        [
+          24800,
+          0.1
+        ],
+        [
+          100800,
+          0.12
+        ],
+        [
+          211400,
+          0.22
+        ],
+        [
+          403550,
+          0.24
+        ],
+        [
+          512450,
+          0.32
+        ],
+        [
+          768700,
+          0.35
+        ],
+        [
+          null,
+          0.37
+        ]
+      ]
+    }
+  },
+  "fica": {
+    "ss_rate": 0.062,
+    "ss_wage_base": 184500,
+    "medicare_rate": 0.0145,
+    "addl_medicare_rate": 0.009,
+    "addl_medicare_threshold": {
+      "single": 200000,
+      "mfj": 250000
+    }
+  },
+  "k401_employee_limit": 24500,
+  "states": {
+    "AK": {
+      "type": "none"
+    },
+    "FL": {
+      "type": "none"
+    },
+    "NV": {
+      "type": "none"
+    },
+    "NH": {
+      "type": "none",
+      "note": "No tax on wages"
+    },
+    "SD": {
+      "type": "none"
+    },
+    "TN": {
+      "type": "none"
+    },
+    "TX": {
+      "type": "none"
+    },
+    "WA": {
+      "type": "none",
+      "note": "No wage tax; 7% capital-gains excise not modelled"
+    },
+    "WY": {
+      "type": "none"
+    },
+    "MI": {
+      "type": "flat",
+      "rate": 0.0425,
+      "note": "Personal exemption (~$5,900) ignored, overstates tax by ~$250. City taxes go in location.local_tax_pct (e.g. Detroit 2.4%).",
+      "source": "https://www.michigan.gov/treasury/news/2026/04/15/state-individual-income-tax-rate-for-2026-tax-year-determined",
+      "verified_on": "2026-09-24"
+    },
+    "OH": {
+      "type": "flat",
+      "rate": 0.0275,
+      "note": "2026 flat rate; first ~$26k exempt (ignored). School-district and municipal taxes go in location.local_tax_pct."
+    },
+    "IN": {
+      "type": "flat",
+      "rate": 0.03,
+      "note": "County income tax (0.5-3%) goes in location.local_tax_pct."
+    },
+    "IL": {
+      "type": "flat",
+      "rate": 0.0495
+    },
+    "PA": {
+      "type": "flat",
+      "rate": 0.0307,
+      "note": "Local earned-income tax goes in location.local_tax_pct."
+    },
+    "NC": {
+      "type": "flat",
+      "rate": 0.0399
+    },
+    "AZ": {
+      "type": "flat",
+      "rate": 0.025
+    },
+    "CO": {
+      "type": "flat",
+      "rate": 0.044
+    },
+    "UT": {
+      "type": "flat",
+      "rate": 0.045
+    },
+    "KY": {
+      "type": "flat",
+      "rate": 0.035
+    },
+    "MA": {
+      "type": "flat",
+      "rate": 0.05,
+      "note": "Extra 4% surtax over ~$1M ignored"
+    },
+    "GA": {
+      "type": "flat",
+      "rate": 0.0519,
+      "note": "Low confidence, verify"
+    },
+    "CA": {
+      "type": "brackets",
+      "approximate": true,
+      "std_deduction": {
+        "single": 5540,
+        "mfj": 11080
+      },
+      "brackets_single": [
+        [
+          11079,
+          0.01
+        ],
+        [
+          26264,
+          0.02
+        ],
+        [
+          41452,
+          0.04
+        ],
+        [
+          57542,
+          0.06
+        ],
+        [
+          72724,
+          0.08
+        ],
+        [
+          371479,
+          0.093
+        ],
+        [
+          445771,
+          0.103
+        ],
+        [
+          742953,
+          0.113
+        ],
+        [
+          null,
+          0.123
+        ]
+      ],
+      "mfj_multiplier": 2,
+      "note": "Bracket thresholds are 2025 values; also ~1.2% SDI on wages not modelled. Verify."
+    }
+  }
+}

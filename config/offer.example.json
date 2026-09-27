@@ -1,0 +1,41 @@
+{
+  "_readme": "Template for one offer + market data. Copy to data/output/<Company_Name>/offer_<Company>_<Role>_<YYYY-MM-DD>.json (gitignored) for each real offer. `offer` uses the same schema as `current` in salary_config.json. `market` comes from the research step of the salary-compare skill; any field may be null.",
+  "offer": {
+    "label": "Example Co - Role",
+    "location": {
+      "city": "Example City",
+      "state": "OH",
+      "local_tax_pct": 0.0,
+      "cost_of_living_index": 95,
+      "monthly_housing_cost": 1500
+    },
+    "base_salary": 110000,
+    "bonus": {"target_pct": 8, "expected_payout_pct_of_target": 100},
+    "annual_equity_value": 0,
+    "sign_on_bonus": 0,
+    "retirement": {
+      "employee_contribution_pct": 6,
+      "match_rate": 1.0,
+      "match_cap_pct": 6,
+      "match_on_bonus": false
+    },
+    "perks": [],
+    "employee_costs": [
+      {"name": "Health insurance premium", "monthly_cost": 150, "pretax": true}
+    ],
+    "pto_days": 20
+  },
+  "market": {
+    "role": "Example role",
+    "range_min": 90000,
+    "range_max": 140000,
+    "p25": 100000,
+    "p50": 115000,
+    "p75": 128000,
+    "sources": ["<url> (retrieved YYYY-MM-DD)"]
+  },
+  "one_time_costs": [
+    {"name": "Unreimbursed relocation", "amount": 0},
+    {"name": "Forfeited current-year bonus", "amount": 0}
+  ]
+}
