@@ -1391,7 +1391,7 @@ Two skills, `resume-generator` and `outreach-writer`, turn a collected job plus 
 resume into a tailored resume (HTML + PDF) and outreach copy (email, cover letter). Python owns
 retrieval and mechanics; the skills own the writing. No Word/`.docx` path, no hook, no MCP.
 
-**Data layout** (all under git-ignored `data/`):
+**Data layout** (personal inputs under git-ignored `config/resume/`, generated outputs under git-ignored `data/`):
 
 - `config/resume/main_resume_<YYYY-MM-DD>.md` - master resume; optional siblings
   `cover_letter_<YYYY-MM-DD>.md` (writing sample), `Review_Evidence_<YYYY-MM-DD>.md`, and
