@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Serve the radar report live on localhost: fresh HTML on every load, feedback clicks saved to
 SQLite immediately (with stale-write protection), job application tracking (statuses, dates,
-notes, an Applications page, CSV/JSON exports), change polling. Opt-in; the static
+notes, an Applications page, CSV/JSON exports), job-description file export for the resume
+skill (POST /api/jd), change polling. Opt-in; the static
 `render_radar.py` file:// report is unchanged. See docs/live-radar-dashboard-plan.md.
 
 Unauthenticated by design: it binds to loopback by default and rejects foreign Host/Origin
@@ -40,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from job_hunter.applications_export import write_applications_exports
 from job_hunter.config import CandidateProfile, Settings, load_profile, load_settings
+from job_hunter.jd_export import JobHasNoDescription, JobNotFound, export_jd
 from job_hunter.models import ApplicationStatus, FeedbackLabel, JobFeedback
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.runlock import RunLockHeld, run_lock
@@ -110,12 +112,11 @@ def non_loopback_warning(host: str) -> str | None:
     )
 
 
-class _KeyedWrite(BaseModel):
+class _JobKey(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_key: str = Field(min_length=1, max_length=200)
     job_id: str = Field(min_length=1, max_length=500)
-    client_ts: datetime
 
     @field_validator("source_key", "job_id")
     @classmethod
@@ -124,12 +125,20 @@ class _KeyedWrite(BaseModel):
             raise ValueError("must not be blank")
         return value
 
+
+class _KeyedWrite(_JobKey):
+    client_ts: datetime
+
     @field_validator("client_ts")
     @classmethod
     def _aware_utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
             raise ValueError("client_ts must include a UTC offset")
         return value.astimezone(UTC)
+
+
+class JdExport(_JobKey):
+    """Only the two identifiers: the JD text always comes from the database, never the browser."""
 
 
 class FeedbackWrite(_KeyedWrite):
@@ -293,7 +302,24 @@ def render_applications_html(cfg: ServerConfig) -> str:
 
 _EXPORT_LOCK = threading.Lock()
 
-_POST_ROUTES = {"/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite}
+def write_jd(
+    storage: Storage, req: JdExport, *, project_root: Path, output_root: Path, today: date
+) -> tuple[int, dict[str, Any]]:
+    """Export one job's JD file (spec section 6.7). Only project-relative paths ever leave the
+    server; an unexpected failure (e.g. disk full) propagates to the generic 500 handler."""
+    try:
+        result = export_jd(
+            storage, req.source_key, req.job_id, project_root=project_root,
+            output_root=output_root, today=today,
+        )
+    except JobNotFound:
+        return 404, {"ok": False, "error": "unknown job"}
+    except JobHasNoDescription:
+        return 409, {"ok": False, "error": "job has no description"}
+    return 200, {"ok": True, "path": result.relative_path, "created": result.created, "prompt": result.prompt}
+
+
+_POST_ROUTES = {"/api/feedback": FeedbackWrite, "/api/application": ApplicationWrite, "/api/jd": JdExport}
 
 
 class RadarServer(ThreadingHTTPServer):
@@ -441,6 +467,12 @@ class RadarHandler(BaseHTTPRequestHandler):
             with Storage(self.server.cfg.settings.database_path) as storage:
                 if isinstance(req, FeedbackWrite):
                     status, response = write_feedback(storage, req, now=datetime.now(UTC))
+                elif isinstance(req, JdExport):
+                    status, response = write_jd(
+                        storage, req, project_root=Path.cwd(),
+                        output_root=self.server.cfg.settings.database_path.parent / "output",
+                        today=date.today(),
+                    )
                 else:
                     status, response = write_application(
                         storage, req, now=datetime.now(UTC), today=date.today()

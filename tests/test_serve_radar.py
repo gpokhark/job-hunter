@@ -442,3 +442,71 @@ def test_a_slow_post_body_times_out_instead_of_pinning_a_thread(tmp_path, monkey
         assert e.request("GET", "/api/state")[0] == 200  # server still healthy
     finally:
         e.close()
+
+
+@pytest.fixture
+def jd_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    e = Env(tmp_path)
+    yield e
+    e.close()
+
+
+def post_jd(env, job_id="1", **extra):
+    body = {"source_key": "acme", "job_id": job_id}
+    body.update(extra)
+    return env.request("POST", "/api/jd", body)
+
+
+def test_jd_export_writes_the_file_and_returns_a_relative_path_and_prompt(jd_env):
+    status, _, body = post_jd(jd_env)
+    assert status == 200 and body["ok"] is True and body["created"] is True
+    assert body["path"].startswith("data/output/Acme/JD_Acme_ADAS_Engineer_")
+    assert not body["path"].startswith("/") and str(jd_env.root) not in json.dumps(body)
+    assert body["prompt"] == f"Use the resume-generator skill on {body['path']}"
+    text = (jd_env.root / body["path"]).read_text(encoding="utf-8")
+    assert text.startswith("ADAS Engineer\n") and "secret body" in text and "Job ID: 1" in text
+
+
+def test_a_second_click_reuses_the_file_and_a_changed_description_gets_a_new_one(jd_env):
+    first = post_jd(jd_env)[2]
+    second = post_jd(jd_env)[2]
+    assert (second["created"], second["path"]) == (False, first["path"])
+    with Storage(jd_env.db) as storage:
+        storage.connection.execute("UPDATE jobs SET description='A new posting body.' WHERE job_id='1'")
+        storage.connection.commit()
+    third = post_jd(jd_env)[2]
+    assert third["created"] is True and third["path"].endswith("_2.txt")
+    assert (jd_env.root / first["path"]).read_text(encoding="utf-8").count("secret body") == 1
+
+
+def test_jd_export_unknown_job_is_404_and_empty_description_is_409_with_no_file(jd_env):
+    assert post_jd(jd_env, job_id="nope")[0] == 404
+    with Storage(jd_env.db) as storage:
+        storage.connection.execute("UPDATE jobs SET description='' WHERE job_id='2'")
+        storage.connection.commit()
+    status, _, body = post_jd(jd_env, job_id="2")
+    assert status == 409 and body["error"] == "job has no description"
+    assert not list((jd_env.root / "data" / "output").glob("**/JD_*Other*"))
+
+
+def test_jd_export_uses_the_same_request_guards(jd_env):
+    assert post_jd(jd_env, client_ts="2026-01-01T00:00:00+00:00")[0] == 400  # extra="forbid"
+    assert jd_env.request("POST", "/api/jd", {"source_key": " ", "job_id": "1"})[0] == 400
+    assert jd_env.request("POST", "/api/jd", {"source_key": "acme"})[0] == 400
+    payload = json.dumps({"source_key": "acme", "job_id": "1"})
+    assert jd_env.request("POST", "/api/jd", raw=payload, headers={"Content-Type": "text/plain"})[0] == 415
+    bad_origin = {"Content-Type": "application/json", "Origin": "http://evil.example"}
+    assert jd_env.request("POST", "/api/jd", raw=payload, headers=bad_origin)[0] == 403
+    assert jd_env.request("POST", "/api/jd", body={"source_key": "acme", "job_id": "1"},
+                          headers={"Host": "evil.example"})[0] == 403
+    assert jd_env.request("GET", "/api/jd")[0] == 404  # POST-only route
+
+
+def test_a_write_failure_is_a_generic_500_that_leaks_no_path(jd_env, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError(f"[Errno 28] No space left on device: '{jd_env.root}/secret/file.txt'")
+
+    monkeypatch.setattr(serve_radar, "export_jd", boom)
+    status, _, body = post_jd(jd_env)
+    assert status == 500 and body == {"ok": False, "error": "internal error"}
