@@ -216,3 +216,29 @@ test('reconcileApps pulls server state for keys with no pending write', () => {
     []
   );
 });
+
+test('resumeNotice: success copies the prompt or shows it for manual copying', () => {
+  const json = { ok: true, path: 'data/output/Acme/JD_Acme_X_2026-09-26.txt', prompt: 'Use the resume-generator skill on data/output/Acme/JD_Acme_X_2026-09-26.txt' };
+  const copied = core.resumeNotice(200, json, true);
+  assert.match(copied, /Copied to clipboard/);
+  assert.match(copied, /Claude Code or Hermes/);
+  assert.ok(copied.includes(json.path));
+  const manual = core.resumeNotice(200, json, false);
+  assert.match(manual, /Copy this/);
+  assert.ok(manual.includes(json.prompt));
+});
+
+test('resumeNotice: each failure status has its own clear message', () => {
+  assert.match(core.resumeNotice(404, null, false), /no longer in the database/);
+  assert.match(core.resumeNotice(409, null, false), /no description/);
+  assert.match(core.resumeNotice(403, null, false), /rejected .*403/);
+  assert.match(core.resumeNotice(415, null, false), /rejected .*415/);
+  assert.match(core.resumeNotice(0, null, false), /Could not reach/);
+  assert.match(core.resumeNotice(500, null, false), /Could not reach/);
+  assert.match(core.resumeNotice(503, { error: 'x' }, false), /Could not reach/);
+});
+
+test('resumeNotice never throws on a malformed success body', () => {
+  assert.match(core.resumeNotice(200, null, true), /Could not reach|unexpected/i);
+  assert.match(core.resumeNotice(200, {}, true), /Could not reach|unexpected/i);
+});

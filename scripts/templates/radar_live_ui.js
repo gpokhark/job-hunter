@@ -57,12 +57,12 @@
   }
 
   var noticeTimer = null;
-  function notice(message) {
+  function notice(message, ms) {
     var el = $('live-notice');
     if (!el) return;
     el.textContent = message;
     clearTimeout(noticeTimer);
-    noticeTimer = setTimeout(function () { el.textContent = ''; }, 8000);
+    noticeTimer = setTimeout(function () { el.textContent = ''; }, ms || 8000);
   }
 
   function safeStorage() {
@@ -224,6 +224,44 @@
     if (!field) return;
     var row = field.closest(ROW_SELECTOR);
     if (row) saveApp(row);
+  });
+
+  // ---- Resume button: export the job's JD file, copy a ready-to-paste prompt -----------------
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    }
+    return Promise.resolve(false);
+  }
+  document.addEventListener('click', function (evt) {
+    var btn = evt.target.closest ? evt.target.closest('.resume-btn') : null;
+    if (!btn) return;
+    // Nested inside <summary>: keep the click from toggling the row.
+    evt.preventDefault();
+    evt.stopPropagation();
+    var row = btn.closest(ROW_SELECTOR);
+    if (!row || btn.disabled) return;
+    btn.disabled = true;
+    function done() { btn.disabled = false; }
+    fetch('/api/jd', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_key: row.dataset.sourceKey, job_id: row.dataset.jobId })
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (json) {
+        return { status: res.status, json: json };
+      });
+    }).then(function (res) {
+      if (res.status !== 200 || !res.json || typeof res.json.prompt !== 'string') {
+        notice(L.resumeNotice(res.status, res.json, false));
+        return;
+      }
+      return copyText(res.json.prompt).then(function (copied) {
+        // A failed clipboard write keeps the prompt on screen longer so it can be copied by hand.
+        notice(L.resumeNotice(200, res.json, copied), copied ? 8000 : 30000);
+      });
+    }, function () {
+      notice(L.resumeNotice(0, null, false));
+    }).then(done, done);
   });
 
   function pullApplications() {
