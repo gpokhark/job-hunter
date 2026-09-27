@@ -17,6 +17,10 @@ dependencies = [
 # pulls in a real headless browser. Install with `uv sync --extra stealth`,
 # then run `uv run scrapling install` once to fetch the browser binary.
 stealth = ["scrapling[fetchers]>=0.4,<1"]
+# Only needed for the resume-generator / outreach-writer skills' PDF output: renders the HTML
+# resume in headless Chromium and counts pages. Install with `uv sync --extra resume`, then run
+# `uv run playwright install chromium` once to fetch the browser.
+resume = ["playwright>=1.45,<2", "pypdf>=5,<7"]
 
 [project.scripts]
 job-hunter = "job_hunter.cli:main"
