@@ -1,6 +1,6 @@
 ---
 name: outreach-writer
-version: 1.0.0
+version: 1.0.1
 description: Write a short Dale Carnegie–style outreach email to a hiring manager or recruiter, and/or a tailored cover letter, from the applicant's tailored resume and a job description. Use whenever asked to "write an email to the hiring manager/recruiter", "draft an outreach email", "write a cover letter", "generate a cover letter for [company]", or any request to reach out about a job application. Free-text instructions in the request (recipient name, angle, tone, length, structure) are always honored. Always invoke this skill; never hand-write outreach copy without it.
 compatibility: Requires uv and Python 3.11+. The cover-letter PDF needs `uv sync --extra resume` and a one-time `uv run playwright install chromium` (no Microsoft Word needed). Runs in Claude Code, Hermes and OpenCode.
 metadata:
