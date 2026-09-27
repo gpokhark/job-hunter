@@ -1124,6 +1124,9 @@ explicit, dry-run-by-default answer:
 | `export-assessments` | — | dumps + writes `data/assessments.json` |
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `export-applications` | — | dumps + writes `data/applications.json` and `.csv` (§8.5b) |
+| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
+| `contact` | — | validates the profile's `contact:` block and prints it as JSON plus derived `first_name`/`last_name`; exits 2 listing missing/placeholder fields (§11.2) |
+| `export-jd` | `source_key job_id` | writes (or reuses) the job's JD text file under `data/output/<Company>/` and prints `{path, relative_path, created, prompt}`; exits 1 for an unknown job or one with no description (§11.2) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 | `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
@@ -1164,10 +1167,12 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | `assessments_to_csv.py` | Human-readable `data/assessments.csv` from the assessments store. |
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |
-| `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all six skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
+| `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all eight skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`, `resume-generator`, `outreach-writer`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
 | `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` via `scripts/run_profile_hook.sh "${CLAUDE_PROJECT_DIR}"` — a portable POSIX-`sh` launcher (docs/agent-runtime-audit.md's "Claude hook coverage" finding) that finds `uv` itself and falls back to a clear stderr diagnostic (then, best-effort, bare `python3`) instead of the shell failing outright with "command not found" when `uv` isn't on the invoking process's `PATH` — before this script (or `hook_adapter.run_diff`'s own `shutil.which("uv")` check, which only covers the *second*, inner `uv run` call that runs `diff_profile.py`) ever gets a chance to run at all. |
 | `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
-| `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
+| `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
+| `measure_resume.py` | Renders an HTML resume/cover letter in headless Chromium at US Letter with 0.5" margins and prints JSON (`status` `ok`/`underflow`/`overflow`, `pages`, `last_page_fill_pct`, `fill_pct`, `content_height_px`, `delta_lines`, `guidance`); `--target-pages` (1, 1.5, 2), `--save-pdf OUT.pdf`, `--project`. Needs the optional `resume` extra (§11.2). |
+| `log_resume.py` | Appends one row to `data/output/resume_log.csv` (`--file --company --date` required; `--role --url --fill --pages --iterations` optional; `--project`). Formula-looking cells are prefixed with `'`. |
 | `render_applications.py` | Renders the live Applications page (`/applications`) from `Storage.export_applications()` plus each posting's current state (open/closed/removed); imported by `serve_radar.py`, not a standalone deliverable. Client script: `templates/applications_ui.js`; shared outbox engine: `templates/radar_live_sync.js`. |
 | `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` is optional (omitted: auto-resolves the newest `radar-feedback-*.json` in `~/Downloads`). Applies each entry at the export file's mtime and skips entries older than a live change/tombstone (reported as `stale-skipped` only when nonzero). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
 | `suggest_exclusions.py` | Suggests safe `soft_exclude_terms` candidates from `job_feedback`'s `irrelevant`-tagged titles — n-gram frequency (`--min-support`, default 2) filtered against a protected set (every `assessments` row scoring ≥50, plus explicit `relevant`/`okay` labels; an `irrelevant` label always overrides that job's own stale score for this check). Prints a per-term diff preview against a real archive (default newest, or `--search`/`--keyword`) showing exactly what it would exclude and what `strong_relevance_terms` would rescue. Below-`--min-support` (single-occurrence) candidates are shown separately, not silently omitted. **Never writes to `candidate_profile.yaml`** — suggestions only. |
@@ -1186,7 +1191,7 @@ by mtime). One implementation shared by `cli.py`, `review_with_lm_studio.py`, an
 
 ## 11. Agent/skill layer
 
-Six independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
+Eight independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
 `docs/skill-split-plan.md` for the design rationale and the sequence/flow diagrams). Every skill's
 frontmatter carries `name`/`version`/`description` (top-level, unchanged in position — see
 `docs/skill-frontmatter-and-hook-plan.md` §3.1 for why `version` stays there rather than nesting
@@ -1377,6 +1382,87 @@ uv run python scripts/diff_profile.py --project "$CLAUDE_PROJECT_DIR" --accept-b
 ```
 A routine check-in with nothing new to ingest and no profile change reports "nothing changed" and
 stops — this is a safe, idempotent skill to invoke any time, not only right after tagging jobs.
+
+---
+
+### 11.2 Resume and outreach (skills + JD export)
+
+Two skills, `resume-generator` and `outreach-writer`, turn a collected job plus the owner's master
+resume into a tailored resume (HTML + PDF) and outreach copy (email, cover letter). Python owns
+retrieval and mechanics; the skills own the writing. No Word/`.docx` path, no hook, no MCP.
+
+**Data layout** (all under git-ignored `data/`):
+
+- `data/resume/main_resume_<YYYY-MM-DD>.md` - master resume; optional siblings
+  `cover_letter_<YYYY-MM-DD>.md` (writing sample), `Review_Evidence_<YYYY-MM-DD>.md`, and
+  `personalization.md`.
+- `data/output/<Company>/` - JD files (`JD_<Company>_<Title>_<YYYY-MM-DD>[_N].txt`) and everything the
+  skills generate for that company.
+- `data/output/resume_log.csv` - one row per generated resume (`Date, Company, Role, Job_URL,
+  Fill_Pct, Pages, Iterations, Resume_File`).
+
+**Resolver** (`src/job_hunter/resume_source.py`, `job-hunter resume-files [--resume PATH]`).
+Precedence: explicit `--resume` > newest `data/resume/main_resume_<YYYY-MM-DD>.md` > the profile's
+`resume_path` fallback. "Newest" is the date in the *filename*, never mtime; names that do not match
+or hold an impossible date are ignored. The same function serves the local-LLM reviewer. Output JSON:
+`master_resume`, `master_resume_source` (`explicit`/`dated`/`profile`), `personalization`,
+`cover_letter_sample`, `review_evidence` (each of the last three a path or `null`). Exit 2 when
+nothing resolves, or when only the repo's example resume (`.example.` in the name) is found: generation
+never runs from placeholder text.
+
+**Contact** (`contact:` block in `config/candidate_profile.yaml`, model `ContactInfo`): `name` and
+`email` required; `phone`, `linkedin`, `github` optional and omitted from the header when empty.
+`job-hunter contact` prints the values plus derived `first_name`/`last_name`, or exits 2 listing every
+missing field and every value that is still the example placeholder. The skills stop on exit 2 rather
+than invent details.
+
+**JD export** (`src/job_hunter/jd_export.py`, `job-hunter export-jd <source_key> <job_id>`). Writes
+`JD_<Company>_<First4TitleWords>_<YYYY-MM-DD>.txt` under `data/output/<Company>/`. Filename parts are
+sanitized to `[A-Za-z0-9_-]` (non-ASCII letters are dropped, not transliterated). File layout: title
+line, location line, optional department line; then a `Summary` block (`Posted`, `Job ID`, `Job URL`,
+`Source`); then `Description` (HTML converted to plain text; scripts/styles dropped; header values
+collapsed to one line); then `Pay & Benefits` only when salary evidence exists. Identical content the
+same day reuses the file (`created: false`); a changed description gets the next numbered file
+(`_2`, `_3`, ...), so the JD an earlier resume was tailored to is never overwritten. `prompt` is
+`Use the resume-generator skill on <relative_path>`. Writes are atomic.
+
+**`POST /api/jd`** (`serve_radar.py`): body `{"source_key", "job_id"}` only (`extra="forbid"`); the
+browser never supplies a path or text. Replies `200 {ok, path, created, prompt}` with a
+*project-relative* `path` (an absolute path never leaves the server), `404` unknown job, `409` job has
+no description, `500 internal error` (no path in the message). Reuses every existing POST guard
+(Host, Origin, Content-Type, size limit, body drain). No outbox: a failed export is shown, not queued.
+The live radar's per-row **Resume** button calls it, copies the prompt to the clipboard and shows
+where the JD was saved; the static report has no button.
+
+**`measure_resume.py` / `log_resume.py`**: see the scripts table (§10) for flags and JSON fields. Both
+take `--project`. `measure_resume.py` needs the optional `resume` extra (`playwright`, `pypdf`):
+`uv sync --extra resume` then `uv run playwright install chromium` (`--with-deps` on a bare Linux host).
+Without them it prints those commands and exits 2 (a missing input file exits 1). The base install and
+default test suite never need the extra. Page fill is measured on the machine that renders the PDF;
+fonts differ between operating systems, so re-measure per machine.
+
+**Personalization model.** The owner steers every run two ways: free text in the request itself (page
+size, emphasis, omissions, tone, recipient name, extra facts) and an optional
+`data/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections.
+Precedence, highest first: integrity rules > the current request > `personalization.md` > skill
+defaults. A request instruction applies to that run only, and the skills never edit
+`personalization.md`. Integrity rules are not overridable: no fabricated experience or metrics, no
+invented recipient names or contact details, nothing that contradicts the master resume, and output stays
+inside the job-hunter output folder. Format rules (page size, bullet counts, summary length, the
+Technical Skills block, role cutoff) are overridable defaults, and the skills report honestly when a
+changed target does not fit.
+
+**Skill contracts.**
+
+- `resume-generator` - input: a JD file path or pasted JD (required), optional free-text instructions,
+  `--project`. Output: `<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
+  beside the JD, one `resume_log.csv` row, and a report of paths, pages, fill and applied
+  personalization. Next: `outreach-writer`.
+- `outreach-writer` - input: a JD (file, company folder or pasted), which deliverable(s) (email, cover
+  letter, both), optional free-text instructions, `--project`. Output in `data/output/<Company>/`:
+  `<LastName>_Email_<Company>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<Company>-<RoleToken>_<YYYY-MM-DD>.pdf`
+  (plus `.html` build artifact and `.txt` copy), and a report of word counts and applied
+  personalization. It stops when `resume-files` or `contact` fails.
 
 ---
 

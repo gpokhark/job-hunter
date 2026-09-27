@@ -49,6 +49,7 @@ scoring into Python or retrieval into the skill.
 - Before any run that writes reports or archives, list the target paths and check whether they exist with `ls -la <exact path>`. Report the result truthfully.
 - Output filenames must reflect filters such as `--companies` and `--project`.
 - `serve_radar.py` tests/smoke runs use a temp project (`--project`); never point one at the real `data/` for experiments.
+- Generated resumes/JDs, `data/resume/*` and the `contact:` block are personal data: never commit them or paste them into tests/docs (use obviously fake values like `Jane Doe`/`jane@example.com`).
 
 ## Commands
 
@@ -387,6 +388,21 @@ ranked `SearchResult` JSON.
   became the first migration entries). `_migrate()` applies every unseen entry then advances
   `user_version` — idempotent.
 
+- **Resume and outreach** (`docs/SPEC.md` §11.2) — Python owns retrieval and mechanics, the two skills own
+  the writing. `src/job_hunter/resume_source.py`: `resolve_master_resume()` picks the newest
+  `data/resume/main_resume_<YYYY-MM-DD>.md` by *filename* date (never mtime), falling back to the profile's
+  `resume_path`; also serves the local-LLM reviewer; `job-hunter resume-files` prints its JSON and rejects the
+  example resume. `config.py`'s `ContactInfo`/`contact_problems()` back the profile `contact:` block and
+  `job-hunter contact` (exit 2 on missing/placeholder fields). `src/job_hunter/jd_export.py` +
+  `job-hunter export-jd` write `data/output/<Company>/JD_*.txt` (sanitized filenames, same-content reuse,
+  changed description -> numbered `_2` file). `POST /api/jd` in `serve_radar.py` (source_key/job_id only;
+  200/404/409; project-relative path only) backs the live radar's per-row Resume button, which copies
+  `Use the resume-generator skill on <path>`. `scripts/measure_resume.py`/`log_resume.py` measure page fill
+  and append `data/output/resume_log.csv`; they need the optional `resume` extra (`uv sync --extra resume` +
+  `uv run playwright install chromium`), never the base install or default tests. `skills/resume-generator`
+  and `skills/outreach-writer` (symlinked in `.claude/skills/`) take free-text personalization per request plus
+  `data/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
+
 - **`health.py`** — `detect_count_anomaly` flags (doesn't fail) a source whose job count drops
   >70% from its last known count — guards against adapters "succeeding" against a changed page
   structure while returning far fewer/no jobs.
@@ -394,13 +410,13 @@ ranked `SearchResult` JSON.
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.
 
-- **`skills/`** — agent-facing half, six independently-invocable skills
+- **`skills/`** — agent-facing half, eight independently-invocable skills
   (`docs/skill-split-plan.md`): `job-scout` (search → archive), `job-reviewer` (local-LLM
   scoring), `job-radar` (compile + render), `job-feedback` (turn radar feedback/profile edits into
   a confirmed profile update via `diff_profile.py` check mode), `job-hunter` (orchestrator),
   `onboard-source` (repo-maintenance skill for adding a new employer source, not end-user;
   `.claude/skills/onboard-source` symlinks to `skills/onboard-source` so it installs for every
-  runtime). Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
+  runtime), `resume-generator` and `outreach-writer` (see "Resume and outreach" above). Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
   `candidates`, never recommend `us_eligible=false`, never invent salary/sponsorship/
   qualifications. Scoring is delegated entirely to `scripts/review_with_lm_studio.py`
   (deterministic script, not a sub-agent) — sends each unassessed candidate to a **local** LM

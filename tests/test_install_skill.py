@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = REPO_ROOT / "scripts" / "install_skill.sh"
-SIX_SKILLS = {"job-hunter", "job-scout", "job-reviewer", "job-radar", "job-feedback", "onboard-source"}
+ALL_SKILLS = {"job-hunter", "job-scout", "job-reviewer", "job-radar", "job-feedback", "onboard-source", "resume-generator", "outreach-writer"}
 
 
 def _run(args, *, home, hermes_home=None, timeout=60):
@@ -34,16 +34,25 @@ def test_dry_run_creates_nothing(tmp_path):
     proc = _run(["--dry-run", "--claude-global"], home=home)
     assert proc.returncode == 0, proc.stderr
     assert not (home / ".claude" / "skills").exists()
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         assert f"-> {home}/.claude/skills/{name} [dry-run]" in proc.stdout
 
 
-def test_dry_run_installs_all_six_skills_including_onboard_source(tmp_path):
+def test_dry_run_installs_all_eight_skills_including_onboard_source(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     proc = _run(["--dry-run", "--claude-global"], home=home)
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         assert name in proc.stdout
+
+
+def test_dry_run_lists_the_resume_and_outreach_skills(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = _run(["--dry-run", "--claude-global"], home=home)
+    assert proc.returncode == 0, proc.stderr
+    for name in ("resume-generator", "outreach-writer"):
+        assert f"-> {home}/.claude/skills/{name} [dry-run]" in proc.stdout
 
 
 def test_link_is_the_default_and_link_flag_is_an_explicit_synonym(tmp_path):
@@ -56,7 +65,7 @@ def test_link_is_the_default_and_link_flag_is_an_explicit_synonym(tmp_path):
     proc_explicit = _run(["--link", "--claude-global"], home=home_explicit)
     assert proc_default.returncode == 0
     assert proc_explicit.returncode == 0
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         dest_default = home_default / ".claude" / "skills" / name
         dest_explicit = home_explicit / ".claude" / "skills" / name
         assert dest_default.is_symlink()
@@ -71,7 +80,7 @@ def test_rerun_reports_ok_not_a_reinstall(tmp_path):
     assert first.returncode == 0
     second = _run(["--claude-global"], home=home)
     assert second.returncode == 0
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         assert f"OK {home}/.claude/skills/{name} (already up to date)" in second.stdout
     assert "LINK" not in second.stdout
 
@@ -135,7 +144,7 @@ def test_uninstall_removes_installed_skills(tmp_path):
     _run(["--claude-global"], home=home)
     proc = _run(["--uninstall", "--claude-global"], home=home)
     assert proc.returncode == 0
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         dest = home / ".claude" / "skills" / name
         assert not dest.exists() and not dest.is_symlink()
         assert f"REMOVED {dest}" in proc.stdout
@@ -152,7 +161,7 @@ def test_uninstall_dry_run_touches_nothing(tmp_path):
     _run(["--claude-global"], home=home)
     proc = _run(["--uninstall", "--dry-run", "--claude-global"], home=home)
     assert proc.returncode == 0
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         dest = home / ".claude" / "skills" / name
         assert dest.is_symlink()
         assert f"UNINSTALL {dest} [dry-run]" in proc.stdout
@@ -185,7 +194,7 @@ def test_manifest_is_written_on_fresh_install(tmp_path):
     manifest = home / ".claude" / "skills" / ".job-hunter-installed"
     assert manifest.exists()
     lines = manifest.read_text().splitlines()
-    assert set(lines) == SIX_SKILLS
+    assert set(lines) == ALL_SKILLS
 
 
 def test_uninstall_refuses_a_destination_this_tool_never_installed(tmp_path):
@@ -237,7 +246,7 @@ def test_uninstall_removes_manifest_entry_too(tmp_path):
 
     proc = _run(["--uninstall", "--claude-global"], home=home)
     assert proc.returncode == 0, proc.stderr
-    # All six skills were the manifest's only entries -- removing all of them leaves it empty,
+    # All eight skills were the manifest's only entries -- removing all of them leaves it empty,
     # not stale with names for skills that no longer exist at their destinations.
     assert manifest.read_text().strip() == ""
 
@@ -318,7 +327,7 @@ def test_hermes_install_and_uninstall_round_trip(tmp_path):
 
     proc = _run(["--hermes"], home=home, hermes_home=hermes_home, timeout=180)
     assert proc.returncode == 0, proc.stderr
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         assert (hermes_home / "skills" / name).is_symlink()
     assert (hermes_home / "agent-hooks" / "job-hunter-profile.py").is_symlink()
     config = hermes_home / "config.yaml"
@@ -328,12 +337,12 @@ def test_hermes_install_and_uninstall_round_trip(tmp_path):
     # The hook script symlink routes through the same install_one() as every skill, so it gets
     # the identical ownership-marker protection with no separate code path.
     skills_manifest = hermes_home / "skills" / ".job-hunter-installed"
-    assert set(skills_manifest.read_text().splitlines()) == SIX_SKILLS
+    assert set(skills_manifest.read_text().splitlines()) == ALL_SKILLS
     hooks_manifest = hermes_home / "agent-hooks" / ".job-hunter-installed"
     assert hooks_manifest.read_text().splitlines() == ["job-hunter-profile.py"]
 
     uninstall = _run(["--uninstall", "--hermes"], home=home, hermes_home=hermes_home, timeout=180)
     assert uninstall.returncode == 0, uninstall.stderr
-    for name in SIX_SKILLS:
+    for name in ALL_SKILLS:
         assert not (hermes_home / "skills" / name).exists()
     assert "job-hunter-profile.py" not in config.read_text()
