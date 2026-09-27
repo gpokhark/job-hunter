@@ -53,12 +53,15 @@ cp config/candidate_profile.example.yaml config/candidate_profile.yaml
 uv run job-hunter doctor
 ```
 
-Edit `config/candidate_profile.yaml` with your title/domain terms, exclusions, and resume path.
+Edit `config/candidate_profile.yaml` with your title/domain terms and exclusions.
+
+Put your master resume at `config/resume/main_resume_<YYYY-MM-DD>.md` (newest filename date wins;
+see `config/resume/README.md`). The profile's `resume_path` remains only as a fallback when no
+dated file exists there.
 
 Your resume and filled-in `candidate_profile.yaml` are personal and never committed —
-`.gitignore` excludes `config/candidate_profile.yaml` and any `config/*resume*` file except the
-checked-in `config/resume.example.md`. Bring your own resume as a `.md` file anywhere under
-`config/` matching that pattern (e.g. `config/my_resume.md`) and point `resume_path` at it.
+`.gitignore` excludes `config/candidate_profile.yaml`, everything in `config/resume/` except its
+README, and any `config/*resume*` file except the checked-in `config/resume.example.md`.
 
 Scoring candidates against your resume needs a local model running in
 [LM Studio](https://lmstudio.ai/) (Developer tab > Start Server). Copy
@@ -136,6 +139,10 @@ keeping the latest `retention.keep_latest_reports_per_slug` of each regardless o
 are configurable in `config/settings.yaml`; see `docs/SPEC.md` §8.6 and
 `docs/retention-cleanup-plan.md` for the full design.
 
+**Live mode:** `uv run python scripts/serve_radar.py --open` serves the radar with click-to-save feedback (SQLite), extra filters (min score, posted-within, company, location, has-salary, feedback state, sort), and "New results — Reload" polling. Static `render_radar.py` output and Export Feedback are unchanged; the server is loopback-only by default. The **Stop server** button (bottom right, confirms first) shuts the server down cleanly; it works on loopback binds only, and Ctrl+C in the terminal still works. Profile edits apply on the next page load; `settings.yaml` edits (age windows, undated days) need a server restart. In live mode, treat the static Export Feedback file as older than any live changes.
+
+**Application tracking (live mode only):** each row has a Track chip that opens an editor panel (status saved/applied/interviewing/offer/rejected/withdrawn, applied date, notes; edits autosave), the toolbar adds Application and Hide applied filters, and `/applications` lists every tracked application. Application data lives in SQLite; `data/applications.json`/`.csv` are refreshed after each save (a refresh failure is reported as a warning and never fails the save), and `uv run job-hunter export-applications` rewrites them on demand. Live saves do not refresh the feedback exports. Applications are never removed by `cleanup`; a posting it deletes shows as "removed".
+
 Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
 button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated
 "irrelevant" tags into safe `soft_exclude_terms` candidates for `candidate_profile.yaml` (never
@@ -204,7 +211,7 @@ through all of them. Step 3 alone is enough for "just re-render what's already t
 
 ## Skills
 
-Six independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
+Eight independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
 
 - **`job-scout`** — search (`job-hunter search --archive`)
 - **`job-reviewer`** — score candidates against your resume via local LM Studio
@@ -214,6 +221,8 @@ Six independently-invocable skills, so each stage can be run, checked on, or res
 - **`job-feedback`** — turn relevance feedback and profile edits into a confirmed profile update
 - **`onboard-source`** — repo-maintenance skill for adding a new employer source to job-hunter
   itself (see "Adding a new source" below); not part of a normal job-search session
+- **`resume-generator`** — tailored, ATS-friendly resume (HTML + PDF) from your newest master resume and a job description (see "Resume and outreach")
+- **`outreach-writer`** — outreach email and/or cover letter for the same job
 
 Example invocations (see `docs/SPEC.md` §11.1 for the full set, including exact-path resume and
 `--status` progress checks):
@@ -249,7 +258,7 @@ Install with:
 sh scripts/install_skill.sh
 ```
 
-This installs all six skills and prompts interactively for which runtime(s) to install into
+This installs all eight skills and prompts interactively for which runtime(s) to install into
 (Hermes, Claude Code globally, Claude Code for this repo only, OpenCode, or any combination). To
 skip the prompt, pass one or more target flags instead, e.g. `sh scripts/install_skill.sh
 --claude-local`, `sh scripts/install_skill.sh --all`. Add `--copy` to create independent copies
@@ -300,6 +309,34 @@ checkout's absolute path) — re-running the installer after moving/re-cloning t
 the existing registration instead of appending a second, stale one alongside it, and
 `--uninstall --hermes` can find and remove it from the new location too. `job-hunter doctor`
 reports if a Hermes registration exists but points at a hook script that no longer exists.
+
+## Resume and outreach
+
+The `resume-generator` and `outreach-writer` skills turn a job the radar found into a tailored resume
+(HTML + PDF) and outreach copy. Everything they produce lives under the git-ignored `data/output/`; the personal inputs they read live
+under the git-ignored `config/resume/` (and `config/candidate_profile.yaml`).
+
+**Setup**
+
+1. `uv sync --extra resume` and `uv run playwright install chromium` (only PDF output needs these).
+2. Fill the `contact:` block in `config/candidate_profile.yaml` (`name` and `email` required; `job-hunter contact` checks it).
+3. Save your master resume as `config/resume/main_resume_<YYYY-MM-DD>.md`. The newest filename date wins; `job-hunter resume-files` shows what will be used.
+4. Optional: `config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis).
+
+**Workflow**
+
+1. Open the live radar (`uv run python scripts/serve_radar.py --open`) and click **Resume** on a job. The JD is saved under `data/output/<Company>/` and a prompt is copied to your clipboard.
+2. Paste the prompt into Claude Code or Hermes. `resume-generator` writes the resume and PDF next to the JD and logs it in `data/output/resume_log.csv`.
+3. Ask for an outreach email and/or cover letter; `outreach-writer` uses the same folder.
+
+Free-text instructions work on every run ("2 page, lead with functional safety", "address it to Sam
+Lee"). They apply to that run only and never override the integrity rules: nothing fabricated, no invented
+recipient names or contact details, nothing that contradicts your master resume.
+
+**Portability.** No Microsoft Word is involved; the same steps work on Windows, macOS and Linux. Page
+fill is measured by the machine that renders the PDF, and fonts differ between operating systems, so
+results can vary slightly per machine. Without the `resume` extra the skills print the install commands
+instead of a PDF. See `docs/SPEC.md` §11.2.
 
 ## Development
 

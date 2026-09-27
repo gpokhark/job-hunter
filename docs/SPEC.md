@@ -1065,6 +1065,12 @@ mirrors `export-assessments` for read-only inspection (`data/job_feedback.json`,
 reads this table directly, only the `soft_exclude_terms`/`strong_relevance_terms` a human approved
 into `candidate_profile.yaml` from its suggestions. Full design: `docs/feedback-exclusion-plan.md`.
 
+Since the live radar, `job_feedback` is also written by `scripts/serve_radar.py` (`POST /api/feedback`). Writes are last-writer-wins by **event time** through `Storage.apply_feedback`/`delete_feedback`: a write applies only if strictly newer than the stored label's `recorded_at` and any row in `feedback_tombstones` (migration v3; one row per untagged job, retained, cleared only by a newer label). `apply_radar_feedback.py` uses the export file's mtime as the event time, so an old export can neither overwrite a newer live label nor resurrect an untagged job; skipped entries are reported as `stale-skipped` (only when nonzero). Live saves do not refresh either file; `job-hunter export-feedback` refreshes `data/job_feedback.json` and `.csv`, and `apply_radar_feedback.py` refreshes the CSV. `suggest_exclusions.py` reads the table directly. Known limitations: (i) a new export made from a stale static page after a live change still wins, because its mtime is later than the live event; (ii) rows imported from an export carry the export file's mtime as `recorded_at`, not the import time.
+
+### 8.5b `applications` — one row per `(source_key, job_id)`, a human-tracked application
+
+Written only by `scripts/serve_radar.py` (`POST /api/application`) through `Storage.apply_application`. Columns: `status` (`saved`/`applied`/`interviewing`/`offer`/`rejected`/`withdrawn`), `applied_at` (local date), `notes` (<= 4000 chars), the snapshot fields `company`/`title`/`url`/`location`/`posted_at`/`score`/`salary_evidence` (taken once at creation from `jobs`/`assessments`, then immutable), `created_at`, `updated_at`. Invariants: `saved` implies no date; the first non-`saved` status defaults `applied_at` to the server's local today; an explicit date must be a real date; a date cannot be cleared (move back to `saved` instead). Writes are last-writer-wins by event time through `application_tombstones` (migration v4; one row per deleted application, so a late write cannot resurrect it), same rule as §8.5's `feedback_tombstones`. There is no foreign key to `jobs`, so `cleanup` never deletes a row; a posting deleted by cleanup shows as "removed" on the Applications page. Rows are exported to `data/applications.json`/`.csv` (fixed columns, `updated_at DESC`; CSV cells starting with `=`, `+`, `-`, `@`, tab or CR are prefixed with `'`) after each committed live write and by `job-hunter export-applications`. A failed export refresh is reported as `export_warning` in the response and never fails or reverts the save. `data/job_feedback.json`/`.csv` are still not refreshed by live saves. The unsent-writes outbox is one shared localStorage key (`job-hunter-outbox`); with the server down and two tabs open, an unsent edit in one tab can overwrite the other tab's stored entry (each tab still retries its own from memory; the event-time rule makes duplicate sends harmless).
+
 ### 8.6 Retention/cleanup (`job-hunter cleanup`, `src/job_hunter/cleanup.py`)
 
 None of the above tables (nor `data/searches/`/`data/profile-diff/`/`data/radar/`) ever delete
@@ -1100,6 +1106,8 @@ explicit, dry-run-by-default answer:
   deleted row/file can't be re-queried afterward to build that record retroactively (skip via
   `--no-export`). `--jobs-only`/`--reports-only` scope to one half only.
 
+`feedback_tombstones` and `application_tombstones` rows are not deleted by cleanup, and `applications` rows are never deleted by cleanup (they carry their own snapshot of the posting).
+
 ---
 
 ## 9. CLI reference (`job-hunter`, via `cli.py`)
@@ -1115,6 +1123,10 @@ explicit, dry-run-by-default answer:
 | `record-assessment` | `--payload <json>` | manually write one assessment (content_hash always server-derived from the stored job, never caller-supplied) |
 | `export-assessments` | — | dumps + writes `data/assessments.json` |
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
+| `export-applications` | — | dumps + writes `data/applications.json` and `.csv` (§8.5b) |
+| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
+| `contact` | — | validates the profile's `contact:` block and prints it as JSON plus derived `first_name`/`last_name`; exits 2 listing missing/placeholder fields (§11.2) |
+| `export-jd` | `source_key job_id` | writes (or reuses) the job's JD text file under `data/output/<Company>/` and prints `{path, relative_path, created, prompt}`; exits 1 for an unknown job or one with no description (§11.2) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 | `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
@@ -1155,10 +1167,14 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | `assessments_to_csv.py` | Human-readable `data/assessments.csv` from the assessments store. |
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |
-| `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all six skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
+| `install_skill.sh` | Symlinks (`--link`, the default) or copies (`--copy`) all eight skill directories (`job-hunter`, `job-scout`, `job-reviewer`, `job-radar`, `job-feedback`, `onboard-source`, `resume-generator`, `outreach-writer`) into `~/.hermes/skills/`, `~/.claude/skills/`, `<repo>/.claude/skills/`, and/or `~/.config/opencode/skills/`. `--update` replaces a stale install (a symlink whose target no longer matches the current source, or a `--copy` whose content has diverged) instead of leaving it alone; `--uninstall` removes a previously-installed skill/hook (for `--hermes`, also unregisters `install_hermes_hook.py`'s `config.yaml` entry); `--dry-run` prints what would happen without touching the filesystem. |
 | `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` via `scripts/run_profile_hook.sh "${CLAUDE_PROJECT_DIR}"` — a portable POSIX-`sh` launcher (docs/agent-runtime-audit.md's "Claude hook coverage" finding) that finds `uv` itself and falls back to a clear stderr diagnostic (then, best-effort, bare `python3`) instead of the shell failing outright with "command not found" when `uv` isn't on the invoking process's `PATH` — before this script (or `hook_adapter.run_diff`'s own `shutil.which("uv")` check, which only covers the *second*, inner `uv run` call that runs `diff_profile.py`) ever gets a chance to run at all. |
 | `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
-| `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` (required). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
+| `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`, `/api/shutdown`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
+| `measure_resume.py` | Renders an HTML resume/cover letter in headless Chromium at US Letter with 0.5" margins and prints JSON (`status` `ok`/`underflow`/`overflow`, `pages`, `last_page_fill_pct`, `fill_pct`, `content_height_px`, `delta_lines`, `guidance`); `--target-pages` (1, 1.5, 2), `--save-pdf OUT.pdf`, `--project`. Needs the optional `resume` extra (§11.2). |
+| `log_resume.py` | Appends one row to `data/output/resume_log.csv` (`--file --company --date` required; `--role --url --fill --pages --iterations` optional; `--project`). Formula-looking cells are prefixed with `'`. |
+| `render_applications.py` | Renders the live Applications page (`/applications`) from `Storage.export_applications()` plus each posting's current state (open/closed/removed); imported by `serve_radar.py`, not a standalone deliverable. Client script: `templates/applications_ui.js`; shared outbox engine: `templates/radar_live_sync.js`. |
+| `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` is optional (omitted: auto-resolves the newest `radar-feedback-*.json` in `~/Downloads`). Applies each entry at the export file's mtime and skips entries older than a live change/tombstone (reported as `stale-skipped` only when nonzero). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
 | `suggest_exclusions.py` | Suggests safe `soft_exclude_terms` candidates from `job_feedback`'s `irrelevant`-tagged titles — n-gram frequency (`--min-support`, default 2) filtered against a protected set (every `assessments` row scoring ≥50, plus explicit `relevant`/`okay` labels; an `irrelevant` label always overrides that job's own stale score for this check). Prints a per-term diff preview against a real archive (default newest, or `--search`/`--keyword`) showing exactly what it would exclude and what `strong_relevance_terms` would rescue. Below-`--min-support` (single-occurrence) candidates are shown separately, not silently omitted. **Never writes to `candidate_profile.yaml`** — suggestions only. |
 | `diff_profile.py` | Preview-only: compares two `CandidateProfile`s — `--before`/`--after` (two saved YAML files) or the real on-disk profile plus an in-memory `--add field:term`/`--remove field:term` patch (never written back) — against every stored, `us_eligible`, recency-passing job, using `evaluate_prefilter` directly. Reports retained/still-excluded/gained/lost counts, a per-job before/after reason, and existing assessment/`job_feedback` context (a lost job someone tagged `relevant`/`okay` is flagged loudly). `--keyword` replaces `target_domains`/`target_title_terms` exactly like `search --keyword` does — not a narrowing of them, so testing an edit to either field under `--keyword` correctly shows no effect. Reads via a genuine read-only SQLite connection, not `Storage`. No `--apply` — preview only. `--output` (HTML path, default `data/profile-diff/{YYYY-MM-DD-T-HH-MM-SS}.html`, filename timestamp in US Eastern local time via `_report_timestamp`; the report's own `evaluated_at` field stays UTC). See `docs/profile-diff-plan.md`. |
 | `refilter_archive.py` | Applies (not preview-only, unlike `diff_profile.py`): rebuilds an already-collected search archive's `candidates` from SQLite's current `status='active' AND us_eligible=1` job pool, scoped to the sources that *succeeded* in that archive's own `source_health` (not merely attempted — see the source-scoping note below) — **no network/adapter call**. For after editing `candidate_profile.yaml` and wanting an existing archive/report to reflect it without a fresh `search`. `--search`/`--keyword` resolve the archive exactly like every other script (`search_archive.resolve_search_path`); `--keyword` also serves as the positive-match override, identical semantics to `search --keyword`. Recomputes recency against wall-clock *now*, not the archive's original collection time. **Rebuilds from SQLite rather than narrowing the archive's own previous `candidates`** — the original design did the latter and was found to be a one-way ratchet: once a `soft_exclude_terms` edit dropped a job from `candidates`, its data was gone from the file, so a later *loosening* edit (a new `strong_relevance_terms` override, a removed exclude term) had nothing left to restore and silently produced no effect. Every job observed by any run is persisted in SQLite regardless of prefilter outcome (`collector.py` upserts before prefilter runs), so this is always possible offline — the same "stored, `us_eligible`, recency-passing job" universe `diff_profile.py` already previews against. One consequence: a candidate's title/description reflects the latest content SQLite has for it (from any run), not a frozen snapshot from this archive's original collection, matching the tool's pre-existing recency-recomputation philosophy. Restricting to the archive's own source scope prevents an old, dated archive from silently gaining a company's jobs just because that company was onboarded later. Prints `N removed, M gained` (not just a net count) so a loosening and tightening edit in the same profile change are both visible. Rewrites only `candidates` and `summary.prefilter_candidates`/`stale_excluded`; every other field (`jobs_observed`, `source_health`, `run` metadata) is left untouched since it describes collection, not filtering. `--output` (default: overwrite the input archive in place). Unless `--no-report`, also writes an HTML gained/lost report to `data/profile-diff/archive-{search_stem}-{YYYY-MM-DD-T-HH-MM-SS}.html` (e.g. `archive-default_2026-09-06-2026-09-06-T-21-36-05.html`; filename timestamp in US Eastern local time via `diff_profile.py`'s shared `_report_timestamp`, imported rather than duplicated) — reuses `diff_profile.py`'s `_e`/`_fmt_posted_date`/`_job_tags` helpers and its identical click-to-feedback export JS, but through its own separate, simpler HTML template with **no "Profile terms" word-diff section**: unlike `diff_profile.py`, which diffs two actual `CandidateProfile` objects and can show `+added`/`-removed` terms per field, this script only ever loads one (the current on-disk) profile and diffs two *job snapshots* (an old archive vs. today's live SQLite pool) against it, so there's no second profile to compute a term diff from. Source scoping only counts a source as in-scope when its `source_health` entry in the archive did **not** record it as `failed`/`unsupported` (opt-out on known failure, not opt-in on known success — a row with no `status` field at all stays in scope) — fixed 2026-09-07 after a live case where a `stealth_html` source failing with "the 'stealth' dependency group is not installed" during an archive's own run still had older `active` jobs in SQLite from an unrelated earlier success, which the old "present in `source_health` at all" scoping pulled back in as spurious "Gained" entries with zero connection to any actual profile edit. Its own SQLite query moved to `src/job_hunter/active_pool.py`'s `raw_active_jobs()` once `render_radar.py`'s stale-source fallback needed the identical query for one source at a time — a behavior-preserving refactor, every existing test still passes unchanged. Invoked as an optional step in the `job-radar` skill (now via `job-hunter pipeline --no-scrape`, see §11), never automatically. |
@@ -1175,7 +1191,7 @@ by mtime). One implementation shared by `cli.py`, `review_with_lm_studio.py`, an
 
 ## 11. Agent/skill layer
 
-Six independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
+Eight independently-invocable skills under `skills/`, each with its own canonical `SKILL.md` (see
 `docs/skill-split-plan.md` for the design rationale and the sequence/flow diagrams). Every skill's
 frontmatter carries `name`/`version`/`description` (top-level, unchanged in position — see
 `docs/skill-frontmatter-and-hook-plan.md` §3.1 for why `version` stays there rather than nesting
@@ -1366,6 +1382,98 @@ uv run python scripts/diff_profile.py --project "$CLAUDE_PROJECT_DIR" --accept-b
 ```
 A routine check-in with nothing new to ingest and no profile change reports "nothing changed" and
 stops — this is a safe, idempotent skill to invoke any time, not only right after tagging jobs.
+
+---
+
+### 11.2 Resume and outreach (skills + JD export)
+
+Two skills, `resume-generator` and `outreach-writer`, turn a collected job plus the owner's master
+resume into a tailored resume (HTML + PDF) and outreach copy (email, cover letter). Python owns
+retrieval and mechanics; the skills own the writing. No Word/`.docx` path, no hook, no MCP.
+
+**Data layout** (personal inputs under git-ignored `config/resume/`, generated outputs under git-ignored `data/`):
+
+- `config/resume/main_resume_<YYYY-MM-DD>.md` - master resume; optional siblings
+  `cover_letter_<YYYY-MM-DD>.md` (writing sample), `Review_Evidence_<YYYY-MM-DD>.md`, and
+  `personalization.md`.
+- `data/output/<Company>/` - JD files (`JD_<Company>_<Title>_<YYYY-MM-DD>[_N].txt`) and everything the
+  skills generate for that company.
+- `data/output/resume_log.csv` - one row per generated resume (`Date, Company, Role, Job_URL,
+  Fill_Pct, Pages, Iterations, Resume_File`).
+
+**Resolver** (`src/job_hunter/resume_source.py`, `job-hunter resume-files [--resume PATH]`).
+Precedence: explicit `--resume` > newest `config/resume/main_resume_<YYYY-MM-DD>.md` > the profile's
+`resume_path` fallback. "Newest" is the date in the *filename*, never mtime; names that do not match
+or hold an impossible date are ignored. The same function serves the local-LLM reviewer. Output JSON:
+`master_resume`, `master_resume_source` (`explicit`/`dated`/`profile`), `personalization`,
+`cover_letter_sample`, `review_evidence` (each of the last three a path or `null`). Exit 2 when
+nothing resolves, or when only the repo's example resume (`.example.` in the name) is found: generation
+never runs from placeholder text.
+
+**Contact** (`contact:` block in `config/candidate_profile.yaml`, model `ContactInfo`): `name` and
+`email` required; `phone`, `linkedin`, `github` optional and omitted from the header when empty.
+`job-hunter contact` prints the values plus derived `first_name`/`last_name`, or exits 2 listing every
+missing field and every value that is still the example placeholder. The skills stop on exit 2 rather
+than invent details.
+
+**JD export** (`src/job_hunter/jd_export.py`, `job-hunter export-jd <source_key> <job_id>`). Writes
+`JD_<Company>_<First4TitleWords>_<YYYY-MM-DD>.txt` under `data/output/<Company>/`. Filename parts are
+sanitized to `[A-Za-z0-9_-]` (non-ASCII letters are dropped, not transliterated). File layout: title
+line, location line, optional department line; then a `Summary` block (`Posted`, `Job ID`, `Job URL`,
+`Source`); then `Description` (HTML converted to plain text; scripts/styles dropped; header values
+collapsed to one line); then `Pay & Benefits` only when salary evidence exists. Identical content the
+same day reuses the file (`created: false`); a changed description gets the next numbered file
+(`_2`, `_3`, ...), so the JD an earlier resume was tailored to is never overwritten. `prompt` is
+`Use the resume-generator skill on <relative_path>`. Writes are atomic.
+
+**`POST /api/jd`** (`serve_radar.py`): body `{"source_key", "job_id"}` only (`extra="forbid"`); the
+browser never supplies a path or text. Replies `200 {ok, path, created, prompt}` with a
+*project-relative* `path` (an absolute path never leaves the server), `404` unknown job, `409` job has
+no description, `500 internal error` (no path in the message). Reuses every existing POST guard
+(Host, Origin, Content-Type, size limit, body drain). No outbox: a failed export is shown, not queued.
+The live radar's per-row **Resume** button calls it, copies the prompt to the clipboard and shows
+where the JD was saved; the static report has no button.
+
+**`POST /api/shutdown`** (`serve_radar.py`): body `{}` only (`extra="forbid"`), through the same POST
+guards as every other route (Host, Content-Type 415, Origin 403, Content-Length, size limit, body drain);
+GET is 404. Only honored when the server is bound to loopback (`is_loopback_bind`: 127.0.0.0/8, `::1`,
+`localhost`; wildcard binds such as `0.0.0.0`/`::` are not loopback): otherwise `403
+{"ok": false, "error": "shutdown disabled on non-loopback bind"}` and the server keeps running. On success it
+replies `200 {"ok": true}` first, then a short-lived thread calls `server.shutdown()`; `main()` prints
+`Stopping.`, closes the socket and releases `run_lock("radar-server")` exactly as on Ctrl+C. A repeated
+request is a no-op. The live radar page's **Stop server** button (not on the Applications page or the
+static report) confirms, POSTs it outside the outbox, then shows a `Stopped` status pill, stops polling and
+retry timers, and leaves unsent edits in the localStorage outbox.
+
+**`measure_resume.py` / `log_resume.py`**: see the scripts table (§10) for flags and JSON fields. Both
+take `--project`. `measure_resume.py` needs the optional `resume` extra (`playwright`, `pypdf`):
+`uv sync --extra resume` then `uv run playwright install chromium` (`--with-deps` on a bare Linux host).
+Without them it prints those commands and exits 2 (a missing input file exits 1). The base install and
+default test suite never need the extra. Page fill is measured on the machine that renders the PDF;
+fonts differ between operating systems, so re-measure per machine.
+
+**Personalization model.** The owner steers every run two ways: free text in the request itself (page
+size, emphasis, omissions, tone, recipient name, extra facts) and an optional
+`config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections.
+Precedence, highest first: integrity rules > the current request > `personalization.md` > skill
+defaults. A request instruction applies to that run only, and the skills never edit
+`personalization.md`. Integrity rules are not overridable: no fabricated experience or metrics, no
+invented recipient names or contact details, nothing that contradicts the master resume, and output stays
+inside the job-hunter output folder. Format rules (page size, bullet counts, summary length, the
+Technical Skills block, role cutoff) are overridable defaults, and the skills report honestly when a
+changed target does not fit.
+
+**Skill contracts.**
+
+- `resume-generator` - input: a JD file path or pasted JD (required), optional free-text instructions,
+  `--project`. Output: `<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
+  beside the JD, one `resume_log.csv` row, and a report of paths, pages, fill and applied
+  personalization. Next: `outreach-writer`.
+- `outreach-writer` - input: a JD (file, company folder or pasted), which deliverable(s) (email, cover
+  letter, both), optional free-text instructions, `--project`. Output in `data/output/<Company>/`:
+  `<LastName>_Email_<Company>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<Company>-<RoleToken>_<YYYY-MM-DD>.pdf`
+  (plus `.html` build artifact and `.txt` copy), and a report of word counts and applied
+  personalization. It stops when `resume-files` or `contact` fails.
 
 ---
 

@@ -9,9 +9,18 @@ import pytest
 
 from job_hunter.cli import _hermes_hook_check, _stealth_browser_check, archive_path, main, parser
 from job_hunter.config import CompanyConfig
-from job_hunter.models import PipelineManifest, PipelineStatus, SearchSummary, format_search_summary
+from job_hunter.models import (
+    ApplicationStatus,
+    Job,
+    LocationConfidence,
+    PipelineManifest,
+    PipelineStatus,
+    SearchSummary,
+    format_search_summary,
+)
 from job_hunter.pipeline import write_manifest
 from job_hunter.search_archive import resolve_search_path
+from job_hunter.storage import Storage
 
 
 def test_format_search_summary_reports_sources_and_jobs():
@@ -548,3 +557,124 @@ def test_all_companies_flag_was_removed():
     default. Regression test for the removal, not the flag itself."""
     with pytest.raises(SystemExit):
         parser().parse_args(["search", "--all-companies"])
+
+
+def test_export_applications_writes_json_and_csv_next_to_the_database(tmp_path, monkeypatch, capsys):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(
+        f"database_path: {tmp_path}/data/jobs.sqlite3\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+    with Storage(tmp_path / "data" / "jobs.sqlite3") as storage:
+        storage.apply_application(
+            "acme", "42", event_at=datetime(2026, 9, 26, 12, 0, tzinfo=UTC),
+            changes={"status": ApplicationStatus.SAVED, "notes": "=BAD()"},
+            snapshot={"company": "Acme", "title": "Engineer", "url": "https://example.com/42",
+                      "location_raw": None, "posted_at": None, "score": None, "salary_evidence": None},
+            today=datetime(2026, 9, 26).date(),
+        )
+    assert main(["export-applications"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert [r["job_id"] for r in printed] == ["42"]
+    data = tmp_path / "data"
+    assert json.loads((data / "applications.json").read_text())[0]["status"] == "saved"
+    assert "'=BAD()" in (data / "applications.csv").read_text()
+
+
+def _bare_project(tmp_path, monkeypatch):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(
+        f"database_path: {tmp_path}/data/jobs.sqlite3\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+
+
+def test_resume_files_prints_all_paths_as_json(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    directory = tmp_path / "config" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-01-01.md").write_text("r")
+    (directory / "personalization.md").write_text("p")
+    assert main(["resume-files"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["master_resume"].endswith("main_resume_2026-01-01.md")
+    assert payload["master_resume_source"] == "dated"
+    assert payload["personalization"].endswith("personalization.md")
+    assert payload["cover_letter_sample"] is None and payload["review_evidence"] is None
+
+
+def test_resume_files_exits_2_with_instructions_when_no_resume(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["resume-files"]) == 2
+    assert "main_resume_<YYYY-MM-DD>.md" in capsys.readouterr().err
+
+
+def test_resume_files_refuses_the_example_resume_fallback(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text("resume_path: config/resume.example.md\n")
+    (tmp_path / "config" / "resume.example.md").write_text("placeholder")
+    assert main(["resume-files"]) == 2
+    err = capsys.readouterr().err
+    assert "example" in err and "config/resume/main_resume_" in err
+
+
+def test_resume_files_explicit_resume_flag(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    mine = tmp_path / "mine.md"
+    mine.write_text("x")
+    assert main(["resume-files", "--resume", str(mine)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["master_resume_source"] == "explicit"
+
+
+def test_contact_prints_json_with_derived_name_parts(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text(
+        "contact:\n  name: Jane Q. Doe\n  email: jane@mail.test\n  phone: '+1 313 555 0142'\n"
+    )
+    assert main(["contact"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "name": "Jane Q. Doe", "email": "jane@mail.test", "phone": "+1 313 555 0142",
+        "first_name": "Jane", "last_name": "Doe",
+    }
+
+
+def test_contact_exits_2_and_lists_every_problem(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text(
+        "contact:\n  name: Your Name\n  email: you@example.com\n"
+    )
+    assert main(["contact"]) == 2
+    err = capsys.readouterr().err
+    assert "name:" in err and "email:" in err and "config/candidate_profile.yaml" in err
+
+
+def test_contact_with_no_profile_file_at_all_exits_2(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["contact"]) == 2
+    assert "contact:" in capsys.readouterr().err
+
+
+def test_export_jd_writes_the_file_and_prints_json(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    with Storage(tmp_path / "data" / "jobs.sqlite3") as storage:
+        storage.upsert_job(Job(
+            source_key="acme", source_platform="t", company="Acme", job_id="1", title="Engineer",
+            url="https://example.com/1", us_eligible=True, location_confidence=LocationConfidence.HIGH,
+            description="<p>Do work.</p>", content_hash="h",
+        ))
+    assert main(["export-jd", "acme", "1"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is True
+    assert payload["relative_path"].startswith("data/output/Acme/JD_Acme_Engineer_")
+    assert (tmp_path / payload["relative_path"]).read_text(encoding="utf-8").startswith("Engineer\n")
+    assert payload["prompt"].startswith("Use the resume-generator skill on data/output/Acme/")
+
+
+def test_export_jd_unknown_job_exits_1(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["export-jd", "acme", "nope"]) == 1
+    assert "not found" in capsys.readouterr().err

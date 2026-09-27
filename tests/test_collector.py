@@ -133,7 +133,9 @@ class _ManyJobsAdapter:
         pass
 
     async def fetch_summaries(self) -> list[JobSummary]:
-        now = datetime(2026, 8, 29, tzinfo=UTC)
+        # Relative to the real clock: passes_recency compares against today, so a fixed date
+        # here silently ages out of max_posting_age_days and drops all but the newest job.
+        now = datetime.now(UTC)
         # All titled to pass a "systems" prefilter; posted_at descends so job-0 is newest.
         return [
             JobSummary(

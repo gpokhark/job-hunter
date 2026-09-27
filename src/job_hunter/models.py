@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -136,6 +136,9 @@ class Job(JobSummary):
     prior_assessment: Assessment | None = None
 
 
+FeedbackLabel = Literal["relevant", "okay", "irrelevant"]
+
+
 class JobFeedback(BaseModel):
     """A human's click-through verdict on one job from a rendered radar report — "relevant",
     "okay", or "irrelevant". Keyed by (source_key, job_id), upserted (never appended): a later
@@ -150,8 +153,51 @@ class JobFeedback(BaseModel):
     title: str
     department: str | None = None
     score: int | None = None
-    label: str
+    label: FeedbackLabel
     recorded_at: datetime = Field(default_factory=utcnow)
+
+
+class ApplicationStatus(StrEnum):
+    SAVED = "saved"
+    APPLIED = "applied"
+    INTERVIEWING = "interviewing"
+    OFFER = "offer"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
+class Application(BaseModel):
+    """A human-tracked application to one collected job. `company`/`title`/`url`/... are a
+    snapshot taken once, when tracking starts, so the row stays readable after the posting closes
+    or `cleanup` deletes the job. `applied_at` is a local calendar date; `saved` never has one."""
+
+    source_key: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
+    status: ApplicationStatus
+    applied_at: date | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+    company: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    location: str | None = None
+    posted_at: str | None = None
+    score: int | None = None
+    salary_evidence: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("source_key", "job_id", "company", "title", "url")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _saved_has_no_applied_date(self) -> Application:
+        if self.status is ApplicationStatus.SAVED and self.applied_at is not None:
+            raise ValueError("a saved application cannot have an applied date")
+        return self
 
 
 class SourceHealth(BaseModel):

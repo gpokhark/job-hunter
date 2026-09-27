@@ -43,6 +43,14 @@ Division of responsibility is load-bearing: **Python owns networking, normalizat
 health, and location filtering; the agent skill owns evidence-based resume scoring.** Don't move
 scoring into Python or retrieval into the skill.
 
+## Safe testing — NEVER overwrite real data
+
+- Smoke tests and pipeline test runs must write to a temp output dir (e.g. `--out-dir $(mktemp -d)`) or use a `--dry-run` flag. Never write to the real daily archive or radar HTML.
+- Before any run that writes reports or archives, list the target paths and check whether they exist with `ls -la <exact path>`. Report the result truthfully.
+- Output filenames must reflect filters such as `--companies` and `--project`.
+- `serve_radar.py` tests/smoke runs use a temp project (`--project`); never point one at the real `data/` for experiments.
+- Generated resumes/JDs, `config/resume/*` and the `contact:` block are personal data: never commit them or paste them into tests/docs (use obviously fake values like `Jane Doe`/`jane@example.com`).
+
 ## Commands
 
 ```bash
@@ -219,6 +227,8 @@ ranked `SearchResult` JSON.
   check-mode run bootstraps the snapshot with nothing to compare — no `--accept-baseline` needed
   for that one. See `skills/job-feedback/SKILL.md`.
 
+- **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`, `/api/shutdown` (loopback-bind only, replies then stops via a short-lived thread; the radar page's Stop server button) (application snapshot fields derived server-side; every UI edit sends the full record; `applied_at` can't be cleared; unknown job → 404; 15 s handler timeout; feedback untag is idempotent). Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (the label is client-supplied and validated; company/title/department/score are derived server-side from the `jobs`/`assessments` tables), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`, but each committed application write refreshes `data/applications.json`/`.csv` (`applications_export.py`'s `write_applications_exports`; CSV formula guard prefixes `'` on cells starting `= + - @` tab/CR); a refresh failure surfaces as `export_warning` and never fails or reverts the save. `scripts/render_applications.py` renders `/applications`; `scripts/templates/radar_live_sync.js` is the shared node-tested outbox engine (`tests/js/`) used by both live pages. The unsent-writes outbox is one shared localStorage key (`job-hunter-outbox`); with the server down and two tabs open, an unsent edit in one tab can overwrite the other tab's stored entry (each tab still retries its own from memory; the event-time rule makes duplicate sends harmless).
+
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from
   SQLite's current `status='active' AND us_eligible=1` pool, scoped to the archive's own
@@ -279,7 +289,7 @@ ranked `SearchResult` JSON.
   `runlock.py` are universal (every load-bearing writer/lock-holder uses them, hooks included).
   `rootutil.py`'s `--project`/`add_project_argument()` is used by the CLI and every *operational*
   `scripts/*.py` entry point (`apply_radar_feedback.py`, `assessments_to_csv.py`,
-  `check_lm_studio.py`, `diff_profile.py`, `refilter_archive.py`, `render_radar.py`,
+  `check_lm_studio.py`, `diff_profile.py`, `log_resume.py`, `measure_resume.py`, `refilter_archive.py`, `render_radar.py`,
   `review_with_lm_studio.py`, `suggest_exclusions.py`); not `endpoint_probe.py`/
   `prototype_tfidf_broad_match.py`/`search_to_csv.py` (diagnostic/prototype/pure-stdio), and hook
   scripts take the project root positionally per their own runtime convention instead. Authoritative
@@ -330,7 +340,7 @@ ranked `SearchResult` JSON.
   the launcher locates `uv` itself, falls back to `python3` with a stderr note, and always exits 0
   (advisory by design).
 
-- **`storage.py`** — SQLite (WAL). Five tables: `jobs` (one row per `(source_key, job_id)`,
+- **`storage.py`** — SQLite (WAL). Five core tables (plus `feedback_tombstones`, `applications`, `application_tombstones`): `jobs` (one row per `(source_key, job_id)`,
   upserted with `is_new`/`is_changed` from content hash), `runs` (per search invocation),
   `source_health` (per-source rolling status/consecutive-failures/last-success), `assessments`
   (per `(source_key, job_id)`, a local model's verdict — score/recommended/matches/gaps — written
@@ -348,6 +358,14 @@ ranked `SearchResult` JSON.
   every tagged job against the *current* profile via real `evaluate_prefilter` to route a
   suggestion to whichever of all six filtering fields the job's pass/fail reason implicates (not
   just `soft_exclude_terms` — `docs/feedback-exclusion-plan.md` §13).
+  Since the live radar, `job_feedback` is also written by `serve_radar.py`, last-writer-wins by event time via `Storage.apply_feedback`/`delete_feedback`: a write applies only if strictly newer than the stored `recorded_at` and any `feedback_tombstones` row (one per untagged job, migration v3, cleared only by a newer label). `apply_radar_feedback.py` uses the export mtime as event time (stale-skipped), so an old export can't overwrite a live label or resurrect an untagged job.
+
+  `applications` (migration v4; one row per `(source_key, job_id)`, status/`applied_at`/notes plus a
+  snapshot of company/title/url/location/posted_at/score/salary_evidence taken once at creation)
+  and `application_tombstones` follow the same last-writer-wins-by-event-time rule through
+  `Storage.apply_application`. No foreign key to `jobs`, so `cleanup` never deletes them (a
+  cleaned-up posting shows as "removed" on `/applications`). Written only by `serve_radar.py`;
+  `job-hunter export-applications` rewrites the JSON/CSV exports.
 
   A job is marked `closed` after 3 consecutive runs missing from a healthy source's listing
   (`mark_missing`); otherwise stays `active` (why previously-seen jobs surface by default).
@@ -370,6 +388,21 @@ ranked `SearchResult` JSON.
   became the first migration entries). `_migrate()` applies every unseen entry then advances
   `user_version` — idempotent.
 
+- **Resume and outreach** (`docs/SPEC.md` §11.2) — Python owns retrieval and mechanics, the two skills own
+  the writing. `src/job_hunter/resume_source.py`: `resolve_master_resume()` picks the newest
+  `config/resume/main_resume_<YYYY-MM-DD>.md` by *filename* date (never mtime), falling back to the profile's
+  `resume_path`; also serves the local-LLM reviewer; `job-hunter resume-files` prints its JSON and rejects the
+  example resume. `config.py`'s `ContactInfo`/`contact_problems()` back the profile `contact:` block and
+  `job-hunter contact` (exit 2 on missing/placeholder fields). `src/job_hunter/jd_export.py` +
+  `job-hunter export-jd` write `data/output/<Company>/JD_*.txt` (sanitized filenames, same-content reuse,
+  changed description -> numbered `_2` file). `POST /api/jd` in `serve_radar.py` (source_key/job_id only;
+  200/404/409; project-relative path only) backs the live radar's per-row Resume button, which copies
+  `Use the resume-generator skill on <path>`. `scripts/measure_resume.py`/`log_resume.py` measure page fill
+  and append `data/output/resume_log.csv`; they need the optional `resume` extra (`uv sync --extra resume` +
+  `uv run playwright install chromium`), never the base install or default tests. `skills/resume-generator`
+  and `skills/outreach-writer` (symlinked in `.claude/skills/`) take free-text personalization per request plus
+  `config/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
+
 - **`health.py`** — `detect_count_anomaly` flags (doesn't fail) a source whose job count drops
   >70% from its last known count — guards against adapters "succeeding" against a changed page
   structure while returning far fewer/no jobs.
@@ -377,13 +410,13 @@ ranked `SearchResult` JSON.
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.
 
-- **`skills/`** — agent-facing half, six independently-invocable skills
+- **`skills/`** — agent-facing half, eight independently-invocable skills
   (`docs/skill-split-plan.md`): `job-scout` (search → archive), `job-reviewer` (local-LLM
   scoring), `job-radar` (compile + render), `job-feedback` (turn radar feedback/profile edits into
   a confirmed profile update via `diff_profile.py` check mode), `job-hunter` (orchestrator),
   `onboard-source` (repo-maintenance skill for adding a new employer source, not end-user;
   `.claude/skills/onboard-source` symlinks to `skills/onboard-source` so it installs for every
-  runtime). Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
+  runtime), `resume-generator` and `outreach-writer` (see "Resume and outreach" above). Each `SKILL.md` is the canonical procedure for its stage: run the collector, read only
   `candidates`, never recommend `us_eligible=false`, never invent salary/sponsorship/
   qualifications. Scoring is delegated entirely to `scripts/review_with_lm_studio.py`
   (deterministic script, not a sub-agent) — sends each unassessed candidate to a **local** LM
@@ -458,6 +491,24 @@ ranked `SearchResult` JSON.
   idempotent. `--no-collection-fallback` (default: on) restores the old no-jobs note. Scoped to
   `render_radar.py` alone, not `collector.py` — the live collector's meaning ("jobs fetched this
   run") stays untouched; this is a report-layer merge, not a live-collection change.
+
+## Job Radar Pipeline
+
+### Archives & refilter
+
+- 'Default' archive = today's full default search across ALL companies. Do not pick it by mtime alone; resolve it by date plus search name, and print the chosen archive path and its company count before running refilter or reports.
+- If a report looks stale (for example, missing tags), check the archive snapshot date before debugging the code.
+
+## Job Sources
+
+### Onboarding a job source checklist
+
+1. Identify the ATS (Greenhouse, Lever, Ashby, Workday, SmartRecruiters, Eightfold, Phenom, etc.) and prefer the JSON API (e.g. Ashby `publishedAt`, JSON-LD `datePosted`) over HTML selectors.
+2. Add config and tests, verify live, and confirm that title, description, `posted_at` and location are all populated.
+3. Update README and docs.
+4. If the site is blocked by Cloudflare or rate-limited, mark it `unsupported` or paced and tell the user.
+
+- On macOS use `sed -i ''` or edit with Python instead.
 
 ## Working in this repo
 

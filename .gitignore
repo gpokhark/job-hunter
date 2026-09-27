@@ -1126,6 +1126,12 @@ config/candidate_profile.yaml
 config/lm_studio.yaml
 config/*resume*
 !config/resume.example.md
+# config/resume/ holds the personal resume inputs (git-ignored) plus one tracked README.
+# `config/*resume*` also matches the directory name, and git cannot re-include a file inside
+# an ignored directory, so: un-ignore the directory, ignore its contents, un-ignore README.
+!config/resume/
+config/resume/*
+!config/resume/README.md
 
 # Claude Code session-runtime artifacts, not project content.
 .claude/*.lock

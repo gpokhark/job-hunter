@@ -27,16 +27,16 @@ import argparse
 import csv
 import json
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from job_hunter.config import load_settings
-from job_hunter.models import JobFeedback
+from job_hunter.models import FeedbackLabel, JobFeedback
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root
 from job_hunter.storage import Storage
 
-_VALID_LABELS = {"relevant", "okay", "irrelevant"}
+_VALID_LABELS = set(get_args(FeedbackLabel))
 
 _CSV_COLUMNS = ["recorded_at", "label", "score", "company", "title", "department", "source_key", "job_id"]
 
@@ -61,14 +61,29 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
             writer.writerow({column: row.get(column, "") for column in _CSV_COLUMNS})
 
 
-def ingest(storage: Storage, payload: list[dict[str, Any]]) -> dict[str, int]:
-    """Upserts every valid entry in payload into job_feedback. A job omitted from payload is
-    never touched — its prior row (if any) survives exactly as it was; a job that never had a
-    row at all still doesn't get one. Returns counts: new, changed, unchanged, invalid."""
+def export_event_time(path: Path) -> datetime:
+    """The export file's mtime as a UTC-aware event time. The static export's entries carry no
+    timestamp of their own, so this is the best available "when did this person last click"
+    bound: an export can never contain a click newer than the moment it was written. Used so an
+    old ~/Downloads file (auto-picked when no --file is given) cannot overwrite a newer live
+    relabel or resurrect an untagged job — see docs/live-radar-dashboard-plan.md section 3.4."""
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+
+
+def ingest(
+    storage: Storage, payload: list[dict[str, Any]], *, event_at: datetime | None = None
+) -> dict[str, int]:
+    """Applies every valid entry in payload through `Storage.apply_feedback` at `event_at`
+    (the export's mtime when called from `main`). A job omitted from payload is never touched.
+    An entry older than the stored label/tombstone is skipped: counted `unchanged` when its
+    label equals the stored one, otherwise under a `stale` key that only appears when nonzero.
+    `event_at=None` (direct callers/tests) keeps the historical always-apply behavior, stamped
+    with the current time. Returns counts: new, changed, unchanged, invalid[, stale]."""
     prior_by_key = {
         (row["source_key"], row["job_id"]): row["label"] for row in storage.export_job_feedback()
     }
     counts = {"new": 0, "changed": 0, "unchanged": 0, "invalid": 0}
+    effective_event_at = event_at or datetime.now(UTC)
     for entry in payload:
         label = entry.get("label")
         if label not in _VALID_LABELS:
@@ -88,13 +103,21 @@ def ingest(storage: Storage, payload: list[dict[str, Any]]) -> dict[str, int]:
             label=label,
         )
         key = (feedback.source_key, feedback.job_id)
+        outcome = storage.apply_feedback(
+            feedback, event_at=effective_event_at, force=event_at is None
+        )
+        if outcome == "stale":
+            if prior_by_key.get(key) == label:
+                counts["unchanged"] += 1
+            else:
+                counts["stale"] = counts.get("stale", 0) + 1
+            continue
         if key not in prior_by_key:
             counts["new"] += 1
         elif prior_by_key[key] != label:
             counts["changed"] += 1
         else:
             counts["unchanged"] += 1
-        storage.upsert_job_feedback(feedback)
     return counts
 
 
@@ -134,7 +157,7 @@ def main() -> int:
 
     settings = load_settings()
     with Storage(settings.database_path) as storage:
-        counts = ingest(storage, payload)
+        counts = ingest(storage, payload, event_at=export_event_time(resolved))
         rows = storage.export_job_feedback()
 
     csv_path = settings.database_path.parent / "job_feedback.csv"
@@ -144,6 +167,7 @@ def main() -> int:
         f"Ingested {len(payload)} feedback entr{'y' if len(payload) == 1 else 'ies'}: "
         f"{counts['new']} new, {counts['changed']} label-changed, {counts['unchanged']} unchanged"
         + (f", {counts['invalid']} invalid" if counts["invalid"] else "")
+        + (f", {counts['stale']} stale-skipped (older than a live change)" if counts.get("stale") else "")
         + f". Wrote {csv_path}."
     )
     return 0

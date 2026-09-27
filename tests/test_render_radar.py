@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -6,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from render_radar import _default_title, build, main  # noqa: E402
+from render_radar import LiveState, _default_title, build, main, render  # noqa: E402
 
 from job_hunter.config import CandidateProfile
 from job_hunter.models import HealthStatus, Job, LocationConfidence, SourceHealth
@@ -1130,3 +1132,341 @@ def test_negative_day_window_options_are_rejected(option, monkeypatch, capsys):
         main()
     assert exc_info.value.code == 2
     assert "non-negative" in capsys.readouterr().err
+
+
+_GOLDEN_PATH = Path(__file__).parent / "fixtures" / "radar_static_golden.html"
+
+
+def _golden_inputs(tmp_path):
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(
+        json.dumps(
+            _search_json(
+                [
+                    _candidate("x", "1", posted_at="2026-08-25T00:00:00Z", title="Scored Role",
+                               company="Acme", salary_evidence="$100,000 - $120,000",
+                               visa_sponsorship="available", work_arrangement="remote"),
+                    _candidate("x", "2", posted_at="2026-08-20T00:00:00Z", title="Second Role"),
+                    _candidate("x", "3", posted_at="2026-08-22T00:00:00Z", title="Unreviewed Role"),
+                ],
+                source_health=[
+                    {"source_key": "beta", "company": "Beta Corp", "status": "failed",
+                     "message": "Connection timed out."},
+                ],
+            )
+        )
+    )
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(
+        json.dumps([_assessment("x", "1", 88, title="Scored Role"),
+                    _assessment("x", "2", 41, title="Second Role")])
+    )
+    return dict(
+        search_path=search_path, assessments_path=assessments_path, title="Golden Radar",
+        keyword_label=None, new_days=10, now=now,
+    )
+
+
+def test_static_render_is_byte_identical_to_the_pre_live_golden(tmp_path):
+    """Guards the "static report never changes" contract: the golden file was generated from
+    build() *before* the render()/live split, so any static-mode drift fails here."""
+    output_path = tmp_path / "out.html"
+    build(output_path=output_path, **_golden_inputs(tmp_path))
+    actual = output_path.read_text(encoding="utf-8")
+    if os.environ.get("UPDATE_RADAR_GOLDEN") == "1":
+        _GOLDEN_PATH.write_text(actual, encoding="utf-8")
+        pytest.skip("golden regenerated")
+    assert actual == _GOLDEN_PATH.read_text(encoding="utf-8")
+
+
+def _live_state(feedback=None):
+    return LiveState(
+        feedback=feedback or {},
+        versions={"archive": "a1", "assessments": "s1", "feedback": "f1"},
+        archive_name="search.json",
+    )
+
+
+def _live_html(tmp_path, feedback=None, mutate=None):
+    inputs = _golden_inputs(tmp_path)
+    if mutate:
+        mutate(inputs)
+    html, stats = render(live=True, live_state=_live_state(feedback), **inputs)
+    return html, stats
+
+
+def test_render_returns_html_and_the_same_stats_build_reports(tmp_path):
+    inputs = _golden_inputs(tmp_path)
+    html, stats = render(**inputs)
+    assert "Scored Role" in html
+    output_path = tmp_path / "out.html"
+    assert build(output_path=output_path, **inputs) == stats
+    assert output_path.read_text(encoding="utf-8") == html
+
+
+def test_live_render_requires_live_state(tmp_path):
+    with pytest.raises(ValueError):
+        render(live=True, **_golden_inputs(tmp_path))
+
+
+def test_static_render_has_no_live_machinery(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    for needle in ("fetch(", "__RADAR_LIVE__", "live-status", "live-stop", "live-toolbar-extra", "__LIVE_"):
+        assert needle not in html
+
+
+def test_live_render_swaps_static_feedback_for_the_live_layer(tmp_path):
+    html, _ = _live_html(tmp_path)
+    assert 'id="feedback-export-btn"' not in html  # static Export button removed (its CSS rule may remain)
+    assert "job-hunter-feedback:" not in html  # static localStorage feedback script removed
+    assert "Quick-glance client-side filtering" not in html  # static filter script replaced
+    assert 'id="live-status"' in html
+    assert 'id="live-reload"' in html
+    assert "window.RadarLive" in html or "root.RadarLive" in html
+    assert "__LIVE_" not in html
+    # The rest of the report is untouched.
+    assert "Scored Role" in html and "Unreviewed Role" in html and "Beta Corp" in html
+
+
+def test_live_render_embeds_versions_stem_and_initial_feedback(tmp_path):
+    fb = {"x|1": {"label": "okay"}}
+    html, _ = _live_html(tmp_path, feedback=fb)
+    assert '"stem": "search"' in html
+    assert '"archive": "a1"' in html
+    assert '"x|1": {"label": "okay"}' in html
+    assert "search.json" in html  # footer archive name
+
+
+def test_live_rows_have_identity_and_filter_attrs_but_no_title_or_company_attrs(tmp_path):
+    html, _ = _live_html(tmp_path)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>', html)
+    assert scored, "scored row root missing live attributes"
+    tag = scored.group(0)
+    for attr in ('data-source-key="x"', 'data-score="88"', 'data-posted="2026-08-25"',
+                 'data-has-salary="1"', 'data-state=', 'data-country='):
+        assert attr in tag
+    assert "data-title" not in tag and "data-company" not in tag
+    unreviewed = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>', html)
+    assert unreviewed and 'data-score=""' in unreviewed.group(0)
+    assert "data-title" not in unreviewed.group(0)
+
+
+def test_live_render_paints_initial_feedback_without_a_flash(tmp_path):
+    fb = {"x|1": {"label": "irrelevant"}, "x|3": {"label": "relevant"}}
+    html, _ = _live_html(tmp_path, feedback=fb)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>', html).group(0)
+    assert "fb-tagged" in scored
+    assert 'class="fb-btn fb-irrelevant fb-active"' in html
+    assert 'class="fb-btn fb-relevant fb-active"' in html  # unreviewed row too
+    untouched = re.search(r'<details class="row[^>]*data-job-id="2"[^>]*>', html).group(0)
+    assert "fb-tagged" not in untouched
+
+
+def test_live_render_escapes_hostile_text_in_attributes_and_embedded_json(tmp_path):
+    def mutate(inputs):
+        candidate = _candidate("x", "9", title='</script><img src=x onerror=alert(1)>',
+                               company='A"B&C', posted_at="2026-08-25T00:00:00Z")
+        data = json.loads(inputs["search_path"].read_text())
+        data["candidates"].append(candidate)
+        hostile = inputs["search_path"].with_name("a<b>&c.json")
+        hostile.write_text(json.dumps(data))
+        inputs["search_path"] = hostile
+        assessments = json.loads(inputs["assessments_path"].read_text())
+        assessments.append(_assessment("x", "9", 60, title=candidate["title"], company=candidate["company"]))
+        inputs["assessments_path"].write_text(json.dumps(assessments))
+
+    html, _ = _live_html(tmp_path, mutate=mutate)
+    assert "<img src=x" not in html
+    assert "</script><img" not in html
+    assert '"stem": "a\\u003cb\\u003e\\u0026c"' in html
+    assert 'data-company="A&quot;B&amp;C"' in html  # existing feedback-button attr, still escaped
+
+
+def test_live_scripts_contain_no_template_tokens_or_script_terminators():
+    scripts_dir = Path(__file__).parents[1] / "scripts" / "templates"
+    template = (scripts_dir / "radar_template.html").read_text(encoding="utf-8")
+    tokens = set(re.findall(r"__[A-Z][A-Z0-9_]*__", template))
+    for name in ("radar_live_core.js", "radar_live_sync.js", "radar_live_ui.js"):
+        source = (scripts_dir / name).read_text(encoding="utf-8")
+        assert "</script" not in source.lower()
+        assert not {t for t in tokens if t in source}, name
+
+
+def test_live_page_inlines_the_sync_engine_between_core_and_ui(tmp_path):
+    html, _ = _live_html(tmp_path)
+    core = html.index("root.RadarLive = api")
+    sync = html.index("root.RadarLiveSync = api")
+    ui = html.index("var L = window.RadarLive, S = window.RadarLiveSync, boot = window.__RADAR_LIVE__")
+    assert core < sync < ui
+
+
+def _app(status="applied", applied_at="2026-09-20", notes=None):
+    return {"status": status, "applied_at": applied_at, "notes": notes}
+
+
+def _live_apps_html(tmp_path, apps=None):
+    inputs = _golden_inputs(tmp_path)
+    state = LiveState(
+        feedback={}, versions={"archive": "a1", "assessments": "s1", "feedback": "f1", "applications": "p1"},
+        archive_name="search.json", applications=apps or {},
+    )
+    html, _ = render(live=True, live_state=state, **inputs)
+    return html
+
+
+def test_static_render_has_no_application_machinery(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    for needle in ("app-chip", "app-panel", "live-app", "live-hide-applied", "/applications"):
+        assert needle not in html
+
+
+def test_live_rows_get_a_track_chip_and_a_panel_for_both_row_types(tmp_path):
+    html = _live_apps_html(tmp_path)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'class="app-chip"' in scored and ">Track</button>" in scored
+    assert scored.index('class="app-chip"') < scored.index('class="row-detail"') < scored.index("app-panel")
+    assert 'select class="app-status"' in scored and 'type="date"' in scored and "app-notes" in scored
+    assert "<div class=\"app-panel\" hidden" not in scored  # inside an opened details: never hidden
+    plain = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>.*?\n    </div>', html, re.S).group(0)
+    assert 'class="app-chip"' in plain
+    assert 'class="app-panel" hidden' in plain  # the chip toggles it
+
+
+def test_tracked_job_renders_status_date_notes_and_selected_option(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app("interviewing", "2026-09-22", "call <b>Tue</b> & \"bring\" CV")})
+    row = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'data-app-status="interviewing"' in row and "app-chip-on" in row
+    assert ">Interviewing</button>" in row
+    assert '<option value="interviewing" selected>' in row
+    assert 'value="2026-09-22"' in row
+    assert "call &lt;b&gt;Tue&lt;/b&gt; &amp; \"bring\" CV" in row
+    assert "<b>Tue</b>" not in row
+    untouched = re.search(r'<details class="row[^>]*data-job-id="2"[^>]*>.*?</details>', html, re.S).group(0)
+    assert 'data-app-status=""' in untouched
+    assert '<option value="" selected>Not tracking</option>' in untouched
+    assert untouched.count(" selected>") == 1
+
+
+def test_saved_application_disables_the_date_input(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app("saved", None)})
+    row = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    assert re.search(r'<input type="date" class="app-date"[^>]*disabled', row)
+
+
+def test_live_toolbar_bar_and_boot_json_carry_the_application_features(tmp_path):
+    html = _live_apps_html(tmp_path, {"x|1": _app(notes="</script><img src=x>")})
+    assert 'id="live-app"' in html and 'id="live-hide-applied"' in html
+    assert '<option value="untracked">' in html
+    assert 'href="/applications"' in html
+    assert '"applications": {"x|1":' in html
+    assert '\\u003c/script\\u003e' in html and "</script><img" not in html
+    assert '"applications": "p1"' in html  # versions.applications reaches the client
+
+
+_HOSTILE = "__STRONG_ROWS__ __REVIEW_ROWS__ __LIVE_SCRIPT__ __TITLE__ __LIVE_BAR__"
+
+
+def _hostile_inputs(tmp_path):
+    inputs = _golden_inputs(tmp_path)
+    data = json.loads(inputs["search_path"].read_text())
+    for cand in data["candidates"]:
+        if cand["job_id"] == "1":
+            cand["title"] = _HOSTILE
+            cand["company"] = _HOSTILE
+    inputs["search_path"].write_text(json.dumps(data))
+    return inputs
+
+
+def test_live_render_is_inert_to_template_tokens_in_titles_and_notes(tmp_path):
+    def live(inputs, notes):
+        state = LiveState(
+            feedback={}, versions={"archive": "a1", "assessments": "s1", "feedback": "f1", "applications": "p1"},
+            archive_name="search.json", applications={"x|1": _app(notes=notes)},
+        )
+        return render(live=True, live_state=state, **inputs)[0]
+
+    base_dir, hostile_dir = tmp_path / "a", tmp_path / "b"
+    base_dir.mkdir()
+    hostile_dir.mkdir()
+    baseline = live(_golden_inputs(base_dir), "plain")
+    page = live(_hostile_inputs(hostile_dir), _HOSTILE)
+    match = re.search(r"window\.__RADAR_LIVE__ = (\{.*?\});</script>", page, re.DOTALL)
+    boot = json.loads(match.group(1))
+    assert boot["applications"]["x|1"]["notes"] == _HOSTILE
+    assert page.count("<script") == baseline.count("<script")
+
+
+def test_static_render_keeps_token_text_in_titles_literal(tmp_path):
+    base, _ = render(**_golden_inputs(tmp_path))
+    hostile_dir = tmp_path / "h"
+    hostile_dir.mkdir()
+    page, _ = render(**_hostile_inputs(hostile_dir))
+    assert _HOSTILE in page
+    assert page.count("<details") == base.count("<details")
+    assert page.count("<script") == base.count("<script")
+
+
+def test_static_render_has_no_resume_button(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    assert "resume-btn" not in html
+
+
+def _assert_actions_on_left(block: str) -> None:
+    """Track + Resume sit in .job-actions inside .job, before .row-end; .row-end has neither."""
+    job = block.split('<span class="job">')[1].split('<span class="tags">')[0]
+    assert job.count('class="job-actions"') == 1
+    actions = job.split('class="job-actions"')[1]
+    assert actions.index('class="app-chip"') < actions.index('class="resume-btn"')
+    assert ">Resume</button>" in actions
+    assert block.index('class="job-actions"') < block.index('class="row-end"')
+    row_end = block.split('class="row-end"')[1]
+    assert "app-chip" not in row_end and "resume-btn" not in row_end
+    assert 'class="fb-btn' in row_end and 'class="apply-link"' in row_end
+
+
+def test_live_rows_put_track_and_resume_left_below_the_meta_in_both_row_types(tmp_path):
+    html = _live_apps_html(tmp_path)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    summary = scored.split("</summary>")[0]
+    assert summary.count('class="resume-btn"') == 1
+    _assert_actions_on_left(summary)
+    plain = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>.*?\n    </div>', html, re.S).group(0)
+    assert plain.count('class="resume-btn"') == 1
+    _assert_actions_on_left(plain)
+    assert plain.split(">")[0].count('data-source-key="x"') == 1
+
+
+def test_job_actions_follow_job_meta_when_present_and_the_company_when_absent(tmp_path):
+    html = _live_apps_html(tmp_path)
+    blocks = re.findall(r'<(?:details class="row|div class="plain-row)[^>]*>.*?(?=<(?:details class="row|div class="plain-row)|\Z)', html, re.S)
+    seen_meta = False
+    for block in blocks:
+        if 'class="job-actions"' not in block:
+            continue
+        job = block.split('<span class="job">')[1].split('<span class="tags">')[0]
+        if 'class="job-meta"' in job:
+            seen_meta = True
+            assert job.index('class="job-meta"') < job.index('class="job-actions"')
+        else:
+            assert job.index('class="job-company"') < job.index('class="job-actions"')
+    assert seen_meta
+
+
+def test_static_render_has_no_job_actions_chip_or_resume(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    for needle in ("job-actions", "app-chip", "resume-btn"):
+        assert needle not in html
+
+
+def test_the_resume_button_slot_adds_no_whitespace_between_neighbours(tmp_path):
+    html = _live_apps_html(tmp_path)
+    assert re.search(r"</button><button type=\"button\" class=\"resume-btn\"", html)
+    assert '<span class="job-actions"><button' in html
+
+
+def test_live_render_has_a_stop_server_button_and_static_does_not(tmp_path):
+    html, _ = _live_html(tmp_path)
+    assert '<button type="button" id="live-stop" class="live-stop">Stop server</button>' in html
+    static, _ = render(**_golden_inputs(tmp_path))
+    assert "live-stop" not in static and "Stop server" not in static

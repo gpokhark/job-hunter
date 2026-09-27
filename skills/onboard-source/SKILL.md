@@ -1,6 +1,6 @@
 ---
 name: onboard-source
-version: 1.0.0
+version: 1.1.0
 description: Onboard a new employer career site into job-hunter — identify its real scraping mechanism, wire it up in config/companies.yaml (reusing an existing adapter whenever possible), test it, verify it live, and update docs/SPEC.md/CLAUDE.md. Use when the user gives a careers listing URL and a sample job URL and asks to add/onboard a new company or source.
 compatibility: Requires uv and Python 3.11+; no LM Studio dependency. Repo-maintenance skill — needs live network access to the target career site during discovery, and a working checkout of this repo (it edits config/companies.yaml, adapter code, and docs directly).
 metadata:
@@ -177,9 +177,11 @@ re-deriving it.
 ### Phase 8 — Live verification
 
 - `uv run job-hunter source-test <key>` — confirms connectivity and a real job count.
-- `uv run job-hunter search --companies <key> --include-seen --refresh-details --output /tmp/<key>_check.json`
-  — confirms summaries, details, location, and date all populate sanely. Spot-check the original
-  sample job by title/ID in the output.
+- `uv run job-hunter search --companies <key> --include-seen --refresh-details --output "$(mktemp -d)/<key>_check.json"`
+  — confirms summaries, details, location, and date all populate sanely. **Always write to a temp
+  dir**, never the real archive/radar output (see CLAUDE.md "Safe testing"). Confirm `title`,
+  `description`, `posted_at` and `location` are all populated (not just present on one job), and
+  spot-check the original sample job by title/ID in the output.
 
 ### Phase 9 — Documentation
 
@@ -205,3 +207,14 @@ be, if different), which adapter/config was used, the live job count, a location
 against the original sample job, and any caveats honestly (partial coverage, ToS exposure from
 `stealth_html`, an unstable date field, etc.) — this project's whole documentation style is
 "disclose the tradeoff," not "claim it's solved."
+
+End with a summary table, one row per company: `company | ATS | jobs found | status`
+(status: working / partial / paced / unsupported, with a short reason for anything not "working").
+If a site is Cloudflare-blocked or rate-limited, say so explicitly to the user.
+
+## Onboarding several companies
+
+For more than 3 companies, run the per-company procedure in parallel subagents (one per company),
+then merge their results into a single table. Serialize edits to shared files
+(`config/companies.yaml`, `docs/SPEC.md`, the `tests/test_config.py` count assertion) to avoid
+conflicting writes.

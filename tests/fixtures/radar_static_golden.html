@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Golden Radar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F3F6F7;
+    --ink: #14191F;
+    --ink-soft: #4B5560;
+    --surface: #FFFFFF;
+    --line: #DCE3E7;
+    --accent: #0C7F91;
+    --accent-soft: #E4F1F3;
+    /* Score tiers: five distinct hues, one per band (50s through 90s+) — cool
+       slate for a bare pass warming through gold/orange up to green at the top,
+       so "exceptional" reads as an unambiguous "great match" rather than just
+       "the darkest shade of the same color." */
+    --score-fair: #5C7A99;
+    --score-moderate: #0C7F91;
+    --score-promising: #A3760E;
+    --score-strong: #D2691E;
+    --score-exceptional: #1D9A66;
+    /* Status colors: reserved, fixed meaning (good/warning/critical), never a
+       stand-in for a score tier — kept distinct from the ramp above so a
+       sponsorship or source-health color never impersonates a score. */
+    --status-good: #1D9A66;
+    --status-good-soft: #E4F5EC;
+    --status-warning: #B4790F;
+    --status-warning-soft: #FBF0DC;
+    --danger: #C1443A;
+    --danger-soft: #FBEAE8;
+    --arrangement-remote: #2D6FB0;
+    --arrangement-remote-soft: #E4EEF8;
+    --arrangement-hybrid: #7B5CAE;
+    --arrangement-hybrid-soft: #EFE8F7;
+    --muted: #6B7480;
+    --shadow: 0 1px 2px rgba(20, 25, 31, 0.06);
+    --atmosphere-1: rgba(12, 127, 145, 0.10);
+    --atmosphere-2: rgba(180, 121, 15, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #10151A;
+      --ink: #E9EDEF;
+      --ink-soft: #A6B0B8;
+      --surface: #171E24;
+      --line: #2A333A;
+      --accent: #3FC1D4;
+      --accent-soft: #17323A;
+      --score-fair: #7FA3C4;
+      --score-moderate: #3FC1D4;
+      --score-promising: #E3B24A;
+      --score-strong: #E8875A;
+      --score-exceptional: #3FCC8C;
+      --status-good: #3FCC8C;
+      --status-good-soft: #163829;
+      --status-warning: #E3AA45;
+      --status-warning-soft: #3A2E14;
+      --danger: #E2695E;
+      --danger-soft: #3A1F1C;
+      --arrangement-remote: #6FB1EE;
+      --arrangement-remote-soft: #17293A;
+      --arrangement-hybrid: #C0A3EA;
+      --arrangement-hybrid-soft: #2A2038;
+      --muted: #8A95A0;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --atmosphere-1: rgba(63, 193, 212, 0.14);
+      --atmosphere-2: rgba(227, 170, 69, 0.10);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #10151A;
+    --ink: #E9EDEF;
+    --ink-soft: #A6B0B8;
+    --surface: #171E24;
+    --line: #2A333A;
+    --accent: #3FC1D4;
+    --accent-soft: #17323A;
+    --score-fair: #7FA3C4;
+    --score-moderate: #3FC1D4;
+    --score-promising: #E3B24A;
+    --score-strong: #E8875A;
+    --score-exceptional: #3FCC8C;
+    --status-good: #3FCC8C;
+    --status-good-soft: #163829;
+    --status-warning: #E3AA45;
+    --status-warning-soft: #3A2E14;
+    --danger: #E2695E;
+    --danger-soft: #3A1F1C;
+    --arrangement-remote: #6FB1EE;
+    --arrangement-remote-soft: #17293A;
+    --arrangement-hybrid: #C0A3EA;
+    --arrangement-hybrid-soft: #2A2038;
+    --muted: #8A95A0;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --atmosphere-1: rgba(63, 193, 212, 0.14);
+    --atmosphere-2: rgba(227, 170, 69, 0.10);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    /* Atmosphere, not decoration for its own sake: two soft color washes anchored at
+       the top of the page (behind the masthead, where there's nothing but whitespace
+       to carry them) fading out well before the row list begins, so the dense,
+       repeated card list below stays on a flat, scannable --surface with zero added
+       read cost. */
+    background:
+      radial-gradient(1100px 620px at 10% -12%, var(--atmosphere-1), transparent 60%),
+      radial-gradient(900px 560px at 100% -4%, var(--atmosphere-2), transparent 55%),
+      var(--paper);
+    background-repeat: no-repeat;
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+
+  .masthead {
+    position: relative;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 32px;
+    margin-bottom: 40px;
+    overflow: hidden;
+  }
+
+  /* A fine diagonal hairline field behind the hero only — a schematic/blueprint
+     texture that echoes the report's own monospace-data language (the .stats grid,
+     the toolbar chips) rather than an unrelated decorative motif. */
+  .masthead::before {
+    content: "";
+    position: absolute;
+    inset: -20px;
+    background-image: repeating-linear-gradient(135deg, var(--line) 0, var(--line) 1px, transparent 1px, transparent 22px);
+    mask-image: linear-gradient(to bottom, black, transparent 85%);
+    -webkit-mask-image: linear-gradient(to bottom, black, transparent 85%);
+    opacity: 0.5;
+    z-index: -1;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+    font-weight: 500;
+  }
+
+  h1 {
+    font-family: "Big Shoulders Display", system-ui, sans-serif;
+    font-weight: 800;
+    font-size: clamp(40px, 7vw, 64px);
+    letter-spacing: -0.01em;
+    line-height: 0.95;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  .subhead {
+    font-size: 16px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0 0 28px;
+  }
+
+  /* Two stat groups — "This run" (what exists) and "New since last check"
+     (what's worth a second look right now) — each its own labeled grid rather
+     than one undifferentiated row of 13 tiles, so a reader can tell at a
+     glance which numbers describe the whole pool and which describe what
+     just showed up. */
+  .stats-group {
+    margin-top: 16px;
+  }
+
+  .stats-group:first-child {
+    margin-top: 0;
+  }
+
+  .stats-group-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+
+  .stats {
+    display: grid;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  /* Fixed column counts (not auto-fit) so a known-size row of tiles never
+     splits an orphan tile onto its own second line — "This run"'s 8 tiles and
+     "New postings"'s 5 always fill their row evenly, at every breakpoint. */
+  .stats-run { grid-template-columns: repeat(8, 1fr); }
+  .stats-new { grid-template-columns: repeat(5, 1fr); border-color: var(--accent-soft); }
+
+  @media (max-width: 700px) {
+    .stats-run { grid-template-columns: repeat(4, 1fr); }
+    .stats-new { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  @media (max-width: 480px) {
+    .stats-run, .stats-new { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stats-new .stat {
+    background: var(--accent-soft);
+  }
+
+  .stat-value {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 24px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+
+  /* Tones tie each count to the same color it already carries elsewhere in the
+     report (the score ramp, the danger/status tags) rather than inventing a
+     new palette just for the masthead. */
+  .stat-value.tone-strong { color: var(--score-exceptional); }
+  .stat-value.tone-review { color: var(--score-promising); }
+  .stat-value.tone-below { color: var(--score-fair); }
+  .stat-value.tone-muted { color: var(--muted); }
+  .stat-value.tone-danger { color: var(--danger); }
+  .stat-value.tone-new { color: var(--accent); }
+  .stat-value.tone-good { color: var(--status-good); }
+
+  .stat-label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* Score-ramp legend — the score column's color is always a secondary cue on
+     top of the visible number itself, never the only way to read it, but a key
+     still names what the ramp means at a glance rather than leaving a reader to
+     infer "darker teal = better" from five rows scattered down the page. */
+  .score-legend {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .score-legend-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .score-legend-scale {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .score-legend-step {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .score-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  .score-legend-step.fair .score-legend-swatch { background: var(--score-fair); }
+  .score-legend-step.moderate .score-legend-swatch { background: var(--score-moderate); }
+  .score-legend-step.promising .score-legend-swatch { background: var(--score-promising); }
+  .score-legend-step.strong .score-legend-swatch { background: var(--score-strong); }
+  .score-legend-step.exceptional .score-legend-swatch { background: var(--score-exceptional); }
+
+  /* One deliberate, orchestrated entrance for the page's single most-seen moment (the
+     masthead, visible every time this report is opened or regenerated) rather than
+     scattered micro-animations throughout — the row list below gets none, since
+     animating hundreds of re-rendered cards on every reopen would read as slow, not
+     delightful. */
+  @media (prefers-reduced-motion: no-preference) {
+    .eyebrow, .masthead h1, .subhead, .stats-group, .radar-toolbar {
+      opacity: 0;
+      animation: reveal-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    .eyebrow { animation-delay: 0.03s; }
+    .masthead h1 { animation-delay: 0.1s; }
+    .subhead { animation-delay: 0.2s; }
+    .stats-group:nth-of-type(1) { animation-delay: 0.3s; }
+    .stats-group:nth-of-type(2) { animation-delay: 0.36s; }
+    .radar-toolbar { animation-delay: 0.42s; }
+  }
+
+  @keyframes reveal-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* --- Quick-glance filter toolbar (client-side only; nothing here changes what was
+     scored or what's in the underlying data — see .group's own counts for ground truth) --- */
+
+  .radar-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 0;
+    margin-bottom: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .toolbar-search {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 13.5px;
+    padding: 7px 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink);
+    min-width: 200px;
+    flex: 0 1 240px;
+  }
+
+  .toolbar-search:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .toolbar-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .filter-chip {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-soft);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .filter-chip:hover { border-color: var(--accent); }
+
+  .filter-chip.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .toolbar-clear {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 4px 2px;
+  }
+
+  .toolbar-count {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .filter-empty-state {
+    border: 1px dashed var(--line);
+    border-radius: 3px;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 8px;
+  }
+
+  @media (max-width: 560px) {
+    .radar-toolbar { gap: 8px; }
+    .toolbar-count { margin-left: 0; flex-basis: 100%; }
+  }
+
+  details.group {
+    margin-bottom: 48px;
+  }
+
+  summary.group-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  summary.group-head::-webkit-details-marker {
+    display: none;
+  }
+
+  summary.group-head:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* One glyph, rotated rather than swapped, so open<->closed is a smooth turn
+     instead of a content flash. */
+  .group-toggle {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+    flex: none;
+  }
+
+  details.group[open] > summary.group-head .group-toggle {
+    transform: rotate(90deg);
+  }
+
+  .group h2 {
+    font-family: "Big Shoulders Display", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 28px;
+    margin: 0;
+    letter-spacing: -0.005em;
+  }
+
+  .group-count {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 14px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .group-note {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 0 0 20px;
+  }
+
+  .empty-state {
+    border: 1px dashed var(--line);
+    border-radius: 3px;
+    padding: 20px 16px;
+    font-size: 13.5px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  details.row {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+  }
+
+  details.row[open] {
+    border-color: var(--accent);
+  }
+
+  details.row > summary {
+    list-style: none;
+    cursor: pointer;
+    display: grid;
+    /* Exactly 4 tracks: score | job | date | feedback. Status tags (sponsorship,
+       arrangement, new/long-standing) used to be their own auto-width column here —
+       but each <summary> is its own independent grid, so a variable number of tags
+       per row (0 on a plain onsite/unmentioned job, up to 4 on a remote+sponsored+new
+       one) meant every row's job/title column started at a different x position down
+       the whole list. Tags now render inside .job itself (see .job-title's sibling
+       .tags below), so this grid always has the same 4 fixed tracks regardless of a
+       given row's tags. */
+    grid-template-columns: 44px 1fr auto auto;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+  }
+
+  summary::-webkit-details-marker { display: none; }
+
+  summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .score {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ink-soft);
+  }
+
+  /* A five-step gradient across the whole 50-100 range (see render_radar.py's _tier)
+     rather than a hard cutoff only at 80/90 — a 76 and a 58 both matter, just less
+     than an 88, and the color should say so at a glance without opening either row.
+     Five distinct hues — see --score-* tokens above. */
+  .tier-exceptional .score { color: var(--score-exceptional); }
+  .tier-strong .score { color: var(--score-strong); }
+  .tier-promising .score { color: var(--score-promising); }
+  .tier-moderate .score { color: var(--score-moderate); }
+  .tier-fair .score { color: var(--score-fair); }
+
+  .score-nr {
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 5px;
+    max-width: 220px;
+  }
+
+  .tag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 3px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .tag-sponsor-yes { background: var(--status-good-soft); color: var(--status-good); }
+  .tag-sponsor-no { background: var(--danger-soft); color: var(--danger); }
+  .tag-remote { background: var(--arrangement-remote-soft); color: var(--arrangement-remote); }
+  .tag-hybrid { background: var(--arrangement-hybrid-soft); color: var(--arrangement-hybrid); }
+
+  .tag-source-failed { background: var(--danger-soft); color: var(--danger); }
+  .tag-source-warning { background: var(--status-warning-soft); color: var(--status-warning); }
+  .tag-source-unsupported { background: var(--line); color: var(--muted); }
+  .tag-long-standing { background: var(--line); color: var(--muted); }
+
+  .tag-new {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--surface);
+    font-weight: 700;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .tag-new {
+      animation: pulse-new 1.4s ease-in-out infinite;
+    }
+  }
+
+  @keyframes pulse-new {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.12); opacity: 0.72; }
+  }
+
+  .job {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .job-title-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .job-title {
+    font-weight: 600;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .job-title-line .tag-new {
+    flex: none;
+  }
+
+  .job-company {
+    font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .job-meta {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Salary gets the report's own accent color instead of the surrounding muted
+     text — a deliberately different color from location right next to it, so a
+     glance down the list finds every row that states a real number without reading
+     any of them. */
+  .job-salary {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .job-date {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  /* Date stacked directly above its own row's feedback buttons instead of sitting
+     side by side with them — keeps the row from needing extra horizontal width just
+     to fit both, and both are "about this specific posting" info anyway. */
+  .row-end {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  .row-detail {
+    padding: 4px 16px 20px 74px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px 28px;
+    border-top: 1px solid var(--line);
+    margin-top: 4px;
+    padding-top: 16px;
+  }
+
+  .detail-col h3 {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+
+  .detail-col ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13.5px;
+    color: var(--ink-soft);
+  }
+
+  .detail-col li { margin-bottom: 8px; }
+  .detail-col li:last-child { margin-bottom: 0; }
+
+  /* Only ever holds the full sponsorship-evidence sentence now — the apply link and
+     feedback buttons moved to .row-end (always visible, no expanding required) for
+     every section, so this only renders at all when there's real evidence text to
+     show beyond the sponsorship tag already visible in .tags. */
+  .detail-meta {
+    grid-column: 1 / -1;
+    padding-top: 4px;
+  }
+
+  .sponsor-note {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin: 2px 0 0;
+    font-style: italic;
+  }
+
+  .apply-link {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+
+  .apply-link:hover, .apply-link:focus-visible {
+    border-bottom-color: var(--accent);
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* Not-LLM-reviewed rows: no score, no expandable matches/gaps, so these are a plain
+     (non-<details>) row rather than a variant of the scored .row above. */
+  .plain-row {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    padding: 12px 16px;
+  }
+
+  /* Same grid as summary (score | job | tags | row-end) — a candidate with no
+     assessment yet still reads as the same report, not a visually different
+     fallback; see .score-nr for the one real difference (an uncolored placeholder
+     instead of a real number). */
+  .plain-row-top {
+    display: grid;
+    grid-template-columns: 44px 1fr auto auto;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .plain-row.fb-tagged {
+    border-left: 3px solid var(--accent);
+  }
+
+  .source-issue {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    padding: 10px 16px;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .source-issue-failed {
+    border-left: 3px solid var(--danger);
+  }
+
+  .source-issue-company {
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  .source-issue-message {
+    font-size: 12.5px;
+    color: var(--muted);
+    flex: 1 1 300px;
+    min-width: 0;
+  }
+
+  @media (max-width: 560px) {
+    details.row > summary, .plain-row-top { grid-template-columns: 36px 1fr auto auto; }
+    .tags { max-width: 90px; }
+    .job-date { display: none; }
+    .row-detail { grid-template-columns: 1fr; padding-left: 16px; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    details.row { transition: border-color 0.15s ease; }
+  }
+
+  /* --- Radar feedback (docs/feedback-exclusion-plan.md) --- */
+
+  .feedback-buttons {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .fb-btn {
+    font-size: 13px;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    cursor: pointer;
+  }
+
+  .fb-btn:hover { border-color: var(--accent); }
+
+  .fb-btn.fb-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .fb-btn.fb-irrelevant.fb-active {
+    border-color: var(--danger);
+    background: var(--danger-soft);
+  }
+
+  details.row.fb-tagged { border-left: 3px solid var(--accent); }
+
+  .feedback-export {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 10;
+  }
+
+  #feedback-export-btn {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 12px 20px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--accent);
+    color: var(--surface);
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(20, 25, 31, 0.2);
+  }
+
+  #feedback-export-btn:disabled {
+    background: var(--surface);
+    color: var(--muted);
+    cursor: not-allowed;
+    box-shadow: var(--shadow);
+    opacity: 0.7;
+  }
+
+  @media (max-width: 560px) {
+    .feedback-buttons { gap: 2px; }
+    .fb-btn { padding: 3px 4px; font-size: 12px; }
+  }
+</style>
+
+<main>
+  <header class="masthead">
+    <p class="eyebrow">Job-Hunter Search Run · 2026-08-31</p>
+    <h1>Golden Radar</h1>
+    <p class="subhead">2 U.S.-eligible postings matching your candidate profile, scored one at a time by a local model against the resume on file. No cap, nothing discarded before review.</p>
+    <div class="stats-group">
+      <p class="stats-group-label">This run</p>
+      <div class="stats stats-run">
+        <div class="stat"><span class="stat-value">3</span><span class="stat-label">Total jobs</span></div>
+        <div class="stat"><span class="stat-value">2</span><span class="stat-label">Scored</span></div>
+        <div class="stat"><span class="stat-value tone-muted">1</span><span class="stat-label">Not LLM reviewed</span></div>
+        <div class="stat"><span class="stat-value tone-strong">1</span><span class="stat-label">Strong (75+)</span></div>
+        <div class="stat"><span class="stat-value tone-review">0</span><span class="stat-label">For review (50&ndash;74)</span></div>
+        <div class="stat"><span class="stat-value tone-below">1</span><span class="stat-label">Below 50</span></div>
+        <div class="stat"><span class="stat-value">20/21</span><span class="stat-label">Sources</span></div>
+        <div class="stat"><span class="stat-value tone-danger">1</span><span class="stat-label">Failed</span></div>
+      </div>
+    </div>
+    <div class="stats-group">
+      <p class="stats-group-label">New postings</p>
+      <div class="stats stats-new">
+        <div class="stat"><span class="stat-value tone-new">2</span><span class="stat-label">Total new</span></div>
+        <div class="stat"><span class="stat-value tone-new">1</span><span class="stat-label">Strong new</span></div>
+        <div class="stat"><span class="stat-value tone-new">0</span><span class="stat-label">For review new</span></div>
+        <div class="stat"><span class="stat-value tone-new">0</span><span class="stat-label">Below 50 new</span></div>
+        <div class="stat"><span class="stat-value tone-good">1</span><span class="stat-label">Visa sponsorship new</span></div>
+      </div>
+    </div>
+    <div class="score-legend">
+      <span class="score-legend-label">Score</span>
+      <div class="score-legend-scale">
+        <span class="score-legend-step fair"><span class="score-legend-swatch"></span>50s</span>
+        <span class="score-legend-step moderate"><span class="score-legend-swatch"></span>60s</span>
+        <span class="score-legend-step promising"><span class="score-legend-swatch"></span>70s</span>
+        <span class="score-legend-step strong"><span class="score-legend-swatch"></span>80s</span>
+        <span class="score-legend-step exceptional"><span class="score-legend-swatch"></span>90+</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="radar-toolbar" id="radar-toolbar">
+    <input type="search" id="filter-search" class="toolbar-search" placeholder="Filter by company or title&hellip;" autocomplete="off">
+    <div class="toolbar-chips">
+      <button type="button" class="filter-chip" data-filter-group="tag" data-filter-value="new">New</button>
+      <button type="button" class="filter-chip" data-filter-group="tag" data-filter-value="long-standing">Long-standing</button>
+      <button type="button" class="filter-chip" data-filter-group="arrangement" data-filter-value="remote">Remote</button>
+      <button type="button" class="filter-chip" data-filter-group="arrangement" data-filter-value="hybrid">Hybrid</button>
+      <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="available">Sponsorship OK</button>
+      <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="not_available">No Sponsorship</button>
+    </div>
+    <button type="button" id="filter-clear" class="toolbar-clear" hidden>Clear filters</button>
+    <span class="toolbar-count" id="filter-count"></span>
+  </div>
+
+  <details class="group">
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
+      <h2>Collection issues</h2>
+      <span class="group-count">1 sources</span>
+    </summary>
+    <p class="group-note">Sources that didn't collect cleanly this run &mdash; failed (a
+      transient error, worth retrying), warning (collected, but a suspicious job-count drop
+      was flagged), or unsupported (a known, permanent state, disclosed in
+      <code>companies.yaml</code>). Candidates above are unaffected by these.</p>
+    <div class="rows">
+    <div class="source-issue source-issue-failed">
+      <span class="tag tag-source-failed">Failed</span>
+      <span class="source-issue-company">Beta Corp</span>
+      <span class="source-issue-message">Connection timed out.</span>
+    </div></div>
+  </details>
+
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
+      <h2>Strong matches</h2>
+      <span class="group-count">score &ge; 75 &middot; 1 jobs</span>
+    </summary>
+    <p class="group-note">Sorted by score, highest first. Tap a row for the model's evidence.</p>
+    <div class="rows">
+    <details class="row tier-strong" data-sponsorship="available" data-arrangement="remote" data-new="1" data-long-standing="0">
+      <summary>
+        <span class="score">88</span>
+        <span class="job">
+          <span class="job-title-line">
+            <span class="tag tag-new">New</span>
+            <span class="job-title">Scored Role</span>
+          </span>
+          <span class="job-company">Acme</span>
+          <span class="job-meta"><span class="job-location">Detroit, MI</span> · <span class="job-salary">$100,000 - $120,000</span></span>
+        </span>
+        <span class="tags"><span class="tag tag-sponsor-yes">Sponsorship OK</span><span class="tag tag-remote">Remote</span></span>
+        <span class="row-end">
+          <span class="job-date">Aug 25, 2026</span>
+          <span class="feedback-buttons"
+          data-source-key="x" data-job-id="1"
+          data-company="Acme" data-title="Scored Role"
+          data-department="" data-score="88">
+          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>
+          <a class="apply-link" href="https://example.com/1" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
+      </summary>
+      <div class="row-detail">
+        <div class="detail-col">
+          <h3>Matches</h3>
+          <ul><li>m1</li></ul>
+        </div>
+        <div class="detail-col">
+          <h3>Gaps</h3>
+          <ul><li>g1</li></ul>
+        </div>
+        
+      </div>
+    </details></div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
+  </details>
+
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
+      <h2>For review</h2>
+      <span class="group-count">score 50&ndash;74 &middot; 0 jobs</span>
+    </summary>
+    <p class="group-note">Lower-confidence matches &mdash; worth a look, not a recommendation.</p>
+    <div class="rows"><p class="empty-state">No candidates scored 50-74 for this search.</p></div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
+  </details>
+
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
+      <h2>Below 50</h2>
+      <span class="group-count">score &lt; 50 &middot; 1 jobs</span>
+    </summary>
+    <p class="group-note">Every candidate the local model scored, regardless of fit &mdash; unlikely matches, kept for completeness.</p>
+    <div class="rows">
+    <details class="row tier-plain" data-sponsorship="unmentioned" data-arrangement="unknown" data-new="0" data-long-standing="0">
+      <summary>
+        <span class="score">41</span>
+        <span class="job">
+          <span class="job-title-line">
+            
+            <span class="job-title">Second Role</span>
+          </span>
+          <span class="job-company">Acme</span>
+          <span class="job-meta"><span class="job-location">Detroit, MI</span></span>
+        </span>
+        <span class="tags"></span>
+        <span class="row-end">
+          <span class="job-date">Aug 20, 2026</span>
+          <span class="feedback-buttons"
+          data-source-key="x" data-job-id="2"
+          data-company="Acme" data-title="Second Role"
+          data-department="" data-score="41">
+          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>
+          <a class="apply-link" href="https://example.com/1" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
+      </summary>
+      <div class="row-detail">
+        <div class="detail-col">
+          <h3>Matches</h3>
+          <ul><li>m1</li></ul>
+        </div>
+        <div class="detail-col">
+          <h3>Gaps</h3>
+          <ul><li>g1</li></ul>
+        </div>
+        
+      </div>
+    </details></div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
+  </details>
+
+  <details class="group" open>
+    <summary class="group-head">
+      <span class="group-toggle" aria-hidden="true">&#9656;</span>
+      <h2>Not LLM Reviewed</h2>
+      <span class="group-count">1 jobs</span>
+    </summary>
+    <p class="group-note">Passed every deterministic filter but hasn't been scored by the local
+      model yet &mdash; no verdict to show, so no score/strengths/gaps here. Run job-reviewer to
+      move these into one of the groups above.</p>
+    <div class="rows">
+    <div class="plain-row" data-sponsorship="unmentioned" data-arrangement="unknown" data-new="1" data-long-standing="0">
+      <div class="plain-row-top">
+        <span class="score score-nr" title="Not yet reviewed by the local model">NR</span>
+        <span class="job">
+          <span class="job-title-line">
+            <span class="tag tag-new">New</span>
+            <span class="job-title">Unreviewed Role</span>
+          </span>
+          <span class="job-company">Acme</span>
+          <span class="job-meta"><span class="job-location">Detroit, MI</span></span>
+        </span>
+        <span class="tags"></span>
+        <span class="row-end">
+          <span class="job-date">Aug 22, 2026</span>
+          <span class="feedback-buttons"
+          data-source-key="x" data-job-id="3"
+          data-company="Acme" data-title="Unreviewed Role"
+          data-department="" data-score="">
+          <button type="button" class="fb-btn fb-relevant" data-label="relevant" title="Relevant">&#128077;</button>
+          <button type="button" class="fb-btn fb-okay" data-label="okay" title="Okay">&#128994;</button>
+          <button type="button" class="fb-btn fb-irrelevant" data-label="irrelevant" title="Irrelevant">&#128078;</button>
+        </span>
+          <a class="apply-link" href="https://example.com/1" target="_blank" rel="noopener">View posting &#8599;</a>
+        </span>
+      </div>
+    </div></div>
+    <p class="filter-empty-state" hidden>No matches for the current filters.</p>
+  </details>
+
+  <footer>
+    <p>Full data in <code>data/assessments.csv</code>. See "Collection issues" above for any source that didn't collect cleanly this run.</p>
+  </footer>
+</main>
+
+<div class="feedback-export">
+  <button type="button" id="feedback-export-btn" disabled>Export Feedback (0)</button>
+</div>
+
+<script>
+(function () {
+  // Per-job relevance feedback — click-to-tag, export-on-demand, nothing auto-assumed for
+  // an untouched row. See docs/feedback-exclusion-plan.md for the full mechanism this feeds.
+  //
+  // Persisted to localStorage as you click (not just on export) — this used to live only in
+  // an in-page JS variable, so closing the tab before hitting Export silently threw away
+  // every tag. Scoped to this report's own filename so a different search's report never
+  // collides with or overwrites another's saved tags. Export remains an explicit, separate
+  // action — this only prevents accidental loss, it doesn't change when a file gets written.
+  var STORAGE_KEY = 'job-hunter-feedback:search';
+  var feedback = {};
+
+  function loadPersisted() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(feedback));
+    } catch (e) {
+      // Private browsing / storage disabled / quota exceeded — feedback still works for
+      // this page load via the in-memory object and the Export button; it just won't
+      // survive a reload. Nothing useful to surface to the user for this.
+    }
+  }
+
+  function exportButton() {
+    return document.getElementById('feedback-export-btn');
+  }
+
+  function refreshExportButton() {
+    var count = Object.keys(feedback).length;
+    var btn = exportButton();
+    btn.textContent = 'Export Feedback (' + count + ')';
+    btn.disabled = count === 0;
+  }
+
+  feedback = loadPersisted();
+
+  // .apply-link now lives inside .row-end, which sits inside <summary> for every
+  // scored row (row-end is always visible, no expanding required) — without this, a
+  // click on the link would also toggle that row open/closed, since <summary> is
+  // itself a native details-toggle control. Only stopPropagation, never
+  // preventDefault: the link's own navigation must still happen.
+  document.querySelectorAll('details.row > summary .apply-link').forEach(function (link) {
+    link.addEventListener('click', function (evt) { evt.stopPropagation(); });
+  });
+
+  document.querySelectorAll('.feedback-buttons').forEach(function (group) {
+    var buttons = group.querySelectorAll('.fb-btn');
+    var key = group.dataset.sourceKey + '|' + group.dataset.jobId;
+    var row = group.closest('details.row, .plain-row');
+
+    var restored = feedback[key];
+    if (restored) {
+      buttons.forEach(function (b) {
+        if (b.dataset.label === restored.label) b.classList.add('fb-active');
+      });
+      if (row) row.classList.add('fb-tagged');
+    }
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function (evt) {
+        // Nested inside <summary> — without this, a click here would also toggle the
+        // row open/closed, since <summary> is itself a native details-toggle control.
+        evt.preventDefault();
+        evt.stopPropagation();
+
+        var alreadyActive = btn.classList.contains('fb-active');
+        buttons.forEach(function (b) { b.classList.remove('fb-active'); });
+
+        if (alreadyActive) {
+          // Un-tag: revert this row to genuinely untouched, not to a different label.
+          delete feedback[key];
+          if (row) row.classList.remove('fb-tagged');
+        } else {
+          btn.classList.add('fb-active');
+          feedback[key] = {
+            source_key: group.dataset.sourceKey,
+            job_id: group.dataset.jobId,
+            company: group.dataset.company,
+            title: group.dataset.title,
+            department: group.dataset.department || null,
+            score: group.dataset.score ? parseInt(group.dataset.score, 10) : null,
+            label: btn.dataset.label
+          };
+          if (row) row.classList.add('fb-tagged');
+        }
+        persist();
+        refreshExportButton();
+      });
+    });
+  });
+
+  refreshExportButton();
+
+  exportButton().addEventListener('click', function () {
+    var rows = Object.keys(feedback).map(function (k) { return feedback[k]; });
+    if (rows.length === 0) {
+      return;
+    }
+    var blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'radar-feedback-search.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Quick-glance client-side filtering — company/title search plus tag/arrangement/
+  // sponsorship chips. Pure view-layer: never touches feedback state, never changes what a
+  // job scored, and filter selections are intentionally NOT persisted (a fresh page load
+  // always starts unfiltered) since this is a per-visit viewing convenience, not a fact worth
+  // remembering the way a feedback tag is.
+  var toolbar = document.getElementById('radar-toolbar');
+  if (!toolbar) return;
+
+  var searchInput = document.getElementById('filter-search');
+  var chips = Array.prototype.slice.call(toolbar.querySelectorAll('.filter-chip'));
+  var clearBtn = document.getElementById('filter-clear');
+  var countEl = document.getElementById('filter-count');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.row, .plain-row'));
+
+  function activeValues(group) {
+    return chips
+      .filter(function (c) { return c.dataset.filterGroup === group && c.classList.contains('active'); })
+      .map(function (c) { return c.dataset.filterValue; });
+  }
+
+  function rowMatches(row) {
+    var query = searchInput.value.trim().toLowerCase();
+    if (query) {
+      // Read straight from the already-rendered text rather than a duplicated data
+      // attribute — one source of truth, and avoids a data-title attribute sitting earlier
+      // in the markup than the visible title text.
+      var titleEl = row.querySelector('.job-title');
+      var companyEl = row.querySelector('.job-company');
+      var haystack = ((companyEl ? companyEl.textContent : '') + ' ' + (titleEl ? titleEl.textContent : '')).toLowerCase();
+      if (haystack.indexOf(query) === -1) return false;
+    }
+    var tagValues = activeValues('tag');
+    if (tagValues.length) {
+      var matchesTag = tagValues.some(function (v) {
+        if (v === 'new') return row.dataset.new === '1';
+        if (v === 'long-standing') return row.dataset.longStanding === '1';
+        return false;
+      });
+      if (!matchesTag) return false;
+    }
+    var arrangementValues = activeValues('arrangement');
+    if (arrangementValues.length && arrangementValues.indexOf(row.dataset.arrangement) === -1) return false;
+
+    var sponsorshipValues = activeValues('sponsorship');
+    if (sponsorshipValues.length && sponsorshipValues.indexOf(row.dataset.sponsorship) === -1) return false;
+
+    return true;
+  }
+
+  function updateEmptyStates() {
+    document.querySelectorAll('.rows').forEach(function (rowsDiv) {
+      var groupRows = rowsDiv.querySelectorAll('.row, .plain-row');
+      if (!groupRows.length) return;  // a genuinely empty tier already shows its own static message
+      var anyVisible = Array.prototype.some.call(groupRows, function (r) { return !r.hidden; });
+      var msg = rowsDiv.nextElementSibling;
+      if (msg && msg.classList.contains('filter-empty-state')) {
+        msg.hidden = anyVisible;
+      }
+    });
+  }
+
+  function applyFilters() {
+    var visible = 0;
+    rows.forEach(function (row) {
+      var matches = rowMatches(row);
+      row.hidden = !matches;
+      if (matches) visible++;
+    });
+    countEl.textContent = rows.length ? ('Showing ' + visible + ' of ' + rows.length) : '';
+    var anyActive = searchInput.value.trim() !== '' || chips.some(function (c) { return c.classList.contains('active'); });
+    clearBtn.hidden = !anyActive;
+    updateEmptyStates();
+  }
+
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chip.classList.toggle('active');
+      applyFilters();
+    });
+  });
+
+  searchInput.addEventListener('input', applyFilters);
+
+  clearBtn.addEventListener('click', function () {
+    searchInput.value = '';
+    chips.forEach(function (c) { c.classList.remove('active'); });
+    applyFilters();
+  });
+
+  applyFilters();
+})();
+</script>

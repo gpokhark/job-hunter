@@ -42,3 +42,13 @@ location:
   country: US
   allowed_work_arrangements: [onsite, hybrid, remote]
 
+
+# Applicant contact details for the resume-generator / outreach-writer skills. This file is
+# git-ignored; fill in your own values. `name` and `email` are required; phone/linkedin/github are
+# optional and omitted from the resume header when left out.
+contact:
+  name: "Your Name"
+  email: "you@example.com"
+  phone: "+1 555 555 0100"
+  linkedin: "https://www.linkedin.com/in/your-handle"
+  github: "https://github.com/your-handle"
