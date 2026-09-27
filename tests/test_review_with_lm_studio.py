@@ -16,6 +16,7 @@ from review_with_lm_studio import (  # noqa: E402
     _format_duration,
     _run_review,
     main,
+    resolve_resume,
     review_one,
 )
 
@@ -127,3 +128,23 @@ def test_run_review_writes_progress_log_and_final_summary(tmp_path, monkeypatch)
     assert "Reviewing [1/1] Acme — Staff Engineer" in log_text
     assert "done [1/1, 0 remaining]: score=88 recommended=True" in log_text
     assert "Reviewed 1 job(s); skipped 3 already-assessed (unchanged) job(s)." in log_text
+
+
+def test_resolve_resume_prefers_the_newest_dated_resume_over_the_profile_path(tmp_path):
+    (tmp_path / "old.md").write_text("profile resume")
+    directory = tmp_path / "data" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-05-05.md").write_text("newest resume")
+    profile = CandidateProfile(resume_path=Path("old.md"))
+    updated, text = resolve_resume(profile, tmp_path)
+    assert text == "newest resume"
+    assert updated.resume_path == (directory / "main_resume_2026-05-05.md").resolve()
+    assert profile.resume_path == Path("old.md")  # the original model is not mutated
+
+
+def test_resolve_resume_falls_back_to_the_profile_path_and_errors_when_neither_exists(tmp_path):
+    (tmp_path / "old.md").write_text("profile resume")
+    profile = CandidateProfile(resume_path=Path("old.md"))
+    assert resolve_resume(profile, tmp_path)[1] == "profile resume"
+    with pytest.raises(FileNotFoundError):
+        resolve_resume(CandidateProfile(), tmp_path / "empty")

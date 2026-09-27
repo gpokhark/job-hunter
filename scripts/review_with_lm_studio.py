@@ -35,9 +35,10 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from job_hunter.atomic import atomic_write_text
-from job_hunter.config import load_profile, load_settings
+from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.lm_studio_health import check_lm_studio, load_lm_studio_config
 from job_hunter.models import Assessment
+from job_hunter.resume_source import resolve_master_resume
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.runlock import RunLockHeld, run_lock_or_inherited
 from job_hunter.search_archive import resolve_search_path
@@ -196,6 +197,17 @@ def _refresh_export(storage: Storage, database_path: Path) -> None:
     atomic_write_text(path, json.dumps(rows, indent=2, default=str, ensure_ascii=False) + "\n")
 
 
+def resolve_resume(profile: CandidateProfile, root: Path) -> tuple[CandidateProfile, str]:
+    """The resume text to score against: the newest dated data/resume/main_resume_<date>.md if there
+    is one, else the profile's resume_path (today's behavior). The returned profile carries the
+    resolved path so recorded assessments name the file actually used. Raises FileNotFoundError."""
+    resolved = resolve_master_resume(root, profile=profile)
+    return (
+        profile.model_copy(update={"resume_path": resolved.path}),
+        resolved.path.read_text(encoding="utf-8"),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -284,11 +296,15 @@ def main() -> int:
     config = load_lm_studio_config(args.config)
     rubric = _SCORING_RUBRIC_PATH.read_text(encoding="utf-8")
 
-    profile = load_profile()
-    if not profile.resume_path or not profile.resume_path.exists():
-        print("job-hunter: no resume found (set resume_path in candidate_profile.yaml)", file=sys.stderr)
+    try:
+        profile, resume = resolve_resume(load_profile(), Path.cwd())
+    except FileNotFoundError:
+        print(
+            "job-hunter: no resume found (add data/resume/main_resume_<YYYY-MM-DD>.md or set "
+            "resume_path in candidate_profile.yaml)",
+            file=sys.stderr,
+        )
         return 2
-    resume = profile.resume_path.read_text(encoding="utf-8")
 
     data = json.loads(args.input.read_text(encoding="utf-8"))
     candidates = [c for c in data.get("candidates", []) if c.get("us_eligible")]

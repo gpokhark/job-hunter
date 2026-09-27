@@ -578,3 +578,50 @@ def test_export_applications_writes_json_and_csv_next_to_the_database(tmp_path, 
     data = tmp_path / "data"
     assert json.loads((data / "applications.json").read_text())[0]["status"] == "saved"
     assert "'=BAD()" in (data / "applications.csv").read_text()
+
+
+def _bare_project(tmp_path, monkeypatch):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(
+        f"database_path: {tmp_path}/data/jobs.sqlite3\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
+
+
+def test_resume_files_prints_all_paths_as_json(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    directory = tmp_path / "data" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-01-01.md").write_text("r")
+    (directory / "personalization.md").write_text("p")
+    assert main(["resume-files"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["master_resume"].endswith("main_resume_2026-01-01.md")
+    assert payload["master_resume_source"] == "dated"
+    assert payload["personalization"].endswith("personalization.md")
+    assert payload["cover_letter_sample"] is None and payload["review_evidence"] is None
+
+
+def test_resume_files_exits_2_with_instructions_when_no_resume(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["resume-files"]) == 2
+    assert "main_resume_<YYYY-MM-DD>.md" in capsys.readouterr().err
+
+
+def test_resume_files_refuses_the_example_resume_fallback(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text("resume_path: config/resume.example.md\n")
+    (tmp_path / "config" / "resume.example.md").write_text("placeholder")
+    assert main(["resume-files"]) == 2
+    err = capsys.readouterr().err
+    assert "example" in err and "data/resume/main_resume_" in err
+
+
+def test_resume_files_explicit_resume_flag(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    mine = tmp_path / "mine.md"
+    mine.write_text("x")
+    assert main(["resume-files", "--resume", str(mine)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["master_resume_source"] == "explicit"

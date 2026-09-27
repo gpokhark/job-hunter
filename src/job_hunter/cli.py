@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from . import resume_source
 from .adapters import adapter_class
 from .applications_export import write_applications_exports
 from .atomic import atomic_write_text
@@ -87,6 +88,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("export-assessments")
     sub.add_parser("export-feedback")
     sub.add_parser("export-applications")
+    resume_files = sub.add_parser("resume-files")
+    resume_files.add_argument("--resume", type=Path, default=None)
     sub.add_parser(
         "reevaluate-sponsorship",
         help=(
@@ -441,6 +444,37 @@ def main(argv: list[str] | None = None) -> int:
                 rows = storage.export_applications()
             write_applications_exports(settings.database_path.parent, rows)
             print(_json(rows))
+            return 0
+        if args.command == "resume-files":
+            root = Path.cwd()
+            try:
+                profile = load_profile()
+            except FileNotFoundError:
+                profile = None  # a bare project with no profile file: dated resumes still resolve
+            try:
+                resolved = resume_source.resolve_master_resume(root, explicit=args.resume, profile=profile)
+            except FileNotFoundError as exc:
+                print(f"job-hunter: {exc}", file=sys.stderr)
+                return 2
+            if resolved.source == "profile" and resume_source.is_example(resolved.path):
+                print(
+                    "job-hunter: only the example resume was found (profile resume_path points at "
+                    f"{resolved.path.name}). Add your own data/resume/main_resume_<YYYY-MM-DD>.md "
+                    "so a resume is never generated from placeholder text.",
+                    file=sys.stderr,
+                )
+                return 2
+
+            def _s(path: Path | None) -> str | None:
+                return str(path) if path else None
+
+            print(_json({
+                "master_resume": str(resolved.path),
+                "master_resume_source": resolved.source,
+                "personalization": _s(resume_source.find_personalization(root)),
+                "cover_letter_sample": _s(resume_source.find_cover_sample(root)),
+                "review_evidence": _s(resume_source.find_review_evidence(root)),
+            }))
             return 0
         if args.command in {
             "source-status", "db-stats", "export", "export-assessments", "export-feedback",
