@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from market_lookup import fetch_matches, main, render_text  # noqa: E402
+from market_lookup import fetch_matches, main, render_markdown_table, render_text  # noqa: E402
 
 from job_hunter.models import Job, LocationConfidence, SponsorshipStatus
 from job_hunter.storage import Storage
@@ -119,6 +119,33 @@ class TestRenderText:
         assert "sponsorship: unmentioned" in out
 
 
+class TestRenderMarkdownTable:
+    def test_no_matches_message(self):
+        assert render_markdown_table([]) == "No matches."
+
+    def test_header_and_column_order(self, tmp_path):
+        db = tmp_path / "jobs.sqlite3"
+        _seed(db)
+        rows = fetch_matches(db, ["Autonomous Vehicle"], companies=["gm"], states=["AZ"])
+        out = render_markdown_table(rows)
+        lines = out.splitlines()
+        assert lines[0] == "| Title | Company | Location | Salary | Sponsorship | Job link |"
+        assert lines[1] == "|---|---|---|---:|---|---|"
+        assert lines[2] == "| Autonomous Vehicle Test Engineer | General Motors | AZ | $135,420-$165,000 | unmentioned | [link](https://example.com/1) |"
+
+    def test_pipe_in_title_or_company_is_escaped(self, tmp_path):
+        db = tmp_path / "jobs.sqlite3"
+        with Storage(db) as storage:
+            storage.upsert_job(make_job(job_id="1", title="ADAS Engineer | Level 2", company="A | B Motors"))
+        rows = fetch_matches(db, ["ADAS"])
+        out = render_markdown_table(rows)
+        assert "ADAS Engineer \\| Level 2" in out
+        assert "A \\| B Motors" in out
+        # exactly 6 unescaped pipes per data row (the table's own column separators)
+        data_row = out.splitlines()[2]
+        assert data_row.count("|") - data_row.count("\\|") == 7
+
+
 class TestCli:
     def test_json_output(self, tmp_path, monkeypatch, capsys):
         db = tmp_path / "jobs.sqlite3"
@@ -131,3 +158,15 @@ class TestCli:
         assert exit_code == 0
         rows = json.loads(capsys.readouterr().out)
         assert len(rows) == 2
+
+    def test_markdown_output(self, tmp_path, monkeypatch, capsys):
+        db = tmp_path / "jobs.sqlite3"
+        _seed(db)
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "settings.yaml").write_text(f"database_path: {db}\n")
+        monkeypatch.chdir(tmp_path)
+
+        exit_code = main(["--title-like", "Autonomous Vehicle", "--companies", "gm", "--markdown"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert out.startswith("| Title | Company | Location | Salary | Sponsorship | Job link |")

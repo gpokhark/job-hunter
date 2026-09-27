@@ -14,6 +14,9 @@ Usage:
     uv run python scripts/market_lookup.py --title-like "..." --companies caterpillar,ford,rivian,gm,slate
     uv run python scripts/market_lookup.py --title-like "..." --states MI,AZ --json
     uv run python scripts/market_lookup.py --title-like "..." --include-closed --include-no-salary
+    # the canonical Title/Company/Location/Salary/Sponsorship/Job-link table -- paste straight
+    # into a negotiation plan or comparison doc instead of hand-writing prose:
+    uv run python scripts/market_lookup.py --title-like "..." --markdown
 """
 from __future__ import annotations
 
@@ -90,6 +93,33 @@ def render_text(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _md_cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def render_markdown_table(rows: list[dict]) -> str:
+    """The canonical comparable-postings table format: Title | Company | Location | Salary |
+    Sponsorship | Job link. Paste this straight into a negotiation plan or comparison doc instead
+    of hand-writing prose -- see salary-compare's SKILL.md Step 4."""
+    if not rows:
+        return "No matches."
+    lines = [
+        "| Title | Company | Location | Salary | Sponsorship | Job link |",
+        "|---|---|---|---:|---|---|",
+    ]
+    for r in rows:
+        loc = ", ".join(x for x in (r["city"], r["state"]) if x) or "n/a"
+        if r["salary_min"] is not None and r["salary_max"] is not None:
+            sal = f"${r['salary_min']:,.0f}-${r['salary_max']:,.0f}"
+        else:
+            sal = "n/a"
+        lines.append(
+            f"| {_md_cell(r['title'])} | {_md_cell(r['company'])} | {_md_cell(loc)} | {sal} | "
+            f"{r['visa_sponsorship']} | [link]({r['canonical_url']}) |"
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--title-like", required=True, help="comma-separated keywords; a posting matches if its title contains ANY of them (case-insensitive)")
@@ -98,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-closed", action="store_true", help="also include postings no longer active (still useful as historical comparables)")
     ap.add_argument("--include-no-salary", action="store_true", help="also include matches with no disclosed salary_min/max (shown for title-match context, not usable as a comparable)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--markdown", action="store_true", help="render as the canonical Title/Company/Location/Salary/Sponsorship/Job-link table -- paste straight into a negotiation plan instead of hand-writing prose")
     add_project_argument(ap)
     args = ap.parse_args(argv)
     chdir_to_project_root(args.project)
@@ -115,7 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         include_closed=args.include_closed, require_salary=not args.include_no_salary,
     )
 
-    print(json.dumps(rows, indent=2) if args.json else render_text(rows))
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    elif args.markdown:
+        print(render_markdown_table(rows))
+    else:
+        print(render_text(rows))
     return 0
 
 
