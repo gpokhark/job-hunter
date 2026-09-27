@@ -27,3 +27,16 @@ def test_cells_that_look_like_spreadsheet_formulas_are_neutralised(tmp_path):
     append_row(log, _row(Role="=HYPERLINK(\"http://evil\")", Company="+cmd"))
     row = list(csv.DictReader(log.open(encoding="utf-8")))[0]
     assert row["Role"].startswith("'=") and row["Company"] == "'+cmd"
+
+
+def test_jd_file_supplies_role_company_and_url_without_a_command_line(tmp_path):
+    from log_resume import read_jd_fields
+
+    jd = tmp_path / "JD.txt"
+    jd.write_text(
+        "Engineer $(touch /tmp/pwned) `id`\nSomewhere\n\nSummary\nPosted: 2026-09-01\nJob ID: 1\n"
+        "Job URL: https://x.test/1\nSource: Acme Corp (acme)\n\nDescription\nBody\n",
+        encoding="utf-8",
+    )
+    fields = read_jd_fields(jd)
+    assert fields == {"Role": "Engineer $(touch /tmp/pwned) `id`", "Job_URL": "https://x.test/1", "Company": "Acme Corp"}

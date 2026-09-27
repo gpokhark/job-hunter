@@ -35,6 +35,8 @@ class ExportResult:
     prompt: str
 
 
+_COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
 _SCRIPT_OPEN = re.compile(r"<(script|style)\b", re.I)
 _CLOSERS = {
     "script": re.compile(r"</script\s*>", re.I),
@@ -48,6 +50,23 @@ _TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 _ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MAX_PART = 60
+
+
+def _strip_comments(value: str) -> str:
+    """Drop HTML comments in linear time; an unterminated one is dropped to the end of the input."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        start = value.find(_COMMENT_OPEN, pos)
+        if start == -1:
+            out.append(value[pos:])
+            break
+        out.append(value[pos:start])
+        end = value.find(_COMMENT_CLOSE, start + len(_COMMENT_OPEN))
+        if end == -1:
+            break
+        pos = end + len(_COMMENT_CLOSE)
+    return "".join(out)
 
 
 def _strip_script_style(value: str) -> str:
@@ -78,7 +97,7 @@ def html_to_text(value: str) -> str:
     """Readable plain text from an HTML (or already-plain) job description: paragraph/list/line
     breaks are kept, bullets become '- ', entities are decoded, scripts/styles are dropped. A bare
     '<' that isn't a tag (e.g. 'salary < 100k') is left alone."""
-    text = _strip_script_style(value)
+    text = _strip_script_style(_strip_comments(value))
     text = _BREAK.sub("\n", text)
     text = _LI_START.sub("\n- ", text)
     text = _BLOCK_END.sub("\n\n", text)
