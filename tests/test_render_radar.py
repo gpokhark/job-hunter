@@ -1405,3 +1405,26 @@ def test_static_render_keeps_token_text_in_titles_literal(tmp_path):
     assert _HOSTILE in page
     assert page.count("<details") == base.count("<details")
     assert page.count("<script") == base.count("<script")
+
+
+def test_static_render_has_no_resume_button(tmp_path):
+    html, _ = render(**_golden_inputs(tmp_path))
+    assert "resume-btn" not in html
+
+
+def test_live_rows_get_a_resume_button_after_the_track_chip_in_both_row_types(tmp_path):
+    html = _live_apps_html(tmp_path)
+    scored = re.search(r'<details class="row[^>]*data-job-id="1"[^>]*>.*?</details>', html, re.S).group(0)
+    summary = scored.split("</summary>")[0]
+    assert summary.count('class="resume-btn"') == 1
+    row_end = summary.split('class="row-end"')[1]
+    assert row_end.index('class="app-chip"') < row_end.index('class="resume-btn"') < row_end.index('class="apply-link"')
+    assert ">Resume</button>" in summary
+    plain = re.search(r'<div class="plain-row[^>]*data-job-id="3"[^>]*>.*?\n    </div>', html, re.S).group(0)
+    assert plain.count('class="resume-btn"') == 1
+    assert 'data-source-key="x"' in plain.split(">")[0] or 'data-source-key="x"' in plain[:300]
+
+
+def test_the_resume_button_slot_adds_no_whitespace_between_neighbours(tmp_path):
+    html = _live_apps_html(tmp_path)
+    assert re.search(r"</button><button type=\"button\" class=\"resume-btn\"", html)
