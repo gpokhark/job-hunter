@@ -132,7 +132,7 @@ def test_run_review_writes_progress_log_and_final_summary(tmp_path, monkeypatch)
 
 def test_resolve_resume_prefers_the_newest_dated_resume_over_the_profile_path(tmp_path):
     (tmp_path / "old.md").write_text("profile resume")
-    directory = tmp_path / "data" / "resume"
+    directory = tmp_path / "config" / "resume"
     directory.mkdir(parents=True)
     (directory / "main_resume_2026-05-05.md").write_text("newest resume")
     profile = CandidateProfile(resume_path=Path("old.md"))

@@ -49,7 +49,7 @@ scoring into Python or retrieval into the skill.
 - Before any run that writes reports or archives, list the target paths and check whether they exist with `ls -la <exact path>`. Report the result truthfully.
 - Output filenames must reflect filters such as `--companies` and `--project`.
 - `serve_radar.py` tests/smoke runs use a temp project (`--project`); never point one at the real `data/` for experiments.
-- Generated resumes/JDs, `data/resume/*` and the `contact:` block are personal data: never commit them or paste them into tests/docs (use obviously fake values like `Jane Doe`/`jane@example.com`).
+- Generated resumes/JDs, `config/resume/*` and the `contact:` block are personal data: never commit them or paste them into tests/docs (use obviously fake values like `Jane Doe`/`jane@example.com`).
 
 ## Commands
 
@@ -390,7 +390,7 @@ ranked `SearchResult` JSON.
 
 - **Resume and outreach** (`docs/SPEC.md` §11.2) — Python owns retrieval and mechanics, the two skills own
   the writing. `src/job_hunter/resume_source.py`: `resolve_master_resume()` picks the newest
-  `data/resume/main_resume_<YYYY-MM-DD>.md` by *filename* date (never mtime), falling back to the profile's
+  `config/resume/main_resume_<YYYY-MM-DD>.md` by *filename* date (never mtime), falling back to the profile's
   `resume_path`; also serves the local-LLM reviewer; `job-hunter resume-files` prints its JSON and rejects the
   example resume. `config.py`'s `ContactInfo`/`contact_problems()` back the profile `contact:` block and
   `job-hunter contact` (exit 2 on missing/placeholder fields). `src/job_hunter/jd_export.py` +
@@ -401,7 +401,7 @@ ranked `SearchResult` JSON.
   and append `data/output/resume_log.csv`; they need the optional `resume` extra (`uv sync --extra resume` +
   `uv run playwright install chromium`), never the base install or default tests. `skills/resume-generator`
   and `skills/outreach-writer` (symlinked in `.claude/skills/`) take free-text personalization per request plus
-  `data/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
+  `config/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
 
 - **`health.py`** — `detect_count_anomaly` flags (doesn't fail) a source whose job count drops
   >70% from its last known count — guards against adapters "succeeding" against a changed page

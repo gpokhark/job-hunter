@@ -53,12 +53,15 @@ cp config/candidate_profile.example.yaml config/candidate_profile.yaml
 uv run job-hunter doctor
 ```
 
-Edit `config/candidate_profile.yaml` with your title/domain terms, exclusions, and resume path.
+Edit `config/candidate_profile.yaml` with your title/domain terms and exclusions.
+
+Put your master resume at `config/resume/main_resume_<YYYY-MM-DD>.md` (newest filename date wins;
+see `config/resume/README.md`). The profile's `resume_path` remains only as a fallback when no
+dated file exists there.
 
 Your resume and filled-in `candidate_profile.yaml` are personal and never committed —
-`.gitignore` excludes `config/candidate_profile.yaml` and any `config/*resume*` file except the
-checked-in `config/resume.example.md`. Bring your own resume as a `.md` file anywhere under
-`config/` matching that pattern (e.g. `config/my_resume.md`) and point `resume_path` at it.
+`.gitignore` excludes `config/candidate_profile.yaml`, everything in `config/resume/` except its
+README, and any `config/*resume*` file except the checked-in `config/resume.example.md`.
 
 Scoring candidates against your resume needs a local model running in
 [LM Studio](https://lmstudio.ai/) (Developer tab > Start Server). Copy
@@ -310,15 +313,15 @@ reports if a Hermes registration exists but points at a hook script that no long
 ## Resume and outreach
 
 The `resume-generator` and `outreach-writer` skills turn a job the radar found into a tailored resume
-(HTML + PDF) and outreach copy. Everything they produce, and everything personal they read, lives under
-the git-ignored `data/` (and `config/candidate_profile.yaml`).
+(HTML + PDF) and outreach copy. Everything they produce lives under the git-ignored `data/output/`; the personal inputs they read live
+under the git-ignored `config/resume/` (and `config/candidate_profile.yaml`).
 
 **Setup**
 
 1. `uv sync --extra resume` and `uv run playwright install chromium` (only PDF output needs these).
 2. Fill the `contact:` block in `config/candidate_profile.yaml` (`name` and `email` required; `job-hunter contact` checks it).
-3. Save your master resume as `data/resume/main_resume_<YYYY-MM-DD>.md`. The newest filename date wins; `job-hunter resume-files` shows what will be used.
-4. Optional: `data/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis).
+3. Save your master resume as `config/resume/main_resume_<YYYY-MM-DD>.md`. The newest filename date wins; `job-hunter resume-files` shows what will be used.
+4. Optional: `config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis).
 
 **Workflow**
 

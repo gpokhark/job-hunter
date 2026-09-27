@@ -498,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
             if resolved.source == "profile" and resume_source.is_example(resolved.path):
                 print(
                     "job-hunter: only the example resume was found (profile resume_path points at "
-                    f"{resolved.path.name}). Add your own data/resume/main_resume_<YYYY-MM-DD>.md "
+                    f"{resolved.path.name}). Add your own config/resume/main_resume_<YYYY-MM-DD>.md "
                     "so a resume is never generated from placeholder text.",
                     file=sys.stderr,
                 )

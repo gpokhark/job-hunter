@@ -15,7 +15,7 @@ from job_hunter.resume_source import (
 
 
 def _resume_dir(root: Path) -> Path:
-    directory = root / "data" / "resume"
+    directory = root / "config" / "resume"
     directory.mkdir(parents=True)
     return directory
 
@@ -71,7 +71,7 @@ def test_profile_resume_path_is_only_a_fallback(tmp_path):
 
 
 def test_nothing_found_explains_how_to_fix_it(tmp_path):
-    with pytest.raises(FileNotFoundError, match=r"data/resume/main_resume_<YYYY-MM-DD>\.md"):
+    with pytest.raises(FileNotFoundError, match=r"config/resume/main_resume_<YYYY-MM-DD>\.md"):
         resolve_master_resume(tmp_path)
     profile = CandidateProfile(resume_path=Path("config/missing.md"))
     with pytest.raises(FileNotFoundError):
@@ -80,7 +80,7 @@ def test_nothing_found_explains_how_to_fix_it(tmp_path):
 
 def test_is_example_flags_placeholder_filenames():
     assert is_example(Path("config/resume.example.md"))
-    assert not is_example(Path("data/resume/main_resume_2026-01-01.md"))
+    assert not is_example(Path("config/resume/main_resume_2026-01-01.md"))
 
 
 def test_optional_files_are_found_or_none(tmp_path):
@@ -95,3 +95,24 @@ def test_optional_files_are_found_or_none(tmp_path):
     assert find_personalization(tmp_path) == (directory / "personalization.md").resolve()
     assert find_cover_sample(tmp_path) == (directory / "cover_letter_2026-02-02.md").resolve()
     assert find_review_evidence(tmp_path) == (directory / "Review_Evidence_2026-04-04.md").resolve()
+
+
+def test_stray_dated_file_directly_in_config_is_not_the_dated_master(tmp_path):
+    stray = tmp_path / "config" / "main_resume_2026-08-12.md"
+    stray.parent.mkdir()
+    stray.write_text("stray")
+    with pytest.raises(FileNotFoundError):
+        resolve_master_resume(tmp_path)
+    # only the profile fallback can reach it
+    profile = CandidateProfile(resume_path=Path("config/main_resume_2026-08-12.md"))
+    resolved = resolve_master_resume(tmp_path, profile=profile)
+    assert (resolved.path, resolved.source) == (stray.resolve(), "profile")
+
+
+def test_example_resume_in_config_is_never_the_dated_master(tmp_path):
+    example = tmp_path / "config" / "resume.example.md"
+    example.parent.mkdir()
+    example.write_text("placeholder")
+    with pytest.raises(FileNotFoundError):
+        resolve_master_resume(tmp_path)
+    assert is_example(example)

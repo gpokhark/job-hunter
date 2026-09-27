@@ -1,6 +1,6 @@
 """Which files feed the resume/outreach skills, resolved deterministically (spec section 6.1).
 
-The master resume is the newest `data/resume/main_resume_<YYYY-MM-DD>.md`, chosen by the date in
+The master resume is the newest `config/resume/main_resume_<YYYY-MM-DD>.md`, chosen by the date in
 the *filename* — never by mtime, so touching or re-saving an older file can't silently promote it.
 The profile's `resume_path` stays only as a fallback so an existing setup keeps working. The same
 function serves the local-LLM reviewer, so scoring and resume generation always agree.
@@ -16,7 +16,7 @@ from typing import Literal
 
 from .config import CandidateProfile
 
-RESUME_DIR = Path("data/resume")
+RESUME_DIR = Path("config/resume")
 PERSONALIZATION_NAME = "personalization.md"
 
 _MASTER = re.compile(r"^main_resume_(\d{4})-(\d{2})-(\d{2})\.md$")
@@ -24,7 +24,7 @@ _COVER = re.compile(r"^cover_letter_(\d{4})-(\d{2})-(\d{2})\.md$")
 _EVIDENCE = re.compile(r"^Review_Evidence_(\d{4})-(\d{2})-(\d{2})\.md$")
 
 NO_RESUME_MESSAGE = (
-    "No master resume found. Add data/resume/main_resume_<YYYY-MM-DD>.md "
+    "No master resume found. Add config/resume/main_resume_<YYYY-MM-DD>.md "
     "(the newest date wins) or pass --resume PATH."
 )
 
@@ -57,7 +57,7 @@ def _newest_dated(directory: Path, pattern: re.Pattern[str]) -> Path | None:
 def resolve_master_resume(
     root: Path, *, explicit: Path | None = None, profile: CandidateProfile | None = None
 ) -> ResolvedResume:
-    """Precedence: explicit path > newest dated file in data/resume/ > profile.resume_path."""
+    """Precedence: explicit path > newest dated file in config/resume/ > profile.resume_path."""
     if explicit is not None:
         path = Path(explicit)
         if not path.is_file():

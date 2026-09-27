@@ -593,7 +593,7 @@ def _bare_project(tmp_path, monkeypatch):
 
 def test_resume_files_prints_all_paths_as_json(tmp_path, monkeypatch, capsys):
     _bare_project(tmp_path, monkeypatch)
-    directory = tmp_path / "data" / "resume"
+    directory = tmp_path / "config" / "resume"
     directory.mkdir(parents=True)
     (directory / "main_resume_2026-01-01.md").write_text("r")
     (directory / "personalization.md").write_text("p")
@@ -617,7 +617,7 @@ def test_resume_files_refuses_the_example_resume_fallback(tmp_path, monkeypatch,
     (tmp_path / "config" / "resume.example.md").write_text("placeholder")
     assert main(["resume-files"]) == 2
     err = capsys.readouterr().err
-    assert "example" in err and "data/resume/main_resume_" in err
+    assert "example" in err and "config/resume/main_resume_" in err
 
 
 def test_resume_files_explicit_resume_flag(tmp_path, monkeypatch, capsys):

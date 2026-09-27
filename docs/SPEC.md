@@ -1393,7 +1393,7 @@ retrieval and mechanics; the skills own the writing. No Word/`.docx` path, no ho
 
 **Data layout** (all under git-ignored `data/`):
 
-- `data/resume/main_resume_<YYYY-MM-DD>.md` - master resume; optional siblings
+- `config/resume/main_resume_<YYYY-MM-DD>.md` - master resume; optional siblings
   `cover_letter_<YYYY-MM-DD>.md` (writing sample), `Review_Evidence_<YYYY-MM-DD>.md`, and
   `personalization.md`.
 - `data/output/<Company>/` - JD files (`JD_<Company>_<Title>_<YYYY-MM-DD>[_N].txt`) and everything the
@@ -1402,7 +1402,7 @@ retrieval and mechanics; the skills own the writing. No Word/`.docx` path, no ho
   Fill_Pct, Pages, Iterations, Resume_File`).
 
 **Resolver** (`src/job_hunter/resume_source.py`, `job-hunter resume-files [--resume PATH]`).
-Precedence: explicit `--resume` > newest `data/resume/main_resume_<YYYY-MM-DD>.md` > the profile's
+Precedence: explicit `--resume` > newest `config/resume/main_resume_<YYYY-MM-DD>.md` > the profile's
 `resume_path` fallback. "Newest" is the date in the *filename*, never mtime; names that do not match
 or hold an impossible date are ignored. The same function serves the local-LLM reviewer. Output JSON:
 `master_resume`, `master_resume_source` (`explicit`/`dated`/`profile`), `personalization`,
@@ -1443,7 +1443,7 @@ fonts differ between operating systems, so re-measure per machine.
 
 **Personalization model.** The owner steers every run two ways: free text in the request itself (page
 size, emphasis, omissions, tone, recipient name, extra facts) and an optional
-`data/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections.
+`config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections.
 Precedence, highest first: integrity rules > the current request > `personalization.md` > skill
 defaults. A request instruction applies to that run only, and the skills never edit
 `personalization.md`. Integrity rules are not overridable: no fabricated experience or metrics, no

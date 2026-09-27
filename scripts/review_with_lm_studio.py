@@ -198,7 +198,7 @@ def _refresh_export(storage: Storage, database_path: Path) -> None:
 
 
 def resolve_resume(profile: CandidateProfile, root: Path) -> tuple[CandidateProfile, str]:
-    """The resume text to score against: the newest dated data/resume/main_resume_<date>.md if there
+    """The resume text to score against: the newest dated config/resume/main_resume_<date>.md if there
     is one, else the profile's resume_path (today's behavior). The returned profile carries the
     resolved path so recorded assessments name the file actually used. Raises FileNotFoundError."""
     resolved = resolve_master_resume(root, profile=profile)
@@ -300,7 +300,7 @@ def main() -> int:
         profile, resume = resolve_resume(load_profile(), Path.cwd())
     except FileNotFoundError:
         print(
-            "job-hunter: no resume found (add data/resume/main_resume_<YYYY-MM-DD>.md or set "
+            "job-hunter: no resume found (add config/resume/main_resume_<YYYY-MM-DD>.md or set "
             "resume_path in candidate_profile.yaml)",
             file=sys.stderr,
         )
