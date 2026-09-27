@@ -18,7 +18,7 @@ from .applications_export import write_applications_exports
 from .atomic import atomic_write_text
 from .cleanup import CleanupResult, run_cleanup
 from .collector import Collector, select_companies
-from .config import load_companies, load_profile, load_settings
+from .config import contact_problems, load_companies, load_profile, load_settings
 from .logging_config import configure_logging
 from .models import PIPELINE_NON_SUCCESS_STATUSES, Assessment, PipelineStatus, format_search_summary
 from .pipeline import latest_run_id, read_manifest, run_pipeline
@@ -88,6 +88,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("export-assessments")
     sub.add_parser("export-feedback")
     sub.add_parser("export-applications")
+    sub.add_parser("contact")
     resume_files = sub.add_parser("resume-files")
     resume_files.add_argument("--resume", type=Path, default=None)
     sub.add_parser(
@@ -444,6 +445,24 @@ def main(argv: list[str] | None = None) -> int:
                 rows = storage.export_applications()
             write_applications_exports(settings.database_path.parent, rows)
             print(_json(rows))
+            return 0
+        if args.command == "contact":
+            try:
+                contact = load_profile().contact
+            except FileNotFoundError:
+                contact = None
+            problems = contact_problems(contact) if contact else ["contact: no candidate_profile.yaml found"]
+            if problems:
+                print(
+                    "job-hunter: contact details are not ready — edit the `contact:` block in "
+                    "config/candidate_profile.yaml:\n  " + "\n  ".join(problems),
+                    file=sys.stderr,
+                )
+                return 2
+            payload = {k: v for k, v in contact.model_dump().items() if v}
+            payload["first_name"] = contact.first_name
+            payload["last_name"] = contact.last_name
+            print(_json(payload))
             return 0
         if args.command == "resume-files":
             root = Path.cwd()

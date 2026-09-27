@@ -625,3 +625,32 @@ def test_resume_files_explicit_resume_flag(tmp_path, monkeypatch, capsys):
     assert main(["resume-files", "--resume", str(mine)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["master_resume_source"] == "explicit"
+
+
+def test_contact_prints_json_with_derived_name_parts(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text(
+        "contact:\n  name: Jane Q. Doe\n  email: jane@mail.test\n  phone: '+1 313 555 0142'\n"
+    )
+    assert main(["contact"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "name": "Jane Q. Doe", "email": "jane@mail.test", "phone": "+1 313 555 0142",
+        "first_name": "Jane", "last_name": "Doe",
+    }
+
+
+def test_contact_exits_2_and_lists_every_problem(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    (tmp_path / "config" / "candidate_profile.yaml").write_text(
+        "contact:\n  name: Your Name\n  email: you@example.com\n"
+    )
+    assert main(["contact"]) == 2
+    err = capsys.readouterr().err
+    assert "name:" in err and "email:" in err and "config/candidate_profile.yaml" in err
+
+
+def test_contact_with_no_profile_file_at_all_exits_2(tmp_path, monkeypatch, capsys):
+    _bare_project(tmp_path, monkeypatch)
+    assert main(["contact"]) == 2
+    assert "contact:" in capsys.readouterr().err

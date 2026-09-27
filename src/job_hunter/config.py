@@ -124,6 +124,51 @@ class CompaniesFile(BaseModel):
         return self
 
 
+_PLACEHOLDER_MARKERS = ("example.com", "your name", "your-handle", "555 555 0100", "xxxx")
+
+
+class ContactInfo(BaseModel):
+    """Applicant contact details for generated resumes/letters. Lives in the git-ignored
+    `config/candidate_profile.yaml`; `name` and `email` are required for generation, the rest are
+    optional and simply omitted from the header when absent."""
+
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    linkedin: str | None = None
+    github: str | None = None
+
+    @property
+    def first_name(self) -> str | None:
+        parts = (self.name or "").split()
+        return parts[0] if parts else None
+
+    @property
+    def last_name(self) -> str | None:
+        parts = (self.name or "").split()
+        return parts[-1] if parts else None
+
+
+def _is_placeholder(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+def contact_problems(contact: ContactInfo) -> list[str]:
+    """Empty list = fine. `name`/`email` are required; a filled optional field that still holds
+    the example placeholder is reported too (it would otherwise ship on a real resume)."""
+    problems: list[str] = []
+    for field in ("name", "email", "phone", "linkedin", "github"):
+        value = (getattr(contact, field) or "").strip()
+        required = field in ("name", "email")
+        if not value:
+            if required:
+                problems.append(f"{field}: missing")
+        elif _is_placeholder(value):
+            problems.append(f"{field}: still the example placeholder ({value!r})")
+    return problems
+
+
 class CandidateProfile(BaseModel):
     profile_version: int = 1
     resume_path: Path | None = None
@@ -135,6 +180,7 @@ class CandidateProfile(BaseModel):
     strong_relevance_terms: list[str] = Field(default_factory=list)
     minimum_recommendation_score: int = Field(75, ge=0, le=100)
     location: dict[str, Any] = Field(default_factory=dict)
+    contact: ContactInfo = Field(default_factory=ContactInfo)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
