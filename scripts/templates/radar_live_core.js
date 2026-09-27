@@ -188,8 +188,8 @@
         ? 'Copied to clipboard \u2014 paste it into Claude Code or Hermes. JD saved: ' + json.path
         : 'Copy this and paste it into Claude Code or Hermes: ' + json.prompt;
     }
-    if (status === 404) return 'This job is no longer in the database, so its description can\u2019t be exported.';
-    if (status === 409) return 'This job has no description to tailor a resume against.';
+    if (status === 404) return 'This job is no longer in the database, so its text can\u2019t be exported.';
+    if (status === 409) return 'This job changed or has no text to tailor a resume against.';
     if (status === 400 || status === 403 || status === 415 || status === 411 || status === 413) {
       return 'The server rejected the request (HTTP ' + status + ').';
     }

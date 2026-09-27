@@ -230,7 +230,7 @@ test('resumeNotice: success copies the prompt or shows it for manual copying', (
 
 test('resumeNotice: each failure status has its own clear message', () => {
   assert.match(core.resumeNotice(404, null, false), /no longer in the database/);
-  assert.match(core.resumeNotice(409, null, false), /no description/);
+  assert.match(core.resumeNotice(409, null, false), /no text to tailor/);
   assert.match(core.resumeNotice(403, null, false), /rejected .*403/);
   assert.match(core.resumeNotice(415, null, false), /rejected .*415/);
   assert.match(core.resumeNotice(0, null, false), /Could not reach/);
