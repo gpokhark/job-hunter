@@ -1,0 +1,32 @@
+{
+  "_readme": "Copy to config/salary_config.json (gitignored) and fill in your real numbers: `uv run python scripts/salary_compare.py init`. All money is USD per year unless the key says monthly / per_workday. Keys starting with _ are ignored.",
+  "filing_status": "single",
+  "current": {
+    "label": "Current employer",
+    "location": {
+      "city": "Ann Arbor",
+      "state": "MI",
+      "local_tax_pct": 0.0,
+      "cost_of_living_index": 100,
+      "monthly_housing_cost": 1800
+    },
+    "base_salary": 100000,
+    "bonus": {"target_pct": 10, "expected_payout_pct_of_target": 100},
+    "annual_equity_value": 0,
+    "retirement": {
+      "employee_contribution_pct": 6,
+      "match_rate": 1.0,
+      "match_cap_pct": 4,
+      "match_on_bonus": false
+    },
+    "perks": [
+      {"name": "Free lunch", "per_workday_value": 12, "workdays_per_year": 230, "taxable": false},
+      {"name": "Employer vehicle lease allowance", "monthly_value": 400, "taxable": true, "_note": "Employer-paid lease; personal use is usually a taxable fringe benefit"},
+      {"name": "Insurance included with vehicle", "monthly_value": 150, "taxable": true}
+    ],
+    "employee_costs": [
+      {"name": "Health insurance premium", "monthly_cost": 100, "pretax": true}
+    ],
+    "pto_days": 15
+  }
+}

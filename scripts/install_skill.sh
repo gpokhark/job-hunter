@@ -1,19 +1,21 @@
 #!/bin/sh
 set -eu
 
-SKILL_NAMES="job-hunter job-scout job-reviewer job-radar job-feedback onboard-source resume-generator outreach-writer"
+SKILL_NAMES="job-hunter job-scout job-reviewer job-radar job-feedback onboard-source resume-generator outreach-writer salary-compare"
 
 usage() {
   cat >&2 <<EOF
 usage: install_skill.sh [--copy|--link] [--update] [--uninstall] [--force] [--dry-run]
                          [--hermes] [--claude-global] [--claude-local] [--opencode] [--all]
 
-Installs all eight job-hunter skills ($SKILL_NAMES) — the job-hunter orchestrator, the
+Installs all nine job-hunter skills ($SKILL_NAMES) — the job-hunter orchestrator, the
 independently-invocable job-scout/job-reviewer/job-radar stages (see docs/skill-split-plan.md),
 job-feedback for turning radar feedback/profile edits into a confirmed profile update, and
 onboard-source (a repo-maintenance skill for extending job-hunter itself, installed for every
 target exactly like the others, Hermes included). `resume-generator` and `outreach-writer` write
-tailored resumes and outreach copy (PDF output needs `uv sync --extra resume`).
+tailored resumes and outreach copy (PDF output needs `uv sync --extra resume`). `salary-compare`
+turns a job offer into a total-compensation comparison and negotiation plan (stdlib only, no
+extra installs).
 
 With no target flags, prompts interactively for which runtime(s) to install into.
 Pass one or more target flags to install non-interactively (e.g. for scripting).

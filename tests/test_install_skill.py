@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = REPO_ROOT / "scripts" / "install_skill.sh"
-ALL_SKILLS = {"job-hunter", "job-scout", "job-reviewer", "job-radar", "job-feedback", "onboard-source", "resume-generator", "outreach-writer"}
+ALL_SKILLS = {"job-hunter", "job-scout", "job-reviewer", "job-radar", "job-feedback", "onboard-source", "resume-generator", "outreach-writer", "salary-compare"}
 
 
 def _run(args, *, home, hermes_home=None, timeout=60):

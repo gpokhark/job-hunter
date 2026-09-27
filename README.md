@@ -211,7 +211,7 @@ through all of them. Step 3 alone is enough for "just re-render what's already t
 
 ## Skills
 
-Eight independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
+Nine independently-invocable skills, so each stage can be run, checked on, or resumed standalone:
 
 - **`job-scout`** — search (`job-hunter search --archive`)
 - **`job-reviewer`** — score candidates against your resume via local LM Studio
@@ -223,6 +223,7 @@ Eight independently-invocable skills, so each stage can be run, checked on, or r
   itself (see "Adding a new source" below); not part of a normal job-search session
 - **`resume-generator`** — tailored, ATS-friendly resume (HTML + PDF) from your newest master resume and a job description (see "Resume and outreach")
 - **`outreach-writer`** — outreach email and/or cover letter for the same job
+- **`salary-compare`** — compare a job offer's total compensation against your current package, research the market rate, and draft a negotiation plan (see "Salary negotiation")
 
 Example invocations (see `docs/SPEC.md` §11.1 for the full set, including exact-path resume and
 `--status` progress checks):
@@ -258,7 +259,7 @@ Install with:
 sh scripts/install_skill.sh
 ```
 
-This installs all eight skills and prompts interactively for which runtime(s) to install into
+This installs all nine skills and prompts interactively for which runtime(s) to install into
 (Hermes, Claude Code globally, Claude Code for this repo only, OpenCode, or any combination). To
 skip the prompt, pass one or more target flags instead, e.g. `sh scripts/install_skill.sh
 --claude-local`, `sh scripts/install_skill.sh --all`. Add `--copy` to create independent copies
@@ -337,6 +338,34 @@ recipient names or contact details, nothing that contradicts your master resume.
 fill is measured by the machine that renders the PDF, and fonts differ between operating systems, so
 results can vary slightly per machine. Without the `resume` extra the skills print the install commands
 instead of a PDF. See `docs/SPEC.md` §11.2.
+
+## Salary negotiation
+
+The `salary-compare` skill turns a job offer into a total-compensation comparison and a negotiation
+plan. `scripts/salary_compare.py` (stdlib only, no extra installs) does every calculation — taxes,
+net pay, break-even base salary, negotiation numbers — so results are reproducible; the skill does the
+market/cost-of-living research and writes the comparison and negotiation script.
+
+**Setup**
+
+1. `uv run python scripts/salary_compare.py init` creates `config/salary_config.json` (git-ignored) from
+   `config/salary_config.example.json`. Fill in your real current package (base, bonus, 401k match,
+   perks, premiums, location, PTO).
+2. Copy `config/offer.example.json` to `data/output/<Company_Name>/offer_<Company>_<Role>_<date>.json`
+   for each real offer.
+
+**Workflow**
+
+1. Ask Claude Code or Hermes to compare an offer ("should I take this offer from Acme", "compare this
+   offer to my current job").
+2. `salary-compare` fills in the offer file, verifies the relevant states' tax data, researches market
+   pay and cost of living, then runs `scripts/salary_compare.py compare` and writes
+   `data/output/<Company_Name>/comparison_<date>.md`.
+3. It writes a negotiation plan — floor/target/stretch/anchor numbers, a phone script, and an email
+   draft — to `data/output/<Company_Name>/negotiation-plan_<date>.md`.
+
+Like your resume and offer files, everything with real compensation numbers stays under the git-ignored
+`config/salary_config.json` and `data/output/`; only the `.example.json` templates are tracked.
 
 ## Development
 

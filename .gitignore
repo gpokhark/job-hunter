@@ -1133,6 +1133,11 @@ config/*resume*
 config/resume/*
 !config/resume/README.md
 
+# Personal current-compensation package for salary-compare — copy the .example. file instead.
+# Real offers and reports are per-company and already covered by the data/* rule above
+# (they live under data/output/<Company>/, never here).
+config/salary_config.json
+
 # Claude Code session-runtime artifacts, not project content.
 .claude/*.lock
 
