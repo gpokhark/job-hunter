@@ -322,7 +322,7 @@ under the git-ignored `config/resume/` (and `config/candidate_profile.yaml`).
 1. `uv sync --extra resume` and `uv run playwright install chromium` (only PDF output needs these).
 2. Fill the `contact:` block in `config/candidate_profile.yaml` (`name` and `email` required; `job-hunter contact` checks it).
 3. Save your master resume as `config/resume/main_resume_<YYYY-MM-DD>.md`. The newest filename date wins; `job-hunter resume-files` shows what will be used.
-4. Optional: `config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis).
+4. Optional: `cp config/resume/personalization.example.md config/resume/personalization.md`, then replace the sample rules with your own. It has `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis, page-size defaults) and employer-specific rules such as naming a client only for one employer. The skills themselves contain no personal data.
 
 **Workflow**
 

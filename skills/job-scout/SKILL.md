@@ -1,6 +1,6 @@
 ---
 name: job-scout
-version: 1.1.1
+version: 1.1.2
 description: Search configured employer career sites for current U.S.-eligible jobs matching a keyword/title or the candidate profile, and archive the results for review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — this stage only searches and archives, it never scores anything.
 metadata:
@@ -19,8 +19,8 @@ pipeline in one go, use the `job-hunter` orchestrator skill instead; it calls th
 ## Examples
 
 - `/job-scout` — profile-driven search, no keyword
-- `/job-scout ADAS` — keyword-scoped search
-- `/job-scout ADAS or Robotics or "Product Technical Leader"` — multiple keywords/phrases
+- `/job-scout Analytics` — keyword-scoped search
+- `/job-scout Analytics or "Data Engineer" or "Product Manager"` — multiple keywords/phrases
 
 ## Contract
 
@@ -44,15 +44,15 @@ Output:
 1. Every command below takes `--project "$CLAUDE_PROJECT_DIR"` (Claude Code) — or the equivalent
    workspace path for another runtime, e.g. Hermes — so this skill works regardless of whether the
    calling process already `cd`'d into the repo.
-2. If invoked with one or more keywords/titles (e.g. `/job-scout ADAS`, `/job-scout ADAS or
-   Robotics or "Product Technical Leader"`), normalize them into a comma-separated list,
+2. If invoked with one or more keywords/titles (e.g. `/job-scout Analytics`, `/job-scout Analytics or
+   "Data Engineer" or "Product Manager"`), normalize them into a comma-separated list,
    preserving multi-word phrases as single entries, and pass it as `--keyword`. Otherwise omit
    `--keyword` entirely — the search then falls back to `config/candidate_profile.yaml`'s
    `target_title_terms`/`target_domains` (or `candidate_profile.example.yaml` if the real file
    doesn't exist).
 3. Run:
    ```bash
-   uv run job-hunter search --project "$CLAUDE_PROJECT_DIR" --json --archive [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run job-hunter search --project "$CLAUDE_PROJECT_DIR" --json --archive [--keyword "Analytics,Data Engineer,Product Manager"]
    ```
    `--archive` writes to `data/searches/{slug}_{date}.json` — the same keyword on the same day
    overwrites (refreshing today's answer), a new day or a different keyword always gets its own

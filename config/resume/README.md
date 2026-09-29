@@ -1,6 +1,7 @@
 # Personal resume inputs
 
-Everything in this folder except this README is git-ignored. Use fake values in anything you share.
+Everything in this folder except this README and `personalization.example.md` is git-ignored. Use
+fake values in anything you share.
 
 Files (all optional except the first):
 
@@ -8,7 +9,9 @@ Files (all optional except the first):
   date in the filename wins (never the file modification time).
 - `cover_letter_<YYYY-MM-DD>.md` - sample cover letter for tone; newest date wins.
 - `personalization.md` - standing preferences, with `## all`, `## resume-generator` and
-  `## outreach-writer` sections.
+  `## outreach-writer` sections. Start from the tracked template:
+  `cp config/resume/personalization.example.md config/resume/personalization.md`, then replace the
+  sample rules with your own (employer-specific rules, page-size defaults, transferable-tool notes).
 
 Check what will be used: `uv run job-hunter resume-files`
 

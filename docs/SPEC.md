@@ -1125,7 +1125,7 @@ explicit, dry-run-by-default answer:
 | `export-assessments` | — | dumps + writes `data/assessments.json` |
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `export-applications` | — | dumps + writes `data/applications.json` and `.csv` (§8.5b) |
-| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
+| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `personalization_warning`, `personalization_problems`, `personalization_company_rules` (with `--company NAME` or `--jd`), `role`, `personalization_role_rules` (with `--role TITLE` or `--jd`), `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
 | `contact` | — | validates the profile's `contact:` block and prints it as JSON plus derived `first_name`/`last_name`; exits 2 listing missing/placeholder fields (§11.2) |
 | `export-jd` | `source_key job_id` | writes (or reuses) the job's JD text file under `data/output/<Company>/` and prints `{path, relative_path, created, prompt}`; exits 1 for an unknown job or one with no description (§11.2) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |
@@ -1407,7 +1407,10 @@ Precedence: explicit `--resume` > newest `config/resume/main_resume_<YYYY-MM-DD>
 `resume_path` fallback. "Newest" is the date in the *filename*, never mtime; names that do not match
 or hold an impossible date are ignored. The same function serves the local-LLM reviewer. Output JSON:
 `master_resume`, `master_resume_source` (`explicit`/`dated`/`profile`), `personalization`,
-`cover_letter_sample`, `review_evidence` (each of the last three a path or `null`). Exit 2 when
+`personalization_warning`, `cover_letter_sample`, `review_evidence` (`personalization`, the sample and the
+evidence file are each a path or `null`). A `personalization.md` that still has a line starting with
+`TEMPLATE-NOT-CUSTOMIZED` (the shipped example's sentinel) is withheld: `personalization` is `null` and
+`personalization_warning` says why, so an unedited copy of the example never steers real output. Exit 2 when
 nothing resolves, or when only the repo's example resume (`.example.` in the name) is found: generation
 never runs from placeholder text.
 
@@ -1455,7 +1458,11 @@ fonts differ between operating systems, so re-measure per machine.
 
 **Personalization model.** The owner steers every run two ways: free text in the request itself (page
 size, emphasis, omissions, tone, recipient name, extra facts) and an optional
-`config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections.
+`config/resume/personalization.md` with `## all`, `## resume-generator` and `## outreach-writer` sections,
+started from the tracked, fake-valued `config/resume/personalization.example.md`. The skills carry no
+personal or employer-specific content, so they are portable to any user; conditional per-employer rules
+(for example "name a client only when applying to that client") live in `personalization.md`, and legacy
+`<!-- NOTE (tailoring rule) -->` comments inside a master resume are still honored at the same precedence.
 Precedence, highest first: integrity rules > the current request > `personalization.md` > skill
 defaults. A request instruction applies to that run only, and the skills never edit
 `personalization.md`. Integrity rules are not overridable: no fabricated experience or metrics, no

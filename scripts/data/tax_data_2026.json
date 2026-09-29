@@ -117,7 +117,7 @@
     "MI": {
       "type": "flat",
       "rate": 0.0425,
-      "note": "Personal exemption (~$5,400/filer for 2026, indexed annually) ignored, overstates tax by ~$230. Confirmed 4.25%: FY2025 general-fund growth did not exceed inflation, so no rate-adjustment trigger for 2026. City taxes go in location.local_tax_pct (e.g. Detroit 2.4%; Northville and Ann Arbor have none).",
+      "note": "Personal exemption (~$5,400/filer for 2026, indexed annually) ignored, overstates tax by ~$230. Confirmed 4.25%: FY2025 general-fund growth did not exceed inflation, so no rate-adjustment trigger for 2026. City taxes go in location.local_tax_pct (e.g. Detroit 2.4%; Ann Arbor has none).",
       "source": "https://www.michigan.gov/treasury/news/2026/04/15/state-individual-income-tax-rate-for-2026-tax-year-determined",
       "verified_on": "2026-09-27"
     },
