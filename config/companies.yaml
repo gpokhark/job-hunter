@@ -16,6 +16,18 @@ companies:
       # were found (rendering the page once to read its own generated links).
       list_url: https://careers.honda.com/us/en/search-results
       keywords: ""
+  - key: abb
+    company: ABB
+    adapter: phenom
+    platform: phenom
+    config:
+      # careers.abb (Phenom People) eager-loads results into embedded JSON
+      # (eagerLoadRefineSearch) with from/s pagination; detail pages carry
+      # schema.org JobPosting JSON-LD. The Workday backend
+      # (abb.wd3.myworkdayjobs.com) is global-only — no country facet works
+      # for filtering, so Phenom is the proper access path.
+      list_url: https://careers.abb/global/en/search-results
+      keywords: ""
   - key: toyota
     company: Toyota Motor North America
     adapter: workday
@@ -97,6 +109,18 @@ companies:
       # (full description, qualifications, and posting date included, no separate detail
       # fetch needed) with real $top/$skip pagination — no browser needed at all.
       career_site_domain: stellantisexternalcx
+  - key: fanuc
+    company: FANUC America
+    adapter: adp_recruiting
+    platform: adp_recruiting
+    config:
+      # myjobs.adp.com/fanuc/cx is an ADP Recruiting Management SPA (no server-rendered
+      # content). Public two-call handshake: /public/staffing/v1/career-site/fanuc returns
+      # myJobsToken, replayed as myjobstoken header on the listing endpoint. Returns all
+      # 43 requisitions in one call ($top=100) with full description, qualifications,
+      # postingDate, and structured address — no separate detail fetch needed. Confirmed
+      # sorted newest-first (verified across full catalog); early-stop viable.
+      career_site_domain: fanuc
   - key: nissan
     company: Nissan
     adapter: workday
