@@ -633,7 +633,47 @@ def test_resume_files_prints_all_paths_as_json(tmp_path, monkeypatch, capsys):
     assert payload["master_resume"].endswith("main_resume_2026-01-01.md")
     assert payload["master_resume_source"] == "dated"
     assert payload["personalization"].endswith("personalization.md")
+    assert payload["personalization_warning"] is None
     assert payload["cover_letter_sample"] is None and payload["review_evidence"] is None
+
+
+def test_resume_files_lints_personalization_and_lists_rules_naming_the_company(
+    tmp_path, monkeypatch, capsys
+):
+    _bare_project(tmp_path, monkeypatch)
+    directory = tmp_path / "config" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-01-01.md").write_text("r")
+    (directory / "personalization.md").write_text(
+        "## resume generator\n- oops\n\n## all\n- When applying to Ford Motor Company, lead with Ford.\n"
+    )
+    assert main(["resume-files", "--company", "Ford_Motor_Company"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert any("unknown section" in p for p in payload["personalization_problems"])
+    assert payload["personalization_company_rules"] == [
+        {"section": "all", "rule": "When applying to Ford Motor Company, lead with Ford."}
+    ]
+    assert "unknown section" in captured.err  # warnings are also visible in the terminal
+    # without --company the rule list is not computed at all
+    assert main(["resume-files"]) == 0
+    assert json.loads(capsys.readouterr().out)["personalization_company_rules"] is None
+
+
+def test_resume_files_withholds_an_uncustomized_personalization_template(
+    tmp_path, monkeypatch, capsys
+):
+    _bare_project(tmp_path, monkeypatch)
+    directory = tmp_path / "config" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-01-01.md").write_text("r")
+    (directory / "personalization.md").write_text("TEMPLATE-NOT-CUSTOMIZED: delete me\n## all\n- x\n")
+    assert main(["resume-files"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["personalization"] is None
+    assert "TEMPLATE-NOT-CUSTOMIZED" in payload["personalization_warning"]
+    assert "TEMPLATE-NOT-CUSTOMIZED" in captured.err  # also visible to a human in the terminal
 
 
 def test_resume_files_exits_2_with_instructions_when_no_resume(tmp_path, monkeypatch, capsys):

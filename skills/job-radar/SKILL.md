@@ -1,6 +1,6 @@
 ---
 name: job-radar
-version: 1.5.0
+version: 1.5.1
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — pure presentation over already-recorded assessments, no scoring happens here.
 metadata:
@@ -23,12 +23,12 @@ see step 6's stale-source fallback note below.
 
 ## Examples
 
-- `/job-radar --keyword ADAS` — render/update the report for that keyword, any time (including
+- `/job-radar --keyword Analytics` — render/update the report for that keyword, any time (including
   mid-review — always reflects exactly what's been reviewed so far)
 - `/job-radar --search data/searches/adas_2026-08-20.json` — render one specific historical
   archive by exact path, bypassing keyword resolution
 - `/job-radar` — cold start, resolves to the newest archive of any keyword
-- `/job-radar --keyword ADAS --refilter` — you just edited `candidate_profile.yaml` (e.g. added a
+- `/job-radar --keyword Analytics --refilter` — you just edited `candidate_profile.yaml` (e.g. added a
   `soft_exclude_terms` entry from `suggest_exclusions.py`) and want the report to reflect it
   against jobs already collected today, with no new search/scraper call
 
@@ -67,7 +67,7 @@ Output:
    "re-filter", "without invoking the scraper", or similar — use the pipeline orchestrator's
    dedicated mode rather than chaining scripts by hand:
    ```bash
-   uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" --no-scrape [--keyword "ADAS,Robotics"]
+   uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" --no-scrape [--keyword "Analytics,Data Engineer"]
    ```
    This makes no network/adapter calls at all — it re-runs `scripts/refilter_archive.py` (rebuilds
    `candidates` from SQLite's current active/US-eligible job pool, scoped to that archive's own
@@ -102,7 +102,7 @@ Output:
    never invent either for a posting that doesn't mention it.
 6. Render the standalone HTML report:
    ```bash
-   uv run python scripts/render_radar.py --project "$CLAUDE_PROJECT_DIR" [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run python scripts/render_radar.py --project "$CLAUDE_PROJECT_DIR" [--keyword "Analytics,Data Engineer,Product Manager"]
    ```
    It prints `Wrote <path> | strong=N review=N below_50=N never_reviewed=N source_issues=N
    (failed=N)`; sanity-check those counts against what you just compiled. The HTML report itself

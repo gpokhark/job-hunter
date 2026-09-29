@@ -1,6 +1,6 @@
 ---
 name: job-reviewer
-version: 1.2.0
+version: 1.2.1
 description: Score job-hunter's archived candidates against the user's resume using a local LLM (LM Studio) — resumes automatically from wherever a prior run left off, never spends cloud/agent tokens.
 compatibility: Requires uv and Python 3.11+; LM Studio required (local model scoring via its OpenAI-compatible API).
 metadata:
@@ -23,10 +23,10 @@ for one-time LM Studio setup), not a sub-agent.
 
 ## Examples
 
-- `/job-reviewer --keyword ADAS` — start (or resume) reviewing the newest ADAS archive
-- `/job-reviewer --keyword ADAS` (re-invoked after an interruption) — resumes automatically,
+- `/job-reviewer --keyword Analytics` — start (or resume) reviewing the newest Analytics archive
+- `/job-reviewer --keyword Analytics` (re-invoked after an interruption) — resumes automatically,
   already-scored jobs are skipped, never restarts from scratch
-- `/job-reviewer --status --keyword ADAS` — check remaining/cached/total counts, no model calls
+- `/job-reviewer --status --keyword Analytics` — check remaining/cached/total counts, no model calls
 - `/job-reviewer --search data/searches/adas_2026-08-20.json` — review one specific historical
   archive by exact path, bypassing keyword resolution
 - `/job-reviewer` — cold start, resolves to the newest archive of any keyword (not a resume
@@ -69,7 +69,7 @@ Output:
    likely to take a while.
 4. Run the review:
    ```bash
-   uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" [--keyword "ADAS,Robotics,Product Technical Leader"]
+   uv run python scripts/review_with_lm_studio.py --project "$CLAUDE_PROJECT_DIR" [--keyword "Analytics,Data Engineer,Product Manager"]
    ```
    Sends every not-yet-cached U.S.-eligible candidate to the local model **one at a time, strictly
    sequentially**, persisting each verdict immediately (SQLite plus `data/assessments.json`) as it

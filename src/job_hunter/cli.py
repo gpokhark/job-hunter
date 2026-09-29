@@ -96,6 +96,10 @@ def parser() -> argparse.ArgumentParser:
     export_jd_cmd.add_argument("job_id")
     resume_files = sub.add_parser("resume-files")
     resume_files.add_argument("--resume", type=Path, default=None)
+    resume_files.add_argument(
+        "--company", default=None,
+        help="employer name (the JD's output folder name works); also list the personalization rules that name it",
+    )
     sub.add_parser(
         "reevaluate-sponsorship",
         help=(
@@ -507,10 +511,25 @@ def main(argv: list[str] | None = None) -> int:
             def _s(path: Path | None) -> str | None:
                 return str(path) if path else None
 
+            personalization, personalization_warning = resume_source.personalization_status(root)
+            if personalization_warning:
+                print(f"job-hunter: {personalization_warning}", file=sys.stderr)
+            problems: list[str] = []
+            company_hits: list[dict[str, str]] | None = None
+            if personalization is not None:
+                body = personalization.read_text(encoding="utf-8", errors="replace")
+                problems = resume_source.personalization_problems(body)
+                for problem in problems:
+                    print(f"job-hunter: personalization.md: {problem}", file=sys.stderr)
+                if args.company is not None:
+                    company_hits = resume_source.company_rules(body, args.company)
             print(_json({
                 "master_resume": str(resolved.path),
                 "master_resume_source": resolved.source,
-                "personalization": _s(resume_source.find_personalization(root)),
+                "personalization": _s(personalization),
+                "personalization_warning": personalization_warning,
+                "personalization_problems": problems,
+                "personalization_company_rules": company_hits,
                 "cover_letter_sample": _s(resume_source.find_cover_sample(root)),
                 "review_evidence": _s(resume_source.find_review_evidence(root)),
             }))

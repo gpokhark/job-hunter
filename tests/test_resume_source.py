@@ -6,10 +6,14 @@ import pytest
 
 from job_hunter.config import CandidateProfile
 from job_hunter.resume_source import (
+    company_rules,
     find_cover_sample,
     find_personalization,
     find_review_evidence,
     is_example,
+    personalization_problems,
+    personalization_rules,
+    personalization_status,
     resolve_master_resume,
 )
 
@@ -95,6 +99,95 @@ def test_optional_files_are_found_or_none(tmp_path):
     assert find_personalization(tmp_path) == (directory / "personalization.md").resolve()
     assert find_cover_sample(tmp_path) == (directory / "cover_letter_2026-02-02.md").resolve()
     assert find_review_evidence(tmp_path) == (directory / "Review_Evidence_2026-04-04.md").resolve()
+
+
+def test_personalization_status_none_and_plain_file(tmp_path):
+    assert personalization_status(tmp_path) == (None, None)
+    directory = _resume_dir(tmp_path)
+    (directory / "personalization.md").write_text("## all\n- keep it short\n")
+    path, warning = personalization_status(tmp_path)
+    assert path == (directory / "personalization.md").resolve() and warning is None
+
+
+def test_personalization_status_ignores_an_uncustomized_template(tmp_path):
+    directory = _resume_dir(tmp_path)
+    (directory / "personalization.md").write_text(
+        "# Personalization\n\nTEMPLATE-NOT-CUSTOMIZED: delete this line.\n\n## all\n- sample rule\n"
+    )
+    path, warning = personalization_status(tmp_path)
+    assert path is None
+    assert "TEMPLATE-NOT-CUSTOMIZED" in warning and "personalization.md" in warning
+
+
+def test_personalization_status_sentinel_only_counts_at_the_start_of_a_line(tmp_path):
+    directory = _resume_dir(tmp_path)
+    (directory / "personalization.md").write_text(
+        "Notes: I removed the TEMPLATE-NOT-CUSTOMIZED line already.\n## all\n- real rule\n"
+    )
+    path, warning = personalization_status(tmp_path)
+    assert path is not None and warning is None
+
+
+def test_shipped_example_is_flagged_as_a_template_when_copied_unedited(tmp_path):
+    example = Path(__file__).resolve().parents[1] / "config" / "resume" / "personalization.example.md"
+    directory = _resume_dir(tmp_path)
+    (directory / "personalization.md").write_text(example.read_text())
+    path, warning = personalization_status(tmp_path)
+    assert path is None and warning
+
+
+SAMPLE = """# Personalization
+
+## all
+- Never use the word "synergy".
+- The client for all work at Initech was Acme Corp. Name Acme only when applying to Acme.
+
+## resume-generator
+### Employer rules
+- When applying to Ford Motor Company, add a summary bullet about combined Ford experience.
+  Omit it for every other employer.
+- Keep the Technical Skills block to 2 lines.
+
+## outreach-writer
+- Sign off with "Best regards,".
+"""
+
+
+def test_personalization_rules_parses_bullets_and_continuation_lines():
+    rules = personalization_rules(SAMPLE)
+    assert list(rules) == ["all", "resume-generator", "outreach-writer"]
+    assert rules["all"][0] == 'Never use the word "synergy".'
+    assert rules["resume-generator"][0].endswith("Omit it for every other employer.")
+    assert len(rules["resume-generator"]) == 2  # the ### heading is not a section
+
+
+def test_personalization_problems_clean_file_has_none():
+    clean = SAMPLE.replace("Initech", "Globex").replace("Acme", "Globex")
+    assert personalization_problems(clean) == []
+
+
+def test_personalization_problems_flags_unknown_section_and_sample_leftovers():
+    text = "## resume generator\n- keep it short\n\n## all\n- The client was Acme Corp.\n"
+    problems = personalization_problems(text)
+    assert any("resume generator" in p and "unknown section" in p for p in problems)
+    assert any("Acme Corp" in p and "sample" in p for p in problems)
+
+
+def test_personalization_problems_flags_a_file_with_no_recognized_section():
+    problems = personalization_problems("just some notes\n- a rule\n")
+    assert any("no recognized section" in p for p in problems)
+
+
+def test_company_rules_match_the_employer_named_in_a_rule():
+    hits = company_rules(SAMPLE, "Ford_Motor_Company")
+    assert [h["section"] for h in hits] == ["resume-generator"]
+    assert "combined Ford experience" in hits[0]["rule"]
+    assert company_rules(SAMPLE, "Globex_Inc") == []
+    assert company_rules(SAMPLE, "") == []
+
+
+def test_company_rules_ignore_sections_that_are_not_recognized():
+    assert company_rules("## notes\n- Ford is great\n", "Ford") == []
 
 
 def test_stray_dated_file_directly_in_config_is_not_the_dated_master(tmp_path):

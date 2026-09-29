@@ -402,6 +402,21 @@ ranked `SearchResult` JSON.
   `uv run playwright install chromium`), never the base install or default tests. `skills/resume-generator`
   and `skills/outreach-writer` (symlinked in `.claude/skills/`) take free-text personalization per request plus
   `config/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
+  The skills hold no personal data or employer-specific rules (portable to any user): everything
+  per-user, including conditional per-employer rules, lives in `personalization.md`, started by
+  copying the tracked `config/resume/personalization.example.md` (fake values, sibling of
+  `candidate_profile.example.yaml`; the real file stays git-ignored). Legacy `<!-- NOTE (tailoring
+  rule) -->` comments inside a master resume are still honored, but new rules go in `personalization.md`.
+  An unedited copy of the example is withheld by `resume-files` (`personalization: null` plus a
+  `personalization_warning`) while its `TEMPLATE-NOT-CUSTOMIZED` line survives, so sample rules never
+  steer real output. `resume-files` also lints `personalization.md` (`personalization_problems`: an unknown
+  `## ` section that would be silently ignored, leftover sample text) and, given `--company NAME` (the JD's
+  output folder name), returns `personalization_company_rules`: the rules that name that employer, by
+  deterministic text match (`resume_source.company_rules`), so employer-specific rules don't rest on the
+  model's judgment alone. `tests/test_no_owner_pii_in_shareable_files.py` fails if the real profile's contact
+  details (name, surname as a whole word, email, phone, handles) appear in any tracked or non-ignored file
+  (skips with no real profile; `JOB_HUNTER_PII_SKIP_SURNAME=1` skips only the surname check).
+  `tests/test_skills_portable.py` guards all user-facing skills against employer/domain examples and PII.
 
 - **`health.py`** — `detect_count_anomaly` flags (doesn't fail) a source whose job count drops
   >70% from its last known count — guards against adapters "succeeding" against a changed page

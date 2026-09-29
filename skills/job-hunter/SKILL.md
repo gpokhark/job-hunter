@@ -1,6 +1,6 @@
 ---
 name: job-hunter
-version: 1.3.0
+version: 1.3.1
 description: Run the full job-hunter pipeline — search, local-LLM review, and radar report — end to end for a keyword/title search or the candidate profile's standing criteria.
 compatibility: Requires uv and Python 3.11+; LM Studio required (this orchestrator's review stage delegates to it).
 metadata:
@@ -14,7 +14,7 @@ metadata:
 
 Use this skill only when the user explicitly asks to search or evaluate current jobs **and wants
 the complete pipeline run end to end**. For a single stage — "just re-render the radar," "resume
-reviewing ADAS," "check what's failing on Ford" — use `job-scout` / `job-reviewer` / `job-radar`
+reviewing Analytics," "check what's failing on Acme" — use `job-scout` / `job-reviewer` / `job-radar`
 directly instead; each is the canonical, standalone procedure for its own stage.
 
 This skill is a thin wrapper around `job-hunter pipeline` (`pipeline.py`), the Python-owned
@@ -28,8 +28,8 @@ guaranteed across every agent runtime this project installs into.
 ## Examples
 
 - `/job-hunter` — full pipeline, profile-driven (no keyword)
-- `/job-hunter ADAS` — full pipeline scoped to one keyword
-- `/job-hunter ADAS or Robotics or "Product Technical Leader"` — full pipeline, multiple
+- `/job-hunter Analytics` — full pipeline scoped to one keyword
+- `/job-hunter Analytics or "Data Engineer" or "Product Manager"` — full pipeline, multiple
   keywords/phrases, comma-joined into one `--keyword` under the hood
 - `/job-hunter --no-scrape` — you (or the user) just edited `candidate_profile.yaml` and want the
   report to reflect it against jobs already collected, with no new scrape; add `--review` to also
@@ -68,7 +68,7 @@ Output:
 4. Decide the mode:
    - **Normal (default) — a fresh live search:**
      ```bash
-     uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" [--keyword "ADAS,Robotics,Product Technical Leader"]
+     uv run job-hunter pipeline --project "$CLAUDE_PROJECT_DIR" [--keyword "Analytics,Data Engineer,Product Manager"]
      ```
      Runs search → review → radar end to end. `--skip-review`/`--skip-radar` stop the run early if
      the user only wants a subset; `--limit` caps *new* reviews this run — only pass it if the user

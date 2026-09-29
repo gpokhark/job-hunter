@@ -1126,12 +1126,14 @@ config/candidate_profile.yaml
 config/lm_studio.yaml
 config/*resume*
 !config/resume.example.md
-# config/resume/ holds the personal resume inputs (git-ignored) plus one tracked README.
+# config/resume/ holds the personal resume inputs (git-ignored) plus two tracked files: the README
+# and personalization.example.md (a fake-valued template; the real personalization.md stays ignored).
 # `config/*resume*` also matches the directory name, and git cannot re-include a file inside
-# an ignored directory, so: un-ignore the directory, ignore its contents, un-ignore README.
+# an ignored directory, so: un-ignore the directory, ignore its contents, un-ignore those two.
 !config/resume/
 config/resume/*
 !config/resume/README.md
+!config/resume/personalization.example.md
 
 # Personal current-compensation package for salary-compare — copy the .example. file instead.
 # Real offers and reports are per-company and already covered by the data/* rule above

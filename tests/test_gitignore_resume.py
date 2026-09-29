@@ -30,6 +30,13 @@ def test_personal_resume_files_are_ignored(path):
     assert _ignored(path)
 
 
-@pytest.mark.parametrize("path", ["config/resume/README.md", "config/resume.example.md"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/resume/README.md",
+        "config/resume/personalization.example.md",
+        "config/resume.example.md",
+    ],
+)
 def test_tracked_resume_files_are_not_ignored(path):
     assert not _ignored(path)

@@ -2224,7 +2224,7 @@ Run:
 ```bash
 head -12 skills/resume-generator/SKILL.md
 grep -c "resume-files\|job-hunter contact\|measure_resume.py\|log_resume.py" skills/resume-generator/SKILL.md
-! grep -n -i "model:\|CLAUDE.local\|ToolSearch\|mcp__\|PostToolUse\|@output\|D:\\\\\|gaurav\|pokhark\|Job-Op-Resume" skills/resume-generator/SKILL.md
+! grep -n -i "model:\|CLAUDE.local\|ToolSearch\|mcp__\|PostToolUse\|@output\|D:\\\\\|<owner-first-name>\|<owner-surname-fragment>\|Job-Op-Resume" skills/resume-generator/SKILL.md
 ```
 
 Expected: frontmatter shows `name`, `version: 1.0.0`, `description`, `compatibility`, `metadata`; the grep count is ≥ 6; the last command prints nothing and exits 0 (none of the forbidden runtime-specific or personal strings appear).
@@ -2584,7 +2584,7 @@ Run:
 ```bash
 head -12 skills/outreach-writer/SKILL.md
 grep -c "resume-files\|job-hunter contact\|measure_resume.py" skills/outreach-writer/SKILL.md
-! grep -n -i "model:\|CLAUDE.local\|ToolSearch\|mcp__\|PostToolUse\|@output\|D:\\\\\|gaurav\|pokhark\|Job-Op-Resume" skills/outreach-writer/SKILL.md
+! grep -n -i "model:\|CLAUDE.local\|ToolSearch\|mcp__\|PostToolUse\|@output\|D:\\\\\|<owner-first-name>\|<owner-surname-fragment>\|Job-Op-Resume" skills/outreach-writer/SKILL.md
 ```
 
 Expected: valid frontmatter; grep count ≥ 4; the last command prints nothing and exits 0.
