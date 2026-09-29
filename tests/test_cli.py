@@ -140,6 +140,37 @@ def test_resolve_search_path_without_companies_ignores_a_scoped_archive_sharing_
     assert resolved.resolve() == unscoped.resolve()
 
 
+def test_resolve_search_path_picks_latest_filename_date_not_latest_mtime(tmp_path, monkeypatch):
+    """Regression: archives copied from another machine get arbitrary (often reversed) mtimes, and
+    the live radar with no --search then rendered an 11-day-old archive. The date in the filename
+    is the run date and survives a copy; mtime does not."""
+    monkeypatch.chdir(tmp_path)
+    search_dir = tmp_path / "data" / "searches"
+    search_dir.mkdir(parents=True)
+    old = search_dir / "default_2026-09-17.json"
+    newest = search_dir / "default_2026-09-28.json"
+    middle = search_dir / "default_2026-09-22.json"
+    for path, mtime in ((newest, 1), (middle, 2), (old, 3)):  # oldest run stamped last
+        path.write_text("{}")
+        os.utime(path, (mtime, mtime))
+
+    assert resolve_search_path().resolve() == newest.resolve()
+    assert resolve_search_path(keyword="default").resolve() == newest.resolve()
+
+
+def test_resolve_search_path_same_filename_date_falls_back_to_mtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    search_dir = tmp_path / "data" / "searches"
+    search_dir.mkdir(parents=True)
+    first = search_dir / "adas_2026-09-28.json"
+    second = search_dir / "default_2026-09-28.json"
+    for path, mtime in ((first, 1), (second, 2)):
+        path.write_text("{}")
+        os.utime(path, (mtime, mtime))
+
+    assert resolve_search_path().resolve() == second.resolve()
+
+
 def test_resolve_search_path_with_companies_resolves_the_scoped_archive(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     search_dir = tmp_path / "data" / "searches"

@@ -79,6 +79,9 @@ def resolve_search_path(
     - `keyword` given, no `search`: resolves to the newest data/searches/{slug}_*.json for
       that keyword's slug — this is how a stage can be pointed at *any* prior run, not just
       the most recent one overall, by name.
+    "Newest" means latest run date in the filename, with mtime only breaking a same-date tie
+    (see `_recency_key`) — never raw mtime alone, which a machine-to-machine copy scrambles.
+
     - Neither given: resolves to the newest archive of any keyword — a cold-start
       convenience only ("I don't know/care which run"), never a substitute for passing
       `keyword` explicitly when the caller already knows it (e.g. a skill that just told
@@ -124,4 +127,19 @@ def resolve_search_path(
             f"No archived search found{scope} in {SEARCH_DIR}. "
             f"Available: {available or '(none)'} — run job-scout (job-hunter search --archive) first."
         )
-    return max(matches, key=lambda p: p.stat().st_mtime)
+    return max(matches, key=_recency_key)
+
+
+_DATE_SUFFIX_RE = re.compile(r"_(\d{4}-\d{2}-\d{2})\.json$")
+
+
+def _recency_key(path: Path) -> tuple[str, float]:
+    """Sort key for "newest archive": the run date in the filename first, mtime only to break a tie.
+
+    Filename date, not mtime, because archives get copied between machines (or restored/checked
+    out) and that stamps every file with an arbitrary, often reversed mtime — the live radar once
+    rendered an 11-day-old archive with no `--search` for exactly that reason. The date is what
+    `archive_path()` wrote, so it survives a copy. A name with no date sorts before any dated one
+    (empty string), leaving mtime to order such files among themselves."""
+    match = _DATE_SUFFIX_RE.search(path.name)
+    return (match.group(1) if match else "", path.stat().st_mtime)
