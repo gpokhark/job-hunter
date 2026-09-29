@@ -17,8 +17,10 @@ How it works:
   section (`## resume-generator` or `## outreach-writer`) and ignores the other.
 - Write rules in plain English, one per bullet, under one of those `## ` sections (a section with any
   other name, such as `## resume generator`, is ignored, and `resume-files` warns about it).
-- A rule can be conditional ("When applying to Acme Corp, ..."). `resume-files --company <name>` lists the
-  rules that name the employer, and the skill applies a rule only when its condition matches the job.
+- A rule can be conditional. For an employer, just name it ("When applying to Acme Corp, ..."):
+  `resume-files` lists the rules that name the employer. For a job title, start the bullet with a tag,
+  `- [role: program manager, TPM] ...`: it applies only when one of the listed titles appears, as whole
+  words, in the job's title (`resume-files --jd` reads the title from the JD file), and never otherwise.
 - Precedence: integrity rules > what you type in the request for that run > this file > the skill's
   defaults. Anything in the request wins for that run only.
 - Integrity rules cannot be overridden here: nothing may be invented (skills, tools, employers,
@@ -52,6 +54,13 @@ Applies to resumes and outreach alike.
 - The client for all work in my Initech role was Acme Corp. Name Acme as the client only on resumes
   for Acme itself. For any other employer describe it without naming the client (for example
   "a large enterprise client") and never print the Acme name in the Initech section.
+
+### Role-specific rules
+
+- [role: program manager, project manager, TPM] Keep the roles in reverse-chronological order, but lead
+  the summary and each recent role with program-management work (schedules, budgets, risk, stakeholder
+  communication), then technical depth.
+- [role: data engineer, analytics engineer] Put SQL and pipeline tools first in Technical Skills.
 
 ### Transferable experience
 

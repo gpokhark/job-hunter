@@ -1125,7 +1125,7 @@ explicit, dry-run-by-default answer:
 | `export-assessments` | — | dumps + writes `data/assessments.json` |
 | `export-feedback` | — | dumps + writes `data/job_feedback.json` (§8.5) |
 | `export-applications` | — | dumps + writes `data/applications.json` and `.csv` (§8.5b) |
-| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `personalization_warning`, `personalization_problems`, `personalization_company_rules` (only with `--company NAME`), `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
+| `resume-files` | `--resume PATH` | prints the resolver's JSON (§11.2): `master_resume`, `master_resume_source`, `personalization`, `personalization_warning`, `personalization_problems`, `personalization_company_rules` (with `--company NAME` or `--jd`), `role`, `personalization_role_rules` (with `--role TITLE` or `--jd`), `cover_letter_sample`, `review_evidence`; exits 2 with guidance if no resume exists or only the example resume does |
 | `contact` | — | validates the profile's `contact:` block and prints it as JSON plus derived `first_name`/`last_name`; exits 2 listing missing/placeholder fields (§11.2) |
 | `export-jd` | `source_key job_id` | writes (or reuses) the job's JD text file under `data/output/<Company>/` and prints `{path, relative_path, created, prompt}`; exits 1 for an unknown job or one with no description (§11.2) |
 | `reevaluate-sponsorship` | — | re-runs sponsorship detection against stored descriptions, no network |

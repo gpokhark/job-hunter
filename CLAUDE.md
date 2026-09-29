@@ -413,7 +413,11 @@ ranked `SearchResult` JSON.
   `## ` section that would be silently ignored, leftover sample text) and, given `--company NAME` (the JD's
   output folder name), returns `personalization_company_rules`: the rules that name that employer, by
   deterministic text match (`resume_source.company_rules`), so employer-specific rules don't rest on the
-  model's judgment alone. `tests/test_no_owner_pii_in_shareable_files.py` fails if the real profile's contact
+  model's judgment alone. Role-conditioned rules use a leading tag (`- [role: program manager, TPM] ...`):
+  `resume-files --jd <JD file>` (which reads the role from the file's first line and the company from its
+  `data/output/<Company>/` folder, so no job text reaches a shell) returns `personalization_role_rules`,
+  the tagged rules whose title phrases match the job title as whole words (`resume_source.role_rules`);
+  the skills apply a tagged rule only when it is listed. `tests/test_no_owner_pii_in_shareable_files.py` fails if the real profile's contact
   details (name, surname as a whole word, email, phone, handles) appear in any tracked or non-ignored file
   (skips with no real profile; `JOB_HUNTER_PII_SKIP_SURNAME=1` skips only the surname check).
   `tests/test_skills_portable.py` guards all user-facing skills against employer/domain examples and PII.

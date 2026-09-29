@@ -157,10 +157,84 @@ def personalization_problems(text: str) -> list[str]:
                 f"unknown section '## {name}' is ignored (expected: "
                 + ", ".join(f"'## {n}'" for n in KNOWN_SECTIONS) + ")"
             )
+    for name in KNOWN_SECTIONS:
+        for rule in sections.get(name, []):
+            problems.extend(_role_tag_problems(rule))
     for marker in SAMPLE_MARKERS:
         if marker in text:
             problems.append(f"still contains sample text {marker!r} from the example; replace or delete it")
     return problems
+
+
+# A rule that only applies to some job titles starts with a tag: `- [role: program manager, TPM] ...`.
+_ROLE_TAG = re.compile(r"^\[\s*role\s*:\s*([^\]]*)\]\s*", re.IGNORECASE)
+_ROLE_TAG_ANYWHERE = re.compile(r"\[\s*roles?\s*:", re.IGNORECASE)
+
+
+def _norm(text: str) -> str:
+    """Lowercase, punctuation and whitespace collapsed to single spaces, for whole-word matching."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _split_role_tag(rule: str) -> tuple[list[str], str] | None:
+    """(phrases, rule text without the tag) for a bullet that starts with a valid `[role: ...]` tag."""
+    match = _ROLE_TAG.match(rule)
+    if not match:
+        return None
+    phrases = [p.strip() for p in re.split(r"[,|;]", match.group(1)) if p.strip()]
+    return (phrases, rule[match.end():].strip()) if phrases else None
+
+
+def _role_tag_problems(rule: str) -> list[str]:
+    tag = _ROLE_TAG.match(rule)
+    if tag and not _split_role_tag(rule):
+        return ["an empty '[role: ]' tag lists no job titles, so that rule can never apply"]
+    if tag:
+        return []
+    if _ROLE_TAG_ANYWHERE.search(rule):
+        return [
+            f"role tag must be at the start of the bullet, written '[role: title, title]': {rule[:60]!r}"
+        ]
+    return []
+
+
+def role_rules(text: str, role: str) -> list[dict[str, object]]:
+    """Rules in the recognized sections whose leading `[role: a, b]` tag matches the job title `role`
+    (each tag phrase is matched as whole words, case-insensitively, so "program manager" matches
+    "Technical Program Manager, Hardware" but "tpm" does not match "Attempt"). Deterministic: the
+    skills apply a tagged rule only when it is returned here and ignore every other tagged rule."""
+    title = _norm(role)
+    if not title:
+        return []
+    sections = personalization_rules(text)
+    hits: list[dict[str, object]] = []
+    for section in KNOWN_SECTIONS:
+        for rule in sections.get(section, []):
+            tagged = _split_role_tag(rule)
+            if tagged is None:
+                continue
+            phrases, body = tagged
+            if any(re.search(rf"\b{re.escape(_norm(p))}\b", title) for p in phrases if _norm(p)):
+                hits.append({"section": section, "roles": phrases, "rule": body})
+    return hits
+
+
+def jd_title(path: Path) -> str | None:
+    """The job title of a job-hunter `JD_*.txt` export: its first non-empty line (None if unreadable)."""
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.strip():
+                    return line.strip()[:200]
+    except OSError:
+        return None
+    return None
+
+
+def jd_company(path: Path) -> str | None:
+    """The company folder name when the JD lives at data/output/<Company_Name>/..., else None."""
+    parent = Path(path).resolve().parent
+    return parent.name if parent.parent.name == "output" else None
 
 
 def company_rules(text: str, company: str) -> list[dict[str, str]]:

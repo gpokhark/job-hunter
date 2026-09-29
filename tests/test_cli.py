@@ -660,6 +660,40 @@ def test_resume_files_lints_personalization_and_lists_rules_naming_the_company(
     assert json.loads(capsys.readouterr().out)["personalization_company_rules"] is None
 
 
+def test_resume_files_jd_flag_derives_role_and_company_and_filters_role_tagged_rules(
+    tmp_path, monkeypatch, capsys
+):
+    _bare_project(tmp_path, monkeypatch)
+    directory = tmp_path / "config" / "resume"
+    directory.mkdir(parents=True)
+    (directory / "main_resume_2026-01-01.md").write_text("r")
+    (directory / "personalization.md").write_text(
+        "## resume-generator\n"
+        "- [role: program manager] Lead with program work.\n"
+        "- [role: data engineer] Lead with SQL.\n"
+        "- When applying to Globex, add a bullet.\n"
+    )
+    jd_dir = tmp_path / "data" / "output" / "Globex"
+    jd_dir.mkdir(parents=True)
+    jd = jd_dir / "JD_Globex_TPM_2026-09-28.txt"
+    jd.write_text("Technical Program Manager, Hardware\nSomewhere\n")
+    assert main(["resume-files", "--jd", str(jd)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["role"] == "Technical Program Manager, Hardware"
+    assert [h["rule"] for h in payload["personalization_role_rules"]] == ["Lead with program work."]
+    assert [h["rule"] for h in payload["personalization_company_rules"]] == [
+        "When applying to Globex, add a bullet."
+    ]
+    # explicit flags win over what the JD file implies; without any of them the lists are not computed
+    assert main(["resume-files", "--jd", str(jd), "--role", "Data Engineer", "--company", "Nobody"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [h["rule"] for h in payload["personalization_role_rules"]] == ["Lead with SQL."]
+    assert payload["personalization_company_rules"] == []
+    assert main(["resume-files"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["role"] is None and payload["personalization_role_rules"] is None
+
+
 def test_resume_files_withholds_an_uncustomized_personalization_template(
     tmp_path, monkeypatch, capsys
 ):
