@@ -461,15 +461,17 @@ ranked `SearchResult` JSON.
   slugifying) — fixes an incident where a `--companies`-scoped run silently overwrote a same-day
   65-source archive. Omitting `--companies` (most runs) is unaffected.
 
-  `resolve_search_path()`'s "newest" fallback is raw mtime, and every refilter re-stamps its
-  target — so a narrow, frequently-refiltered archive can permanently outrank a larger one
-  collected more recently (`pipeline --no-scrape` with no `--keyword` once picked a 1-company
-  archive over a 43-company sweep 2 days older). `pipeline --no-scrape --search PATH` is the
-  escape hatch for a caller who knows the exact archive. For a caller who doesn't, `job-hunter
+  `resolve_search_path()`'s "newest" is the run date in the archive's filename, with mtime only
+  breaking a same-date tie (`_recency_key`). It used to be raw mtime, which broke twice: every
+  refilter re-stamps its target (`pipeline --no-scrape` with no `--keyword` once picked a
+  1-company archive over a 43-company sweep 2 days older), and copying `data/` from another
+  machine scrambles every mtime (the live radar rendered an 11-day-old archive, so almost
+  nothing showed `[New]`). Remaining gap: two archives with the *same* date and different
+  keywords still fall back to mtime. `pipeline --no-scrape --search PATH` is the escape hatch
+  for a caller who knows the exact archive. For a caller who doesn't, `job-hunter
   resolve-search` prints a stderr scope summary (`scope: N sources attempted (top 5 by job
   count...)`) from the resolved archive's `source_health`, making a mismatch visible at resolution
-  time; stdout's bare-path contract is unchanged. Mtime-based resolution itself remains a known,
-  deliberately out-of-scope gap.
+  time; stdout's bare-path contract is unchanged.
 
   `data/assessments.json`/the `assessments` table are deliberately **global**, never split per
   keyword/run — a verdict is a property of *(job, resume)*, not of whichever search surfaced it;
