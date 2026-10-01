@@ -52,7 +52,7 @@ def _partial_message(exc: BaseException, kept: int) -> str:
         if exc.retry_after_seconds is not None:
             reason += f", Retry-After {exc.retry_after_seconds:g}s"
     elif isinstance(exc, ListingTimeout):
-        reason = "listing timed out"
+        reason = str(exc) or "listing timed out"
     else:
         reason = f"{type(exc).__name__}: {exc}"
     return (

@@ -52,7 +52,7 @@ def _page(cards: list[str]) -> str:
     return f"<html><body>{''.join(cards)}</body></html>"
 
 
-def _adapter(monkeypatch, session, *, skip_detail_fetch, **config):
+def _config(skip_detail_fetch, **config):
     cfg = {
         "list_url": "https://careers.example/jobs",
         "card_selector": ".job",
@@ -61,7 +61,7 @@ def _adapter(monkeypatch, session, *, skip_detail_fetch, **config):
         "location_selector": ".loc",
         "page_size": 2,
     }
-    if "page_parameter" not in config:
+    if "page_parameter" not in config and "next_selector" not in config:
         cfg["page_number_parameter"] = "page"
     if skip_detail_fetch:
         cfg.update(
@@ -71,6 +71,11 @@ def _adapter(monkeypatch, session, *, skip_detail_fetch, **config):
             description_selector=".desc",
         )
     cfg.update(config)
+    return cfg
+
+
+def _adapter(monkeypatch, session, *, skip_detail_fetch, **config):
+    cfg = _config(skip_detail_fetch, **config)
     company = CompanyConfig(key="acme", company="Acme", adapter="stealth_html", config=cfg)
     adapter = StealthHtmlAdapter(company, None, CollectionConfig(max_retries=0))
 
@@ -187,6 +192,22 @@ async def test_hitting_max_pages_with_more_available_raises_instead_of_truncatin
     assert session.requested == [1, 2]
 
 
+@both_loops
+@pytest.mark.asyncio
+async def test_a_next_link_back_to_an_already_fetched_page_raises_instead_of_ending_quietly(
+    monkeypatch, skip_detail_fetch
+):
+    looping = _page(_cards(skip_detail_fetch, "A", "B")) + '<a class="next" href="/jobs">next</a>'
+    session = _FakeSession({1: looping})
+    adapter = _adapter(
+        monkeypatch, session, skip_detail_fetch=skip_detail_fetch, next_selector="a.next"
+    )
+    with pytest.raises(AdapterError, match="pagination loop"):
+        await adapter.fetch_summaries()
+    assert _titles(adapter.kept) == ["Role A", "Role B"]
+    assert session.requested == [1]
+
+
 @pytest.mark.asyncio
 async def test_no_details_loop_follows_a_row_offset_page_parameter(monkeypatch):
     session = _FakeSession(
@@ -204,18 +225,14 @@ async def test_no_details_loop_follows_a_row_offset_page_parameter(monkeypatch):
     assert session.requested == [0, 2, 4]
 
 
-@pytest.mark.asyncio
-async def test_a_blocked_page_never_closes_jobs_the_run_did_not_reach(monkeypatch, tmp_path):
-    """The point of the change, end to end: run 1 sees five jobs; in run 2 the browser is
-    blocked on page 2. The source must be a `warning` and no job may age toward closure."""
+async def _two_runs(monkeypatch, tmp_path, skip_detail_fetch, failure):
+    """Run 1 sees five jobs; in run 2 page 2 raises `failure`. Returns (results, rows)."""
     full = {
-        1: _page(_cards(True, "A", "B")),
-        2: _page(_cards(True, "C", "D")),
-        3: _page(_cards(True, "E")),
+        1: _page(_cards(skip_detail_fetch, "A", "B")),
+        2: _page(_cards(skip_detail_fetch, "C", "D")),
+        3: _page(_cards(skip_detail_fetch, "E")),
     }
-    sessions = iter(
-        [_FakeSession(full), _FakeSession(full, fail_on={2: RuntimeError("blocked by WAF")})]
-    )
+    sessions = iter([_FakeSession(full), _FakeSession(full, fail_on={2: failure})])
     current = {}
 
     async def _fake_ensure_session(self):
@@ -223,14 +240,7 @@ async def test_a_blocked_page_never_closes_jobs_the_run_did_not_reach(monkeypatc
 
     monkeypatch.setattr(StealthHtmlAdapter, "_ensure_session", _fake_ensure_session)
     company = CompanyConfig(
-        key="acme", company="Acme", adapter="stealth_html",
-        config={
-            "list_url": "https://careers.example/jobs", "card_selector": ".job",
-            "title_selector": ".t", "link_selector": ".t", "location_selector": ".loc",
-            "department_selector": ".dep", "employment_type_selector": ".emp",
-            "description_selector": ".desc", "skip_detail_fetch": True,
-            "page_number_parameter": "page", "page_size": 2,
-        },
+        key="acme", company="Acme", adapter="stealth_html", config=_config(skip_detail_fetch)
     )
     settings = Settings(database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig())
 
@@ -238,14 +248,39 @@ async def test_a_blocked_page_never_closes_jobs_the_run_did_not_reach(monkeypatc
     for _ in range(2):
         current["session"] = next(sessions)
         results.append(await Collector(settings, [company], CandidateProfile()).search())
-
-    assert results[0].source_health[0].status.value == "ok"
-    second = results[1].source_health[0]
-    assert second.status.value == "warning"
-    assert "blocked by WAF" in second.message
     with Storage(settings.database_path) as storage:
         rows = storage.connection.execute(
             "SELECT status, missing_count FROM jobs WHERE source_key='acme'"
         ).fetchall()
+    return results, rows
+
+
+@both_loops
+@pytest.mark.asyncio
+async def test_a_blocked_page_never_closes_jobs_the_run_did_not_reach(
+    monkeypatch, tmp_path, skip_detail_fetch
+):
+    """The point of the change, end to end: run 1 sees five jobs; in run 2 the browser is
+    blocked on page 2. The source must be a `warning` and no job may age toward closure."""
+    results, rows = await _two_runs(
+        monkeypatch, tmp_path, skip_detail_fetch, RuntimeError("blocked by WAF")
+    )
+    assert results[0].source_health[0].status.value == "ok"
+    second = results[1].source_health[0]
+    assert second.status.value == "warning"
+    assert "blocked by WAF" in second.message
     assert len(rows) == 5
     assert {(row["status"], row["missing_count"]) for row in rows} == {("active", 0)}
+
+
+@pytest.mark.asyncio
+async def test_a_page_timeout_is_reported_as_a_timeout_with_its_url_and_cause(monkeypatch, tmp_path):
+    results, rows = await _two_runs(
+        monkeypatch, tmp_path, True, TimeoutError("WAF challenge not cleared")
+    )
+    second = results[1].source_health[0]
+    assert second.status.value == "warning"
+    assert second.failure_kind == "timeout"
+    assert "WAF challenge not cleared" in second.message
+    assert "page=2" in second.message
+    assert {row["missing_count"] for row in rows} == {0}

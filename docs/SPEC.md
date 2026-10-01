@@ -526,7 +526,14 @@ uv run scrapling install
   will show a (harmless, all-jobs-kept) warning; a challenge page that returns *fewer* cards than
   `page_size` still ends pagination quietly. The `skip_detail_fetch` loop supports `next_selector`,
   `page_parameter` (row offset) and `page_number_parameter`, paced by
-  `min_request_interval_seconds`.
+  `min_request_interval_seconds`. A repeated URL (a "next" link back to a page already fetched)
+  raises as a pagination loop rather than ending quietly.
+- **A capped listing is a warning, not `ok`.** A source whose real catalog is larger than
+  `max_pages` x page size now reports "stopped at max_pages=N with more pages available" as a
+  `warning` (every fetched job is kept; `mark_missing` is skipped, so nothing closes). Before this
+  it was reported `ok` and the unreached jobs aged out. `google` is the live example: with no
+  `max_pages` it has always stopped at the default 20 pages (exactly 400 jobs), so it stays a
+  warning until its `max_pages` is raised above its real page count.
 - **Per-request cost:** each fetch is a real browser page load (~1-2s), not a lightweight HTTP
   call — detail fetches are concurrent within a source (bounded by `max_concurrent_details`) but a
   large source can still take a while end-to-end.

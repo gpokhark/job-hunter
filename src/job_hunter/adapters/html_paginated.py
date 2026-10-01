@@ -40,6 +40,8 @@ class HtmlPaginatedAdapter(JobAdapter):
         url: str | None = start_url
         for page in range(int(cfg.get("max_pages", 20))):
             if not url or url in seen_urls:
+                if self.strict_pagination and url:
+                    raise AdapterError(f"pagination loop: {url} was already fetched")
                 break
             seen_urls.add(url)
             response = await self.request("GET", url)

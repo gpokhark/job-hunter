@@ -78,10 +78,14 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
         max_results = self.collection.max_results if hasattr(self.collection, 'max_results') else 1000
         max_pages = int(cfg.get("max_pages", 20))
         page_size = int(cfg.get("page_size", 25))
+        seen_urls: set[str] = set()
 
         for page in range(max_pages):
             if not url or len(jobs) >= max_results:
                 break
+            if url in seen_urls:
+                raise AdapterError(f"pagination loop: {url} was already fetched")
+            seen_urls.add(url)
             await self._pace()
             response = await self.request("GET", url)
 
