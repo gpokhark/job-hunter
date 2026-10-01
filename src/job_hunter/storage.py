@@ -83,6 +83,19 @@ def _migrate_v4_create_application_tables(connection: sqlite3.Connection) -> Non
     )
 
 
+def _migrate_v5_add_nonzero_job_count_baseline(connection: sqlite3.Connection) -> None:
+    """`source_health.last_nonzero_job_count`: the baseline `detect_count_anomaly` compares
+    against. `last_job_count` alone let one empty run (stored as 0) disarm the check for every
+    later run, so an adapter that kept returning nothing was never flagged."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(source_health)")}
+    if "last_nonzero_job_count" not in columns:
+        connection.execute("ALTER TABLE source_health ADD COLUMN last_nonzero_job_count INTEGER")
+    connection.execute(
+        "UPDATE source_health SET last_nonzero_job_count=last_job_count "
+        "WHERE last_nonzero_job_count IS NULL AND last_job_count > 0"
+    )
+
+
 #: Ordered, 1-indexed migration steps — entry `N` (1-based) upgrades a database from schema
 #: version `N-1` to version `N`. Tracked via SQLite's own built-in `PRAGMA user_version` integer
 #: (docs/agent-runtime-audit.md's "no explicit schema-version marker" finding) rather than a
@@ -99,6 +112,7 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v2_add_salary_evidence_column,
     _migrate_v3_create_feedback_tombstones,
     _migrate_v4_create_application_tables,
+    _migrate_v5_add_nonzero_job_count_baseline,
 ]
 
 
@@ -468,13 +482,22 @@ class Storage:
             if succeeded
             else (prior["last_success_at"] if prior else None)
         )
+        # A run that found nothing never replaces the baseline (see the v5 migration).
+        baseline = (
+            health.job_count
+            if health.job_count > 0
+            else (prior["last_nonzero_job_count"] if prior else None)
+        )
         self.connection.execute(
             """INSERT INTO source_health(source_key, company, last_attempt_at, last_success_at,
-               last_job_count, consecutive_failures, last_status, last_error_type, last_error_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               last_job_count, last_nonzero_job_count, consecutive_failures, last_status,
+               last_error_type, last_error_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(source_key) DO UPDATE SET company=excluded.company,
                last_attempt_at=excluded.last_attempt_at, last_success_at=excluded.last_success_at,
-               last_job_count=excluded.last_job_count, consecutive_failures=excluded.consecutive_failures,
+               last_job_count=excluded.last_job_count,
+               last_nonzero_job_count=excluded.last_nonzero_job_count,
+               consecutive_failures=excluded.consecutive_failures,
                last_status=excluded.last_status, last_error_type=excluded.last_error_type,
                last_error_message=excluded.last_error_message""",
             (
@@ -483,6 +506,7 @@ class Storage:
                 health.attempted_at.isoformat(),
                 last_success,
                 health.job_count,
+                baseline,
                 failures,
                 health.status.value,
                 health.error_type,
@@ -493,7 +517,7 @@ class Storage:
 
     def previous_job_count(self, source_key: str) -> int | None:
         row = self.connection.execute(
-            "SELECT last_job_count FROM source_health WHERE source_key=?", (source_key,)
+            "SELECT last_nonzero_job_count FROM source_health WHERE source_key=?", (source_key,)
         ).fetchone()
         return row[0] if row else None
 

@@ -1020,8 +1020,10 @@ of an index table.
 
 ### 8.3 `source_health` — one row per source, rolling status
 
-`last_attempt_at`, `last_success_at`, `last_job_count`, `consecutive_failures`, `last_status`,
-`last_error_type/message`.
+`last_attempt_at`, `last_success_at`, `last_job_count`, `last_nonzero_job_count`,
+`consecutive_failures`, `last_status`, `last_error_type/message`. `last_nonzero_job_count` (migration
+v5) is the baseline `detect_count_anomaly` compares against: a zero-job run never replaces it, so one
+empty run can't disarm the check for the next (Apple's 2026-09-30 incident).
 
 ### 8.4 `assessments` — one row per `(source_key, job_id)`, a fitness verdict
 

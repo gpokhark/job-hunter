@@ -1507,6 +1507,30 @@ async def test_apple_stops_pagination_once_stale():
 
 @pytest.mark.asyncio
 @respx.mock
+@pytest.mark.parametrize("search", [{"totalRecords": 0, "searchResults": []}, {"searchResults": []}])
+async def test_apple_empty_first_page_fails_loudly(search):
+    """A US-scoped Apple search is never legitimately empty. An empty first page (observed
+    live: a transient empty response) must raise rather than return [] and be recorded as a
+    healthy zero-job source."""
+    respx.get(url__regex=r"https://jobs\.apple\.com/en-us/search.*").mock(
+        return_value=httpx.Response(
+            200, text=_hydration_html({"loaderData": {"search": search}})
+        )
+    )
+    company = CompanyConfig(
+        key="apple",
+        company="Apple",
+        adapter="apple",
+        config={"list_url": "https://jobs.apple.com/en-us/search?location=united-states-USA"},
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = AppleAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(SchemaError, match="no results"):
+            await adapter.fetch_summaries()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_page_number_parameter_pagination():
     base = "https://jobs.example/search"
     page1 = f"<main>{''.join(_card(f'P{i}') for i in range(2))}</main>"

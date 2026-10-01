@@ -423,8 +423,12 @@ ranked `SearchResult` JSON.
   `tests/test_skills_portable.py` guards all user-facing skills against employer/domain examples and PII.
 
 - **`health.py`** — `detect_count_anomaly` flags (doesn't fail) a source whose job count drops
-  >70% from its last known count — guards against adapters "succeeding" against a changed page
-  structure while returning far fewer/no jobs.
+  >70% from its last known *non-zero* count (`source_health.last_nonzero_job_count`, migration v5) —
+  guards against adapters "succeeding" against a changed page structure while returning far
+  fewer/no jobs. The baseline ignores zero-job runs: storing 0 as the baseline once let a second
+  empty run compare 0 → 0 unflagged (Apple vanished from the 2026-09-30 radar this way, and the
+  radar's stale-source fallback only covers `failed` sources). `apple.py` also raises on an empty
+  first page, so that case is `failed` and fallback-eligible.
 
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.

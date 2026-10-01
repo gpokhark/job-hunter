@@ -69,6 +69,11 @@ class AppleAdapter(JobAdapter):
         first = await _fetch_page(1)
         all_results: list[dict] = list(first["searchResults"])
         total = int(first.get("totalRecords", 0))
+        if not all_results:
+            # A US-scoped Apple search is never legitimately empty; an empty first page was
+            # seen live (transiently) and, returned as [], was recorded as a healthy source
+            # with zero jobs. Fail loudly like every other unexpected shape here.
+            raise SchemaError(f"Apple search returned no results (totalRecords={total})")
         # ~4,500 US postings at 20/page is >200 sequential requests if fetched one at a
         # time; every page beyond the first is independent, so fan them out concurrently
         # once the first page has told us how many there are.
