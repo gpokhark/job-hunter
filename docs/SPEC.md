@@ -516,6 +516,17 @@ uv run scrapling install
   anti-bot circumvention, independent of personal/non-commercial intent. `google` isn't defended
   by anything; using a browser there is a rendering necessity (its JS-only frontend), not
   circumvention.
+- **A blocked page never looks like the end of a listing.** `request()` raises on any fetch
+  failure (timeout-class errors as `ListingTimeout`, everything else as `AdapterError` naming the
+  cause) instead of returning an empty page, and the pagination loops are strict
+  (`strict_pagination`): a continuation page with zero cards, or running out of `max_pages` with
+  more pages promised, raises. The collector then keeps the pages already fetched, records a
+  `warning`, and skips `mark_missing`, so a partial run closes no job. Known limits: a page-number
+  source whose total is an exact multiple of its page size ends on a legitimately empty page and
+  will show a (harmless, all-jobs-kept) warning; a challenge page that returns *fewer* cards than
+  `page_size` still ends pagination quietly. The `skip_detail_fetch` loop supports `next_selector`,
+  `page_parameter` (row offset) and `page_number_parameter`, paced by
+  `min_request_interval_seconds`.
 - **Per-request cost:** each fetch is a real browser page load (~1-2s), not a lightweight HTTP
   call — detail fetches are concurrent within a source (bounded by `max_concurrent_details`) but a
   large source can still take a while end-to-end.

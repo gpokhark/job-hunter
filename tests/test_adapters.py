@@ -2168,6 +2168,34 @@ def test_paginating_adapter_registers_its_listing_for_salvage(name):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_plain_html_paginated_still_treats_an_empty_page_after_jobs_as_the_end():
+    """Only stealth sources apply the strict empty-continuation rule; a plain adapter keeps
+    the long-standing behavior (an empty page after some jobs is a graceful end)."""
+    page1 = f"<main>{''.join(_card(f'P{i}') for i in range(2))}</main>"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page") == "2":
+            return httpx.Response(200, text="<main></main>")
+        return httpx.Response(200, text=page1)
+
+    respx.get(url__regex=r".*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="test", company="Test", adapter="html_paginated",
+        config={
+            "list_url": "https://jobs.example/search", "card_selector": ".job",
+            "title_selector": ".title", "link_selector": ".title",
+            "location_selector": ".location", "page_number_parameter": "page", "page_size": 2,
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await HtmlPaginatedAdapter(
+            company, client, CollectionConfig(max_retries=0)
+        ).fetch_summaries()
+    assert [job.job_id for job in jobs] == ["P0", "P1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_html_paginated_keeps_earlier_pages_when_a_later_page_is_rate_limited():
     page1 = f"<main>{''.join(_card(f'P{i}') for i in range(2))}</main>"
 

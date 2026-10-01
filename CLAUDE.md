@@ -14,7 +14,10 @@ Collection is config-driven HTTP/HTML fetching, with one exception: `stealth_htm
 sources with no plain anonymous endpoint — either bot-blocked (`astemo`: Cloudflare Turnstile) or
 JS-rendered content (`google`). Using it is a disclosed choice to defeat anti-automation controls
 (real ToS exposure, not solved by "it's public data") — don't reach for it by default; every other
-adapter stays plain httpx. See `docs/SPEC.md` §5.8.
+adapter stays plain httpx. See `docs/SPEC.md` §5.8. A blocked/challenged page there must never read
+as the end of a listing: `request()` raises (never returns empty HTML) and `strict_pagination` makes
+an empty continuation page or an exhausted `max_pages` raise, so a partial run is a `warning` that
+keeps its jobs and closes none (it used to be reported `ok` and `mark_missing` aged out the rest).
 
 **Before reaching for `stealth_html`, always check for a real backend behind a blocked/skinned
 front end** — a real job link, not a guess, is what reveals it:
