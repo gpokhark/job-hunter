@@ -504,13 +504,28 @@ _SOURCE_ISSUE_ORDER = {"failed": 0, "warning": 1, "unsupported": 2}
 _SOURCE_ISSUE_LABEL = {"failed": "Failed", "warning": "Warning", "unsupported": "Unsupported"}
 
 
+_FAILURE_KIND_BADGE = {
+    "rate_limited": ("Rate limited", "ratelimited"),
+    "timeout": ("Timed out", "timeout"),
+}
+
+
+def _source_issue_badge(health: dict[str, Any]) -> tuple[str, str]:
+    """(label, css suffix): a recorded `failure_kind` wins over the bare status."""
+    badge = _FAILURE_KIND_BADGE.get(health.get("failure_kind") or "")
+    if badge:
+        return badge
+    status = health.get("status", "failed")
+    return _SOURCE_ISSUE_LABEL.get(status, status.title()), status
+
+
 def _source_issue_row_html(health: dict[str, Any]) -> str:
     status = health.get("status", "failed")
-    label = _SOURCE_ISSUE_LABEL.get(status, status.title())
+    label, badge_css = _source_issue_badge(health)
     message = health.get("message") or "No error message recorded."
     return f'''
     <div class="source-issue source-issue-{_attr(status)}">
-      <span class="tag tag-source-{_attr(status)}">{_e(label)}</span>
+      <span class="tag tag-source-{_attr(badge_css)}">{_e(label)}</span>
       <span class="source-issue-company">{_e(health.get("company") or health.get("source_key"))}</span>
       <span class="source-issue-message">{_e(message)}</span>
     </div>'''
@@ -520,6 +535,29 @@ def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
     if not entries:
         return '<p class="empty-state">Every attempted source collected successfully this run.</p>'
     return "".join(_source_issue_row_html(h) for h in entries)
+
+
+def _rate_limited_sources(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_key": h.get("source_key"),
+            "company": h.get("company"),
+            "status": h.get("status"),
+            "failure_kind": h["failure_kind"],
+            "http_status": h.get("http_status"),
+            "retry_after_seconds": h.get("retry_after_seconds"),
+            "jobs_kept": h.get("job_count") or 0,
+        }
+        for h in entries
+        if h.get("failure_kind")
+    ]
+
+
+def _wants_fallback(health: dict[str, Any]) -> bool:
+    """`failed`, or a `warning` that stopped early on a recorded failure_kind (rate limit /
+    timeout). A bare count-drop warning has no failure_kind and still gets no merge."""
+    status = health.get("status")
+    return status == "failed" or (status == "warning" and bool(health.get("failure_kind")))
 
 
 def _apply_collection_fallback(
@@ -538,12 +576,15 @@ def _apply_collection_fallback(
     rendered report (with a note explaining why they're there) instead of a `failed` source
     silently showing zero jobs even though real, recently-collected data for it exists on disk.
 
-    Deliberately scoped to `status == "failed"` only, never `warning` or `unsupported` — see the
-    plan's section 4.3 for the reasoning: a `warning` source already produced real live data this
-    run (health.py's count-anomaly check just flagged the count as suspiciously low), so mixing
-    in old jobs on top of a partial-but-real result would blur what actually happened this run
-    rather than clarify it; `unsupported` is a permanent, already-disclosed config.py state that
-    never fetches jobs at all, so it never has cached data to fall back to regardless.
+    Deliberately scoped to `failed` and to `warning`s carrying a `failure_kind` (a rate-limited or
+    timed-out partial run), never count-drop `warning`s or `unsupported` — see the plan's section
+    4.3 for the reasoning: a count-drop `warning` source already produced real live data this run
+    (health.py's count-anomaly check just flagged the count as suspiciously low), so mixing in old
+    jobs on top of it would blur what actually happened this run rather than clarify it;
+    `unsupported` is a permanent, already-disclosed config.py state that never fetches jobs at
+    all, so it never has cached data to fall back to regardless. A `failure_kind` warning is
+    different: collection stopped early on purpose, so the earlier jobs it did not re-collect are
+    exactly what is missing.
 
     Returns `(updated_source_issues, fallback_provenance)`: `updated_source_issues` is the same
     shape as before — every `failed` entry's own `message` extended with the fallback note,
@@ -568,7 +609,7 @@ def _apply_collection_fallback(
     re-scan that table once per failure either."""
     updated: list[dict[str, Any]] = []
     fallback_provenance: list[dict[str, Any]] = []
-    failed_keys = [h.get("source_key") for h in source_issues if h.get("status") == "failed"]
+    failed_keys = [h.get("source_key") for h in source_issues if _wants_fallback(h)]
     last_success_by_key: dict[str, str | None] = {}
     if failed_keys:
         with Storage(database_path) as storage:
@@ -578,7 +619,7 @@ def _apply_collection_fallback(
             for key in failed_keys
         }
     for health in source_issues:
-        if health.get("status") != "failed":
+        if not _wants_fallback(health):
             updated.append(health)
             continue
         health = dict(health)
@@ -586,7 +627,23 @@ def _apply_collection_fallback(
         last_success_at = last_success_by_key.get(source_key)
         base_message = health.get("message") or "No error message recorded."
         merged = 0
-        if not last_success_at:
+        if health.get("status") == "warning":
+            # A partial (rate-limited/timed-out) run already stored its own jobs; add the
+            # earlier ones this run didn't re-collect. Independent of last_success_at, which a
+            # partial run itself just advanced.
+            for job in _pool_source_jobs(
+                database_path, source_key, profile, max_age_days, keywords=keywords, now=now
+            ):
+                key = (job.source_key, job.job_id)
+                if key in candidates:
+                    continue
+                candidates[key] = json.loads(job.model_dump_json())
+                merged += 1
+            note = (
+                f"Collection stopped early today — showing {merged} earlier job(s) "
+                "this run did not re-collect."
+            )
+        elif not last_success_at:
             note = "Failed to scrape — no prior successful data available for this source."
         else:
             fallback_jobs = _pool_source_jobs(
@@ -943,6 +1000,9 @@ def render(
         # ever folded into the HTML report's prose note. Empty whenever collection_fallback=False
         # or no source failed this run.
         "stale_source_fallback": fallback_provenance,
+        # Sources that stopped early on a rate limit / timeout (health rows carrying a
+        # `failure_kind`), for a caller reading --result-json (background-collection retries).
+        "rate_limited_sources": _rate_limited_sources(source_issues),
     }
 
 
@@ -1054,7 +1114,9 @@ def main() -> int:
             "success — a structured result for a caller (job-hunter pipeline) to read instead "
             "of parsing this script's own human-readable stdout, and to know which sources in "
             "this report came from the live run vs. the stale-source fallback (empty list when "
-            "--no-collection-fallback or no source failed). Purely additive: stdout is unchanged."
+            "--no-collection-fallback or no source failed), plus \"rate_limited_sources\": [{\"source_key\", "
+            "\"company\", \"status\", \"failure_kind\", \"http_status\", \"retry_after_seconds\", "
+            "\"jobs_kept\"}, ...] for sources that stopped early on a rate limit/timeout. Purely additive: stdout is unchanged."
         ),
     )
     add_project_argument(parser)
@@ -1083,6 +1145,7 @@ def main() -> int:
                 {
                     "report_path": str(output_path),
                     "stale_source_fallback": stats["stale_source_fallback"],
+                    "rate_limited_sources": stats["rate_limited_sources"],
                 }
             )
             + "\n",
