@@ -42,6 +42,30 @@ def _location_fields(location: dict) -> tuple[str | None, str | None, str | None
 
 
 class AppleAdapter(JobAdapter):
+    def _to_summary(self, item: dict, base_url: str) -> JobSummary:
+        req_id = str(item.get("reqId") or "").strip()
+        title = str(item.get("postingTitle") or "").strip()
+        if not req_id or not title:
+            raise SchemaError("Apple job entry missing reqId/postingTitle")
+        locations = item.get("locations") or []
+        city, state, country = _location_fields(locations[0] if locations else {})
+        location_raw = ", ".join(part for part in (city, state, country) if part) or None
+        slug = item.get("transformedPostingTitle") or ""
+        return JobSummary(
+            source_key=self.source_key,
+            source_platform=self.company.platform or "apple",
+            company=self.company.company,
+            job_id=req_id,
+            title=title,
+            url=urljoin(base_url, f"/en-us/details/{req_id}/{slug}"),
+            location_raw=location_raw,
+            city=city,
+            state=state,
+            country=country,
+            posted_at=parse_flexible_date(item.get("postDateInGMT")),
+            raw={"jobSummary": item.get("jobSummary")},
+        )
+
     async def fetch_summaries(self) -> list[JobSummary]:
         cfg = self.company.config
         base_url = cfg.get("list_url")
@@ -67,13 +91,13 @@ class AppleAdapter(JobAdapter):
             return search
 
         first = await _fetch_page(1)
-        all_results: list[dict] = list(first["searchResults"])
         total = int(first.get("totalRecords", 0))
-        if not all_results:
+        if not first["searchResults"]:
             # A US-scoped Apple search is never legitimately empty; an empty first page was
             # seen live (transiently) and, returned as [], was recorded as a healthy source
             # with zero jobs. Fail loudly like every other unexpected shape here.
             raise SchemaError(f"Apple search returned no results (totalRecords={total})")
+        self.keep(self._to_summary(item, base_url) for item in first["searchResults"])
         # ~4,500 US postings at 20/page is >200 sequential requests if fetched one at a
         # time; every page beyond the first is independent, so fan them out concurrently
         # once the first page has told us how many there are.
@@ -98,7 +122,7 @@ class AppleAdapter(JobAdapter):
                 stop = False
                 for search in batch:
                     results = search["searchResults"]
-                    all_results.extend(results)
+                    self.keep(self._to_summary(item, base_url) for item in results)
                     last_posted = parse_flexible_date(results[-1].get("postDateInGMT")) if results else None
                     if self.max_posting_age_days is not None and not is_recent(
                         last_posted, self.max_posting_age_days
@@ -108,37 +132,7 @@ class AppleAdapter(JobAdapter):
                     break
                 page = batch_end + 1
 
-        jobs: list[JobSummary] = []
-        seen_ids: set[str] = set()
-        for item in all_results:
-            req_id = str(item.get("reqId") or "").strip()
-            title = str(item.get("postingTitle") or "").strip()
-            if not req_id or not title:
-                raise SchemaError("Apple job entry missing reqId/postingTitle")
-            if req_id in seen_ids:
-                continue
-            seen_ids.add(req_id)
-            locations = item.get("locations") or []
-            city, state, country = _location_fields(locations[0] if locations else {})
-            location_raw = ", ".join(part for part in (city, state, country) if part) or None
-            slug = item.get("transformedPostingTitle") or ""
-            jobs.append(
-                JobSummary(
-                    source_key=self.source_key,
-                    source_platform=self.company.platform or "apple",
-                    company=self.company.company,
-                    job_id=req_id,
-                    title=title,
-                    url=urljoin(base_url, f"/en-us/details/{req_id}/{slug}"),
-                    location_raw=location_raw,
-                    city=city,
-                    state=state,
-                    country=country,
-                    posted_at=parse_flexible_date(item.get("postDateInGMT")),
-                    raw={"jobSummary": item.get("jobSummary")},
-                )
-            )
-        return jobs
+        return self.kept
 
     async def fetch_detail(self, summary: JobSummary) -> JobDetail:
         response = await self.request("GET", summary.url)

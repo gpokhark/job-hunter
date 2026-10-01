@@ -9,7 +9,7 @@ import respx
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
-from job_hunter.adapters.base import SchemaError
+from job_hunter.adapters.base import RateLimitError, SchemaError
 from job_hunter.adapters.bosch import BoschAdapter
 from job_hunter.adapters.brose import BroseAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
@@ -2123,3 +2123,30 @@ async def test_avature_cards_label_prefixed_location_and_date_with_joboffset_pag
     assert jobs[0].location_raw == "Bucharest - Bucharest, Romania"
     assert jobs[2].location_raw == "New York - USA - 19 West 44th St."
     assert [j.posted_at.strftime("%Y-%m-%d") for j in jobs] == ["2026-07-15", "2026-09-24", "2026-09-22"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_apple_keeps_earlier_pages_when_a_later_batch_is_rate_limited():
+    now = datetime.now(UTC)
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page"))
+        if page == 1:
+            data = {"totalRecords": 60, "searchResults": [_apple_result("p1", now - timedelta(days=1))]}
+            return httpx.Response(200, text=_hydration_html({"loaderData": {"search": data}}))
+        return httpx.Response(429, headers={"Retry-After": "60"})
+
+    respx.get(url__regex=r"https://jobs\.apple\.com/en-us/search.*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="apple", company="Apple", adapter="apple",
+        config={
+            "list_url": "https://jobs.apple.com/en-us/search?location=united-states-USA",
+            "page_size": 20, "max_concurrent_pages": 1,
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = AppleAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(RateLimitError):
+            await adapter.fetch_summaries()
+    assert [job.job_id for job in adapter.kept] == ["p1"]
