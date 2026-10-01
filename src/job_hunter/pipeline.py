@@ -397,6 +397,10 @@ def _run_radar_stage(
         manifest.error = f"radar exited 0 but wrote no readable result at {result_json}"
         return
     manifest.radar = result.get("report_path")
+    limited = result.get("rate_limited_sources") or None
+    manifest.rate_limited_sources = limited
+    if limited and manifest.status == PipelineStatus.COMPLETE:
+        manifest.status = PipelineStatus.PARTIAL
 
 
 async def run_pipeline(
