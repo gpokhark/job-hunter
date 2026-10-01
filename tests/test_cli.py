@@ -783,3 +783,29 @@ def test_export_jd_unknown_job_exits_1(tmp_path, monkeypatch, capsys):
     _bare_project(tmp_path, monkeypatch)
     assert main(["export-jd", "acme", "nope"]) == 1
     assert "not found" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "project", "command", "sub", "slow"),
+    [
+        (["collect", "status", "--project", "/x"], "/x", "collect", "status", None),
+        (["--project", "/y", "collect", "stop"], "/y", "collect", "stop", None),
+        (["collect", "--project", "/z", "start", "--slow"], "/z", "collect", "start", True),
+        (["snapshot", "--project", "/w"], "/w", "snapshot", None, None),
+        (["collect", "status"], None, "collect", "status", None),
+    ],
+)
+def test_collect_and_snapshot_accept_project_in_any_position(argv, project, command, sub, slow):
+    args = parser().parse_args(argv)
+    assert args.project == (Path(project) if project else None)
+    assert args.command == command
+    if command == "collect":
+        assert args.collect_command == sub
+    if slow:
+        assert args.slow is True
+
+
+def test_bare_collect_is_a_usage_error():
+    with pytest.raises(SystemExit) as exc:
+        parser().parse_args(["collect"])
+    assert exc.value.code == 2

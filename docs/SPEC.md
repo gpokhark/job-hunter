@@ -940,8 +940,9 @@ data, JSON-LD, Liferay DDM) and probing techniques.
 - `collection.source_timeout_seconds` (default 1200; `None` disables) bounds the listing phase of one
   source only, not detail fetching.
 - `render_radar.py` shows "Rate limited"/"Timed out" badges in Collection Issues, extends the
-  stale-source fallback to `failed` or `warning` with a `failure_kind` (count-drop warnings still get
-  none), and lists such sources as `rate_limited_sources` in its `--result-json`. The pipeline
+  stale-source fallback to `failed`, or a `warning` that stopped early (carries a `failure_kind` or an
+  `error_type`; count-drop warnings still get none), and lists such sources (those that stopped early
+  and kept partial results) as `rate_limited_sources` in its `--result-json`. The pipeline
   manifest copies that list, and a pipeline that would be `complete` with any rate-limited source
   ends `partial`. `source-status` is unchanged: `failure_kind` lives in the archive, not SQLite.
 
@@ -965,15 +966,15 @@ run whose PID is dead (`abandoned`) does not block a new start.
 - **Archive:** the runner never writes an archive mid-run. On normal completion (not stopped) it
   writes the final archive at the path a foreground `search --archive` run would use
   (`archive_path(None, ...)`, i.e. `data/searches/default_<date>.json`, with the companies suffix
-  when `--companies` was given).
-- **`collect status [--json]`:** prints `N/M sources finished`, lists rate-limited/timed-out
-  sources (reason, HTTP status, kept jobs) and failed sources; exit `2` with a message if no
+  when `--companies` was given). The runner writes it under the shared `job-hunter` lock; if the
+  lock is busy it does not wait and writes a `collect-final` named archive instead.
+- **`collect status [--json]`:** prints `N/M sources finished`, lists sources that stopped early (rate-limited/timed-out/errored; reason, HTTP status, kept jobs) and failed sources; exit `2` with a message if no
   collection was ever started.
 - **`collect stop`:** cooperative. SIGTERM goes to the live collector; in-flight sources finish,
   not-yet-started sources are skipped, status ends `stopped`, and no archive is written.
 - **`snapshot`:** builds an archive on demand from what is stored so far. It writes a minimal
   archive containing only FINISHED sources in `source_health` (including rate-limited/timed-out
-  reasons) to its own filename `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix when the run was `--companies`-scoped; deliberately not the
+  reasons) to its own filename `data/searches/collect-snapshot_<date>.json` (with a `__companies-...` suffix when the run was `--companies`-scoped; deliberately not the
   default archive's name, so it never clobbers a real same-day foreground archive), holding the
   shared `job-hunter` lock only for that short write (exit `2` with an "in progress" message if a
   pipeline/review/cleanup run holds it). It then runs `scripts/refilter_archive.py --no-report` on

@@ -302,7 +302,7 @@ ranked `SearchResult` JSON.
   review/render keep working against SQLite. Holds only `run_lock("collector")`, never the shared
   `"job-hunter"` lock; writes `data/collect/state.json` atomically after every source event and
   never writes an archive mid-run (on completion, not stop, it writes the normal
-  `archive_path(None, ...)` archive). `collect stop` is cooperative (SIGTERM: in-flight sources
+  `archive_path(None, ...)` archive under the shared lock, falling back to a `collect-final` name if the lock is busy). `collect stop` is cooperative (SIGTERM: in-flight sources
   finish, unstarted ones skipped, status `stopped`, no archive); a `running` state with a dead PID
   reads as `abandoned` and doesn't block a new start. `snapshot` writes a minimal archive of only
   finished sources to its own `data/searches/collect-snapshot_<date>.json` (not the default
@@ -453,9 +453,9 @@ ranked `SearchResult` JSON.
   guards against adapters "succeeding" against a changed page structure while returning far
   fewer/no jobs. The baseline ignores zero-job runs: storing 0 as the baseline once let a second
   empty run compare 0 → 0 unflagged (Apple vanished from the 2026-09-30 radar this way, and the
-  radar's stale-source fallback only covers `failed` or rate-limited/timed-out `warning` sources). `apple.py` also raises on an empty
+  radar's stale-source fallback only covers `failed` or early-stopped `warning` sources). `apple.py` also raises on an empty
   first page, so that case is `failed` and fallback-eligible. Only a clean `ok` run advances the
-  baseline; a rate-limited/timed-out partial run (a `warning` with `failure_kind`) never does.
+  baseline; an early-stopped partial run (a `warning` with a `failure_kind` or `error_type`) never does.
 
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.
@@ -538,13 +538,13 @@ ranked `SearchResult` JSON.
 
   One disclosed exception to "pure presentation": the stale-source-collection fallback
   (`docs/pipeline-refilter-stale-source-plan.md` §4.3) — a source whose live collection `failed`
-  this run, or a `warning` carrying a `failure_kind` (rate-limited/timed-out: only a partial listing
-  was kept) — not a count-drop `warning`, which had real live data; not `unsupported`, which has no
+  this run, or a `warning` that stopped early (carries a `failure_kind` or an `error_type`: only a partial
+  listing was kept) — not a count-drop `warning`, which had real live data; not `unsupported`, which has no
   cached data — still has last-known-good jobs in SQLite. `build()` merges that source's current active/
   eligible/prefilter/recency-passing jobs (`active_pool.source_jobs()`) into the rendered pool,
   extending its Collection Issues row with a note (job count + last-collected time, or "no prior
-  data" if never succeeded); a "Rate limited"/"Timed out" badge marks the row, and `rate_limited_sources`
-  in the radar's `--result-json` feeds `PipelineManifest` (a would-be `complete` run with any ends `partial`). This is why `build()`
+  data" if never succeeded); a "Rate limited"/"Timed out" badge marks the row, and `rate_limited_sources` (sources that
+  stopped early and kept partial results) in the radar's `--result-json` feeds `PipelineManifest` (a would-be `complete` run with any ends `partial`). This is why `build()`
   takes `database_path`; the archive file is never rewritten, only the HTML, so re-running stays
   idempotent. `--no-collection-fallback` (default: on) restores the old no-jobs note. Scoped to
   `render_radar.py` alone, not `collector.py` — the live collector's meaning ("jobs fetched this

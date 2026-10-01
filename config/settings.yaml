@@ -9,7 +9,7 @@ collection:
   max_retries: 3
   # Wall-clock limit (seconds) on one source's listing phase. When it expires, the jobs the
   # adapter had already fetched are kept (reported as a "Timed out" warning) and the run
-  # moves on. Remove the line or set `null` to disable.
+  # moves on. Set `null` to disable (removing the line falls back to the default, 1200).
   source_timeout_seconds: 1200
   # `job-hunter collect start --slow` pace (background collection):
   # background:

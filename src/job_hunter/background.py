@@ -181,12 +181,20 @@ async def run_collection(
                     if source.status in {"pending", "running"}:
                         source.status = "skipped"
             else:
-                path = archive_path(None, companies=companies_filter)
-                atomic_write_text(
-                    path,
+                payload = (
                     json.dumps(result.model_dump(mode="json"), indent=2, default=str, ensure_ascii=False)
-                    + "\n",
+                    + "\n"
                 )
+                path = archive_path(None, companies=companies_filter)
+                try:
+                    # Shared lock: refilter_archive.py rewrites the default archive in place.
+                    with run_lock("job-hunter"):
+                        atomic_write_text(path, payload)
+                except RunLockHeld:
+                    # Never wait: a review can hold the lock for hours.
+                    path = archive_path("collect-final", companies=companies_filter)
+                    atomic_write_text(path, payload)
+                    LOGGER.warning("default archive busy (shared lock held); wrote %s instead", path)
                 state.archive = str(path)
                 state.status = "complete"
         except Exception as exc:  # recorded, not swallowed: the state file is the report
@@ -310,10 +318,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if state.status in {"complete", "stopped"} else 2
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def snapshot_archive(state: CollectState, *, now: datetime | None = None) -> dict:
     """A minimal archive for refilter: `source_health` holds only sources that have *finished*
     (so refilter's `_successful_source_scope` and the radar's Collection Issues reflect exactly
@@ -399,3 +403,7 @@ def cli_snapshot(state_path: Path = STATE_PATH) -> int:
     print(path)
     print(f"next: job-hunter pipeline --no-scrape --search {path}   (add --review to score new jobs)")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

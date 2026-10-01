@@ -105,6 +105,22 @@ async def test_full_run_writes_state_final_archive_and_releases_the_lock(project
 
 
 @pytest.mark.asyncio
+async def test_final_archive_falls_back_to_collect_final_when_the_shared_lock_is_busy(project):
+    state_path = project / "state.json"
+    with patch("job_hunter.collector.adapter_class", return_value=_Ok), run_lock("job-hunter"):
+        state = await run_collection(
+            _settings(project), [_company("a")], CandidateProfile(),
+            slow=False, state_path=state_path,
+        )
+    assert state.status == "complete"
+    archive = project / state.archive
+    assert archive.name.startswith("collect-final")
+    assert archive.exists()
+    assert not list((project / "data" / "searches").glob("default_*.json"))
+    assert not (project / "data" / "locks" / "job-hunter.lock").exists()
+
+
+@pytest.mark.asyncio
 async def test_rate_limited_source_is_recorded_with_its_reason(project):
     with patch("job_hunter.collector.adapter_class", return_value=_Limited):
         state = await run_collection(

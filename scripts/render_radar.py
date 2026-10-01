@@ -537,27 +537,37 @@ def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
     return "".join(_source_issue_row_html(h) for h in entries)
 
 
+def _stopped_early(h: dict[str, Any]) -> bool:
+    """A source that stopped early and kept partial results: a recorded failure_kind (rate limit /
+    timeout) or a `warning` carrying an error_type. A count-drop warning has neither."""
+    return bool(h.get("failure_kind")) or (h.get("status") == "warning" and bool(h.get("error_type")))
+
+
 def _rate_limited_sources(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sources that stopped early and kept partial results (the key stays `rate_limited_sources`
+    for compatibility; `failure_kind` is None when the stop was a plain error)."""
     return [
         {
             "source_key": h.get("source_key"),
             "company": h.get("company"),
             "status": h.get("status"),
-            "failure_kind": h["failure_kind"],
+            "failure_kind": h.get("failure_kind"),
             "http_status": h.get("http_status"),
             "retry_after_seconds": h.get("retry_after_seconds"),
             "jobs_kept": h.get("job_count") or 0,
         }
         for h in entries
-        if h.get("failure_kind")
+        if _stopped_early(h)
     ]
 
 
 def _wants_fallback(health: dict[str, Any]) -> bool:
-    """`failed`, or a `warning` that stopped early on a recorded failure_kind (rate limit /
-    timeout). A bare count-drop warning has no failure_kind and still gets no merge."""
-    status = health.get("status")
-    return status == "failed" or (status == "warning" and bool(health.get("failure_kind")))
+    """`failed`, or a `warning` that stopped early (kept partial results after an error, rate
+    limit or timeout: it carries a failure_kind or an error_type). A bare count-drop warning has
+    neither and still gets no merge."""
+    return health.get("status") == "failed" or (
+        health.get("status") == "warning" and _stopped_early(health)
+    )
 
 
 def _merge_pool_jobs(
@@ -660,6 +670,8 @@ def _apply_collection_fallback(
             note = (
                 f"Collection stopped early today — showing {merged} earlier job(s) "
                 "this run did not re-collect."
+                if merged
+                else "Collection stopped early today — no additional earlier jobs to show."
             )
         elif not last_success_at:
             note = "Failed to scrape — no prior successful data available for this source."
@@ -1012,8 +1024,8 @@ def render(
         # ever folded into the HTML report's prose note. Empty whenever collection_fallback=False
         # or no source failed this run.
         "stale_source_fallback": fallback_provenance,
-        # Sources that stopped early on a rate limit / timeout (health rows carrying a
-        # `failure_kind`), for a caller reading --result-json (background-collection retries).
+        # Sources that stopped early and kept partial results (a `failure_kind`, or a warning
+        # with an `error_type`), for a caller reading --result-json (background-collection retries).
         "rate_limited_sources": _rate_limited_sources(source_issues),
     }
 
@@ -1128,7 +1140,7 @@ def main() -> int:
             "this report came from the live run vs. the stale-source fallback (empty list when "
             "--no-collection-fallback or no source failed), plus \"rate_limited_sources\": [{\"source_key\", "
             "\"company\", \"status\", \"failure_kind\", \"http_status\", \"retry_after_seconds\", "
-            "\"jobs_kept\"}, ...] for sources that stopped early on a rate limit/timeout. Purely additive: stdout is unchanged."
+            "\"jobs_kept\"}, ...] for sources that stopped early and kept partial results. Purely additive: stdout is unchanged."
         ),
     )
     add_project_argument(parser)

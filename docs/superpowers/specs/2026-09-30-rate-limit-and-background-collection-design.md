@@ -135,9 +135,10 @@ contract test only. `stealth_html` is last and optional.
 ### 5.2 Independence from filter/render
 
 - The runner **never writes an archive mid-run** (avoids it and `refilter_archive.py`'s
-  in-place rewrite clobbering each other).
+  in-place rewrite clobbering each other). On completion it writes the default-named archive under
+  the shared lock, falling back to a `collect-final` name if the lock is busy.
 - `job-hunter snapshot` materializes a minimal archive at its own filename,
-  `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix for a
+  `data/searches/collect-snapshot_<date>.json` (with a `__companies-...` suffix for a
   `--companies`-scoped run; deliberately not `archive_path()`, so it cannot clobber a same-day
   foreground archive), from SQLite: source scope and `source_health` come from `state.json`'s
   finished sources (ok/warning counted as scope, per `refilter_archive._successful_source_scope`
