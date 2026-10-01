@@ -312,3 +312,79 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def snapshot_archive(state: CollectState, *, now: datetime | None = None) -> dict:
+    """A minimal archive for refilter: `source_health` holds only sources that have *finished*
+    (so refilter's `_successful_source_scope` and the radar's Collection Issues reflect exactly
+    what has been collected so far); `candidates` is empty — refilter rebuilds it from SQLite."""
+    now = now or datetime.now(UTC)
+    health = [
+        {
+            "source_key": s.source_key, "company": s.company, "status": s.status,
+            "job_count": s.job_count, "message": s.message, "error_type": s.error_type,
+            "failure_kind": s.failure_kind, "http_status": s.http_status,
+            "retry_after_seconds": s.retry_after_seconds,
+            "attempted_at": (s.attempted_at or now).isoformat(),
+        }
+        for s in state.sources
+        if s.status in _FINISHED
+    ]
+    succeeded = sum(1 for h in health if h["status"] in {"ok", "warning"})
+    return {
+        "run": {
+            "run_id": state.run_id,
+            "started_at": state.started_at.isoformat(),
+            "completed_at": now.isoformat(),
+        },
+        "summary": {
+            "sources_attempted": len(health),
+            "sources_succeeded": succeeded,
+            "sources_failed": len(health) - succeeded,
+            "jobs_observed": sum(h["job_count"] for h in health),
+            "us_eligible": 0,
+            "prefilter_candidates": 0,
+            "stale_excluded": 0,
+            "partial_failure": 0 < succeeded < len(health),
+        },
+        "source_health": health,
+        "candidates": [],
+    }
+
+
+def write_snapshot(state: CollectState, *, now: datetime | None = None) -> Path:
+    path = archive_path(None, companies=state.companies_filter)
+    atomic_write_text(
+        path, json.dumps(snapshot_archive(state, now=now), indent=2, ensure_ascii=False) + "\n"
+    )
+    return path
+
+
+def refilter_snapshot(path: Path, project_root: Path) -> int:
+    proc = subprocess.run(
+        [sys.executable, "scripts/refilter_archive.py", "--project", str(project_root),
+         "--search", str(path), "--no-report"],
+        cwd=project_root, check=False,
+    )
+    return proc.returncode
+
+
+def cli_snapshot(state_path: Path = STATE_PATH) -> int:
+    state = read_state(state_path)
+    if state is None:
+        print(
+            "job-hunter: no collection state found; run `job-hunter collect start` first",
+            file=sys.stderr,
+        )
+        return 2
+    if not any(s.status in _FINISHED for s in state.sources):
+        print("job-hunter: no source has finished yet; try again shortly", file=sys.stderr)
+        return 2
+    path = write_snapshot(state)
+    code = refilter_snapshot(path, Path.cwd())
+    if code != 0:
+        print(f"job-hunter: refilter of {path} failed (exit {code})", file=sys.stderr)
+        return code
+    print(path)
+    print(f"next: job-hunter pipeline --no-scrape --search {path}   (add --review to score new jobs)")
+    return 0

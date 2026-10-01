@@ -15,12 +15,15 @@ from job_hunter.background import (
     CollectState,
     SourceProgress,
     cli_collect,
+    cli_snapshot,
     effective_status,
     format_status,
     read_state,
     request_stop,
     run_collection,
+    snapshot_archive,
     start_background,
+    write_snapshot,
     write_state,
 )
 from job_hunter.config import (
@@ -309,3 +312,65 @@ def test_cli_status_without_state_exits_2(tmp_path, capsys):
         SimpleNamespace(collect_command="status", json=False), state_path=tmp_path / "nope.json"
     )
     assert code == 2 and "no collection" in capsys.readouterr().err.lower()
+
+
+def _mixed_state() -> CollectState:
+    sources = [
+        SourceProgress(source_key="a", company="Acme", status="ok", job_count=5),
+        SourceProgress(
+            source_key="b", company="Beta", status="warning", job_count=12,
+            failure_kind="rate_limited", http_status=429, retry_after_seconds=90.0,
+            message="rate limited (HTTP 429); kept 12 job(s) fetched before it stopped",
+        ),
+        SourceProgress(source_key="c", company="Gamma", status="failed", message="boom", error_type="X"),
+        SourceProgress(source_key="d", company="Delta", status="running"),
+        SourceProgress(source_key="e", company="Eps"),
+        SourceProgress(source_key="f", company="Zeta", status="skipped"),
+    ]
+    return _state(sources=sources)
+
+
+def test_snapshot_archive_contains_only_finished_sources_with_their_reasons():
+    data = snapshot_archive(_mixed_state(), now=datetime(2026, 9, 30, tzinfo=UTC))
+    keys = [h["source_key"] for h in data["source_health"]]
+    assert keys == ["a", "b", "c"]  # running/pending/skipped are not in scope yet
+    limited = data["source_health"][1]
+    assert limited["status"] == "warning" and limited["failure_kind"] == "rate_limited"
+    assert limited["http_status"] == 429 and limited["job_count"] == 12
+    assert data["candidates"] == []
+    summary = data["summary"]
+    assert (summary["sources_attempted"], summary["sources_succeeded"], summary["sources_failed"]) == (3, 2, 1)
+    assert summary["partial_failure"] is True
+
+
+def test_write_snapshot_writes_a_resolvable_archive(project):
+    path = write_snapshot(_mixed_state(), now=datetime(2026, 9, 30, tzinfo=UTC))
+    assert path.exists() and path.parent.name == "searches"
+    assert json.loads(path.read_text())["source_health"][0]["source_key"] == "a"
+
+
+def test_cli_snapshot_runs_the_refilter_and_prints_the_next_command(project, monkeypatch, capsys):
+    write_state(_mixed_state(), project / "data" / "collect" / "state.json")
+    ran = {}
+
+    def _fake_refilter(path, project_root):
+        ran["path"] = path
+        return 0
+
+    monkeypatch.setattr("job_hunter.background.refilter_snapshot", _fake_refilter)
+    code = cli_snapshot(state_path=project / "data" / "collect" / "state.json")
+    out = capsys.readouterr().out
+    assert code == 0
+    assert str(ran["path"]) in out
+    assert "pipeline --no-scrape --search" in out
+
+
+def test_cli_snapshot_without_state_exits_2(project, capsys):
+    assert cli_snapshot(state_path=project / "nope.json") == 2
+    assert "collect start" in capsys.readouterr().err
+
+
+def test_cli_snapshot_with_nothing_finished_yet_exits_2(project, capsys):
+    write_state(_state(sources=[SourceProgress(source_key="a", company="A")]), project / "s.json")
+    assert cli_snapshot(state_path=project / "s.json") == 2
+    assert "no source has finished" in capsys.readouterr().err.lower()

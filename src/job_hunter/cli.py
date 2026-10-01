@@ -85,6 +85,7 @@ def parser() -> argparse.ArgumentParser:
     collect_sub.add_parser("stop")
     for collect_parser in collect_sub.choices.values():
         add_project_argument(collect_parser, suppress_default=True)
+    sub.add_parser("snapshot", help="build an archive from what the collector has stored so far")
     test = sub.add_parser("source-test")
     test.add_argument("company")
     sub.add_parser("db-stats")
@@ -476,6 +477,10 @@ def main(argv: list[str] | None = None) -> int:
             from .background import cli_collect
 
             return cli_collect(args)
+        if args.command == "snapshot":
+            from .background import cli_snapshot
+
+            return cli_snapshot()
         if args.command == "export-applications":
             with Storage(settings.database_path) as storage:
                 rows = storage.export_applications()
