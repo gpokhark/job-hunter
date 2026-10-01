@@ -3,15 +3,25 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import httpx
 
 from .adapters import adapter_class
+from .adapters.base import ListingTimeout, RateLimitError
 from .config import CandidateProfile, CompanyConfig, Settings
 from .health import detect_count_anomaly
 from .location import evaluate_location
-from .models import HealthStatus, Job, RunInfo, SearchResult, SearchSummary, SourceHealth
+from .models import (
+    HealthStatus,
+    Job,
+    JobSummary,
+    RunInfo,
+    SearchResult,
+    SearchSummary,
+    SourceHealth,
+)
 from .normalizer import description_hash
 from .prefilter import is_recent, passes_prefilter, passes_recency
 from .salary import evaluate_salary
@@ -19,6 +29,33 @@ from .sponsorship import evaluate_sponsorship
 from .storage import Storage
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _failure_fields(exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, RateLimitError):
+        return {
+            "failure_kind": "rate_limited",
+            "http_status": exc.http_status,
+            "retry_after_seconds": exc.retry_after_seconds,
+        }
+    if isinstance(exc, ListingTimeout):
+        return {"failure_kind": "timeout"}
+    return {}
+
+
+def _partial_message(exc: BaseException, kept: int) -> str:
+    if isinstance(exc, RateLimitError):
+        reason = f"rate limited (HTTP {exc.http_status})" if exc.http_status else "rate limited"
+        if exc.retry_after_seconds is not None:
+            reason += f", Retry-After {exc.retry_after_seconds:g}s"
+    elif isinstance(exc, ListingTimeout):
+        reason = "listing timed out"
+    else:
+        reason = f"{type(exc).__name__}: {exc}"
+    return (
+        f"{reason}; kept {kept} job(s) fetched before it stopped; "
+        "remainder not collected, will retry next run"
+    )
 
 
 class Collector:
@@ -135,6 +172,19 @@ class Collector:
                 candidates=candidates,
             )
 
+    async def _fetch_listing(self, adapter) -> list[JobSummary]:
+        limit = self.settings.collection.source_timeout_seconds
+        if limit is None:
+            return await adapter.fetch_summaries()
+        timer = asyncio.timeout(limit)
+        try:
+            async with timer:
+                return await adapter.fetch_summaries()
+        except TimeoutError as exc:
+            if not timer.expired():
+                raise  # a socket-level TimeoutError, not our bound
+            raise ListingTimeout(f"listing timed out after {limit:g}s") from exc
+
     async def _collect_source(
         self,
         company: CompanyConfig,
@@ -152,16 +202,39 @@ class Collector:
             )
             previous_count = storage.previous_job_count(company.key)
             try:
-                summaries = await adapter.fetch_summaries()
-                health = SourceHealth(
-                    source_key=company.key,
-                    company=company.company,
-                    status=HealthStatus.OK,
-                    job_count=len(summaries),
-                )
-                health = detect_count_anomaly(
-                    health, previous_count, int(company.config.get("anomaly_minimum_previous", 20))
-                )
+                listing_error: Exception | None = None
+                try:
+                    summaries = await self._fetch_listing(adapter)
+                except Exception as exc:
+                    summaries = list(getattr(adapter, "kept", []))
+                    if not summaries:
+                        raise  # nothing to salvage: the normal FAILED path below
+                    listing_error = exc
+                    LOGGER.warning(
+                        "Source %s stopped early; keeping %d job(s) fetched so far",
+                        company.key, len(summaries), exc_info=True,
+                    )
+                if listing_error is None:
+                    health = SourceHealth(
+                        source_key=company.key,
+                        company=company.company,
+                        status=HealthStatus.OK,
+                        job_count=len(summaries),
+                    )
+                    health = detect_count_anomaly(
+                        health, previous_count,
+                        int(company.config.get("anomaly_minimum_previous", 20)),
+                    )
+                else:
+                    health = SourceHealth(
+                        source_key=company.key,
+                        company=company.company,
+                        status=HealthStatus.WARNING,
+                        job_count=len(summaries),
+                        message=_partial_message(listing_error, len(summaries)),
+                        error_type=type(listing_error).__name__,
+                        **_failure_fields(listing_error),
+                    )
                 # storage.get_job is a synchronous, in-process sqlite read with no
                 # awaits of its own — safe to call up front for every summary before
                 # any concurrent detail-fetching starts, since nothing here writes yet.
@@ -309,6 +382,7 @@ class Collector:
                     else HealthStatus.FAILED,
                     error_type=type(exc).__name__,
                     message=str(exc),
+                    **_failure_fields(exc),
                 )
                 storage.update_health(health)
                 return health, []

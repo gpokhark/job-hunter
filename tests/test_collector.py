@@ -1,8 +1,10 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
+from job_hunter.adapters.base import RateLimitError
 from job_hunter.collector import Collector
 from job_hunter.config import CandidateProfile, CollectionConfig, CompanyConfig, Settings
 from job_hunter.models import Assessment, JobDetail, JobSummary
@@ -220,3 +222,165 @@ async def test_keyword_search_overrides_profile_terms(tmp_path):
         "job-3",
         "job-4",
     ]
+
+
+def _partial_summary(job_id: str) -> JobSummary:
+    return JobSummary(
+        source_key="fake", source_platform="fake", company="Acme", job_id=job_id,
+        title="New Role", url=f"https://example.com/{job_id}", country="US",
+        posted_at=datetime.now(UTC) - timedelta(days=5),
+    )
+
+
+class _PartialAdapter:
+    """Registers one job, then fails the way a rate-limited paginating adapter does."""
+
+    error: Exception = RateLimitError(
+        "rate limited (HTTP 429) after 1 attempts: https://x",
+        http_status=429, url="https://x", retry_after_seconds=90.0,
+    )
+    register = True
+
+    def __init__(self, company, client, collection, max_posting_age_days=None):
+        self.company = company
+        self.kept: list[JobSummary] = []
+
+    async def fetch_summaries(self) -> list[JobSummary]:
+        if type(self).register:
+            self.kept = [_partial_summary("p1")]
+        raise type(self).error
+
+    async def fetch_detail(self, summary: JobSummary) -> JobDetail:
+        return JobDetail(description=f"Description for {summary.job_id}")
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _NoKeptAdapter:
+    """Like the older fakes/third-party adapters: no `kept` attribute at all."""
+
+    def __init__(self, company, client, collection, max_posting_age_days=None):
+        self.company = company
+
+    async def fetch_summaries(self) -> list[JobSummary]:
+        raise RuntimeError("boom")
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _fake_company() -> CompanyConfig:
+    return CompanyConfig(key="fake", company="Acme", adapter="fake", config={})
+
+
+async def _search(tmp_path, adapter_cls, **collection):
+    settings = Settings(
+        database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig(**collection)
+    )
+    with patch("job_hunter.collector.adapter_class", return_value=adapter_cls):
+        return await Collector(settings, [_fake_company()], CandidateProfile()).search(
+            include_seen=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_listing_keeps_partial_jobs_as_a_warning(tmp_path):
+    _PartialAdapter.register = True
+    _PartialAdapter.error = RateLimitError(
+        "rate limited (HTTP 429) after 1 attempts: https://x",
+        http_status=429, url="https://x", retry_after_seconds=90.0,
+    )
+    result = await _search(tmp_path, _PartialAdapter)
+    health = result.source_health[0]
+    assert health.status.value == "warning"
+    assert health.failure_kind == "rate_limited"
+    assert health.http_status == 429
+    assert health.retry_after_seconds == 90.0
+    assert health.job_count == 1
+    assert "rate limited (HTTP 429), Retry-After 90s" in health.message
+    assert "kept 1 job(s)" in health.message
+    assert result.summary.sources_succeeded == 1
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.get_job("fake", "p1") is not None
+
+
+@pytest.mark.asyncio
+async def test_partial_listing_never_marks_unseen_jobs_missing(tmp_path):
+    # A first, complete run stores stale-1 and fresh-1.
+    with patch("job_hunter.collector.adapter_class", return_value=_FakeAdapter):
+        settings = Settings(database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig())
+        await Collector(settings, [_fake_company()], CandidateProfile()).search(include_seen=True)
+    _PartialAdapter.register = True
+    await _search(tmp_path, _PartialAdapter)  # partial run only saw p1
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        row = storage.get_job("fake", "fresh-1")
+        assert row["status"] == "active"
+        assert row["missing_count"] == 0  # OK-only mark_missing never ran
+
+
+@pytest.mark.asyncio
+async def test_partial_run_does_not_replace_the_count_baseline(tmp_path):
+    with patch("job_hunter.collector.adapter_class", return_value=_FakeAdapter):
+        settings = Settings(database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig())
+        await Collector(settings, [_fake_company()], CandidateProfile()).search(include_seen=True)
+    _PartialAdapter.register = True
+    await _search(tmp_path, _PartialAdapter)
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.previous_job_count("fake") == 2  # not the partial run's 1
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_listing_with_nothing_kept_is_failed_with_failure_kind(tmp_path):
+    _PartialAdapter.register = False
+    result = await _search(tmp_path, _PartialAdapter)
+    health = result.source_health[0]
+    assert health.status.value == "failed"
+    assert health.failure_kind == "rate_limited"
+    assert health.http_status == 429
+    assert health.job_count == 0
+
+
+@pytest.mark.asyncio
+async def test_other_exception_after_partial_pages_is_a_loud_warning(tmp_path):
+    _PartialAdapter.register = True
+    _PartialAdapter.error = ValueError("job card missing required link/title")
+    try:
+        result = await _search(tmp_path, _PartialAdapter)
+    finally:
+        _PartialAdapter.error = RateLimitError("x", http_status=429, url="u")
+    health = result.source_health[0]
+    assert health.status.value == "warning"
+    assert health.failure_kind is None
+    assert "ValueError: job card missing required link/title" in health.message
+    assert health.error_type == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_adapter_without_kept_attribute_still_fails_cleanly(tmp_path):
+    result = await _search(tmp_path, _NoKeptAdapter)
+    health = result.source_health[0]
+    assert health.status.value == "failed"
+    assert health.message == "boom"
+
+
+class _SlowAdapter(_PartialAdapter):
+    async def fetch_summaries(self) -> list[JobSummary]:
+        self.kept = [_partial_summary("slow-1")]
+        await asyncio.sleep(10)
+        return self.kept
+
+
+@pytest.mark.asyncio
+async def test_listing_timeout_keeps_partial_jobs_and_reports_timeout(tmp_path):
+    result = await _search(tmp_path, _SlowAdapter, source_timeout_seconds=0.05)
+    health = result.source_health[0]
+    assert health.status.value == "warning"
+    assert health.failure_kind == "timeout"
+    assert health.job_count == 1
+    assert "listing timed out" in health.message
+
+
+def test_source_timeout_default_and_disable():
+    assert CollectionConfig().source_timeout_seconds == 1200
+    assert CollectionConfig(source_timeout_seconds=None).source_timeout_seconds is None

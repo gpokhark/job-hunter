@@ -772,3 +772,12 @@ def test_migration_backfills_nonzero_baseline_from_last_job_count(tmp_path):
         storage.connection.commit()
     with Storage(path) as storage:
         assert storage.previous_job_count("apple") == 900
+
+
+def test_a_partial_warning_run_does_not_replace_the_baseline(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _record(storage, 1320)
+        _record(storage, 340, HealthStatus.WARNING)
+        assert storage.previous_job_count("apple") == 1320
+        _record(storage, 1400)
+        assert storage.previous_job_count("apple") == 1400

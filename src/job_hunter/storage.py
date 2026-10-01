@@ -482,10 +482,11 @@ class Storage:
             if succeeded
             else (prior["last_success_at"] if prior else None)
         )
-        # A run that found nothing never replaces the baseline (see the v5 migration).
+        # Only a clean (`ok`) run that found something advances the baseline; a zero-job run
+        # or a partial/failed run never does (see the v5 migration and docs/SPEC.md §8.3).
         baseline = (
             health.job_count
-            if health.job_count > 0
+            if health.status == HealthStatus.OK and health.job_count > 0
             else (prior["last_nonzero_job_count"] if prior else None)
         )
         self.connection.execute(
