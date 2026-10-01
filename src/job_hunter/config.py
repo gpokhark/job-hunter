@@ -7,6 +7,13 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 
+class BackgroundConfig(BaseModel):
+    """`job-hunter collect start --slow`: a gentler pace for long background collections."""
+
+    max_concurrent_sources: int = Field(1, ge=1, le=20)
+    source_delay_seconds: float = Field(30.0, ge=0)
+
+
 class CollectionConfig(BaseModel):
     max_concurrent_sources: int = Field(3, ge=1, le=20)
     max_concurrent_details: int = Field(8, ge=1, le=50)
@@ -19,6 +26,7 @@ class CollectionConfig(BaseModel):
     # the adapter had already registered are kept. None disables. Detail fetches are already
     # per-job fail-soft and are not bounded by this.
     source_timeout_seconds: float | None = Field(1200, gt=0)
+    background: BackgroundConfig = BackgroundConfig()
 
 
 class SearchConfig(BaseModel):
