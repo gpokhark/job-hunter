@@ -374,3 +374,24 @@ def test_cli_snapshot_with_nothing_finished_yet_exits_2(project, capsys):
     write_state(_state(sources=[SourceProgress(source_key="a", company="A")]), project / "s.json")
     assert cli_snapshot(state_path=project / "s.json") == 2
     assert "no source has finished" in capsys.readouterr().err.lower()
+
+
+def test_write_snapshot_uses_its_own_name_and_spares_the_default_archive(project):
+    searches = project / "data" / "searches"
+    searches.mkdir(parents=True)
+    default = searches / f"default_{datetime.now().date().isoformat()}.json"
+    default.write_text("SENTINEL")
+    path = write_snapshot(_mixed_state())
+    assert path.name.startswith("collect-snapshot_") and path != default
+    assert default.read_text() == "SENTINEL"
+    assert path.exists()
+
+
+def test_cli_snapshot_refuses_while_the_shared_lock_is_held(project, monkeypatch, capsys):
+    write_state(_mixed_state(), project / "s.json")
+    called = []
+    monkeypatch.setattr("job_hunter.background.refilter_snapshot", lambda *a: called.append(a) or 0)
+    with run_lock("job-hunter"):
+        code = cli_snapshot(state_path=project / "s.json")
+    assert code == 2 and not called
+    assert "in progress" in capsys.readouterr().err

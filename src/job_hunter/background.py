@@ -30,7 +30,7 @@ from .atomic import atomic_write_text
 from .collector import Collector, select_companies
 from .config import CandidateProfile, CompanyConfig, Settings
 from .models import SourceHealth
-from .runlock import pid_alive, process_start_time, run_lock
+from .runlock import RunLockHeld, pid_alive, process_start_time, run_lock
 from .search_archive import archive_path
 
 LOGGER = logging.getLogger(__name__)
@@ -353,10 +353,13 @@ def snapshot_archive(state: CollectState, *, now: datetime | None = None) -> dic
 
 
 def write_snapshot(state: CollectState, *, now: datetime | None = None) -> Path:
-    path = archive_path(None, companies=state.companies_filter)
-    atomic_write_text(
-        path, json.dumps(snapshot_archive(state, now=now), indent=2, ensure_ascii=False) + "\n"
-    )
+    # Its own name: never the same-day default archive a foreground `search --archive` writes.
+    path = archive_path("collect-snapshot", companies=state.companies_filter)
+    # Held only for the write, released before refilter (which takes the same lock itself).
+    with run_lock("job-hunter"):
+        atomic_write_text(
+            path, json.dumps(snapshot_archive(state, now=now), indent=2, ensure_ascii=False) + "\n"
+        )
     return path
 
 
@@ -380,7 +383,15 @@ def cli_snapshot(state_path: Path = STATE_PATH) -> int:
     if not any(s.status in _FINISHED for s in state.sources):
         print("job-hunter: no source has finished yet; try again shortly", file=sys.stderr)
         return 2
-    path = write_snapshot(state)
+    try:
+        path = write_snapshot(state)
+    except RunLockHeld as exc:
+        print(
+            f"job-hunter: another job-hunter run is in progress ({exc}); "
+            "try again when it finishes",
+            file=sys.stderr,
+        )
+        return 2
     code = refilter_snapshot(path, Path.cwd())
     if code != 0:
         print(f"job-hunter: refilter of {path} failed (exit {code})", file=sys.stderr)
