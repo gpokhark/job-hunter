@@ -384,3 +384,95 @@ async def test_listing_timeout_keeps_partial_jobs_and_reports_timeout(tmp_path):
 def test_source_timeout_default_and_disable():
     assert CollectionConfig().source_timeout_seconds == 1200
     assert CollectionConfig(source_timeout_seconds=None).source_timeout_seconds is None
+
+
+def _named_company(key: str) -> CompanyConfig:
+    return CompanyConfig(key=key, company=key.title(), adapter="fake", config={})
+
+
+class _OkAdapter:
+    def __init__(self, company, client, collection, max_posting_age_days=None):
+        self.company = company
+        self.kept: list[JobSummary] = []
+
+    async def fetch_summaries(self) -> list[JobSummary]:
+        return [
+            JobSummary(
+                source_key=self.company.key, source_platform="fake", company=self.company.company,
+                job_id="j1", title="Role", url=f"https://example.com/{self.company.key}",
+                country="US", posted_at=datetime.now(UTC) - timedelta(days=1),
+            )
+        ]
+
+    async def fetch_detail(self, summary: JobSummary) -> JobDetail:
+        return JobDetail(description="d")
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_progress_reports_start_and_done_per_source(tmp_path):
+    events: list[tuple[str, str]] = []
+    settings = Settings(
+        database_path=tmp_path / "jobs.sqlite3",
+        collection=CollectionConfig(max_concurrent_sources=1),
+    )
+    with patch("job_hunter.collector.adapter_class", return_value=_OkAdapter):
+        await Collector(
+            settings, [_named_company("a"), _named_company("b")], CandidateProfile()
+        ).search(progress=lambda event, key, health: events.append((event, key)))
+    assert events == [("start", "a"), ("done", "a"), ("start", "b"), ("done", "b")]
+
+
+@pytest.mark.asyncio
+async def test_stop_event_skips_sources_that_have_not_started(tmp_path):
+    stop = asyncio.Event()
+    events: list[tuple[str, str]] = []
+
+    def _progress(event, key, health):
+        events.append((event, key))
+        if (event, key) == ("done", "a"):
+            stop.set()
+
+    settings = Settings(
+        database_path=tmp_path / "jobs.sqlite3",
+        collection=CollectionConfig(max_concurrent_sources=1),
+    )
+    companies = [_named_company(k) for k in ("a", "b", "c")]
+    with patch("job_hunter.collector.adapter_class", return_value=_OkAdapter):
+        result = await Collector(settings, companies, CandidateProfile()).search(
+            progress=_progress, stop_event=stop
+        )
+    assert [h.source_key for h in result.source_health] == ["a"]
+    assert ("skipped", "b") in events and ("skipped", "c") in events
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.get_job("b", "j1") is None
+
+
+@pytest.mark.asyncio
+async def test_source_delay_waits_between_sources_but_not_before_the_first(tmp_path, monkeypatch):
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(seconds, *args, **kwargs):
+        sleeps.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr("job_hunter.collector.asyncio.sleep", _record_sleep)
+    settings = Settings(
+        database_path=tmp_path / "jobs.sqlite3",
+        collection=CollectionConfig(max_concurrent_sources=1),
+    )
+    companies = [_named_company(k) for k in ("a", "b", "c")]
+    with patch("job_hunter.collector.adapter_class", return_value=_OkAdapter):
+        await Collector(settings, companies, CandidateProfile(), source_delay_seconds=7).search()
+    assert sleeps.count(7) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_without_hooks_is_unchanged(tmp_path):
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig())
+    with patch("job_hunter.collector.adapter_class", return_value=_OkAdapter):
+        result = await Collector(settings, [_named_company("a")], CandidateProfile()).search()
+    assert [h.source_key for h in result.source_health] == ["a"]

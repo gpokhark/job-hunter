@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -29,6 +30,8 @@ from .sponsorship import evaluate_sponsorship
 from .storage import Storage
 
 LOGGER = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str, "SourceHealth | None"], None]
 
 
 def _failure_fields(exc: BaseException) -> dict[str, Any]:
@@ -60,11 +63,17 @@ def _partial_message(exc: BaseException, kept: int) -> str:
 
 class Collector:
     def __init__(
-        self, settings: Settings, companies: list[CompanyConfig], profile: CandidateProfile
+        self,
+        settings: Settings,
+        companies: list[CompanyConfig],
+        profile: CandidateProfile,
+        source_delay_seconds: float = 0.0,
     ):
         self.settings = settings
         self.companies = companies
         self.profile = profile
+        self.source_delay_seconds = source_delay_seconds
+        self._sources_started = 0
 
     async def search(
         self,
@@ -74,6 +83,8 @@ class Collector:
         refresh_details: bool = False,
         max_candidates: int | None = None,
         keywords: list[str] | None = None,
+        progress: ProgressCallback | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> SearchResult:
         started = datetime.now(UTC)
         run_id = str(uuid4())
@@ -91,11 +102,18 @@ class Collector:
                 follow_redirects=True,
                 headers={"User-Agent": self.settings.collection.user_agent},
             ) as client:
-                tasks = [
-                    self._collect_source(company, client, storage, semaphore, refresh_details)
-                    for company in self.companies
-                ]
-                results = await asyncio.gather(*tasks)
+
+                async def _tracked(company: CompanyConfig):
+                    outcome = await self._collect_source(
+                        company, client, storage, semaphore, refresh_details,
+                        progress=progress, stop_event=stop_event,
+                    )
+                    if progress is not None and outcome[0] is not None:
+                        progress("done", company.key, outcome[0])
+                    return outcome
+
+                tasks = [_tracked(company) for company in self.companies]
+                results = [r for r in await asyncio.gather(*tasks) if r[0] is not None]
             health = [item[0] for item in results]
             jobs = [job for _, source_jobs in results for job in source_jobs]
             # Attach a prior LLM assessment when the job's content hasn't changed since
@@ -192,8 +210,23 @@ class Collector:
         storage: Storage,
         semaphore: asyncio.Semaphore,
         refresh_details: bool,
-    ) -> tuple[SourceHealth, list[Job]]:
+        progress: ProgressCallback | None = None,
+        stop_event: asyncio.Event | None = None,
+    ) -> tuple[SourceHealth | None, list[Job]]:
         async with semaphore:
+            if stop_event is not None and stop_event.is_set():
+                if progress is not None:
+                    progress("skipped", company.key, None)
+                return None, []
+            if self.source_delay_seconds and self._sources_started:
+                await asyncio.sleep(self.source_delay_seconds)
+                if stop_event is not None and stop_event.is_set():
+                    if progress is not None:
+                        progress("skipped", company.key, None)
+                    return None, []
+            self._sources_started += 1
+            if progress is not None:
+                progress("start", company.key, None)
             adapter = adapter_class(company.adapter)(
                 company,
                 client,
