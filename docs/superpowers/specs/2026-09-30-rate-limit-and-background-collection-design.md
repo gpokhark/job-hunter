@@ -136,15 +136,21 @@ contract test only. `stealth_html` is last and optional.
 
 - The runner **never writes an archive mid-run** (avoids it and `refilter_archive.py`'s
   in-place rewrite clobbering each other).
-- `job-hunter snapshot` materializes
-  a minimal archive at its own filename, `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix for a `--companies`-scoped run; deliberately not `archive_path()`, so it cannot clobber a same-day foreground archive), from SQLite: source scope and `source_health` come from
-  `state.json`'s finished sources (ok/warning counted as scope, per
-  `refilter_archive._successful_source_scope` semantics), candidates from the existing refilter
-  logic. It prints the exact `pipeline --no-scrape --search <path>` command to run next; review and
-  radar then run as today. It may be run at any time, repeatedly; each
-  snapshot reflects whatever is stored then, and each rate-limited/timed-out source appears in
-  its `source_health` with `failure_kind`.
-- On completion the runner makes a final snapshot the same way.
+- `job-hunter snapshot` materializes a minimal archive at its own filename,
+  `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix for a
+  `--companies`-scoped run; deliberately not `archive_path()`, so it cannot clobber a same-day
+  foreground archive), from SQLite: source scope and `source_health` come from `state.json`'s
+  finished sources (ok/warning counted as scope, per `refilter_archive._successful_source_scope`
+  semantics), candidates from the existing refilter logic. It holds the shared `job-hunter` lock
+  only around its short archive write (exit 2 with an "in progress" message if another run holds
+  it). It prints the exact `pipeline --no-scrape --search <path>` command to run next; review and
+  radar then run as today. It may be run at any time, repeatedly; each snapshot reflects whatever
+  is stored then, and each rate-limited/timed-out source appears in its `source_health` with
+  `failure_kind`.
+- On completion (not when stopped) `run_collection` writes the full `SearchResult` archive at
+  `archive_path(None, companies=...)`, i.e. `data/searches/default_<date>.json` (companies suffix
+  when `--companies` was given), exactly like a foreground `search --archive` run. A stopped run
+  writes no archive. Mid-run `snapshot` archives use the separate `collect-snapshot_` name.
 
 ### 5.3 Locking (`runlock.py`, `cleanup.py`)
 
