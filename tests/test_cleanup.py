@@ -319,3 +319,17 @@ def test_run_cleanup_no_export_flag_skips_writing_export(tmp_path):
     assert result.closed_jobs_deleted == 1
     assert result.export_path is None
     assert not (tmp_path / "cleanup-exports").exists()
+
+
+def test_cleanup_apply_is_refused_while_the_collector_lock_is_held(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3")
+    with run_lock("collector"), pytest.raises(RunLockHeld):
+        run_cleanup(settings, apply=True, write_export=False)
+
+
+def test_cleanup_dry_run_ignores_the_collector_lock(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3")
+    with run_lock("collector"):
+        run_cleanup(settings, apply=False, write_export=False)  # must not raise

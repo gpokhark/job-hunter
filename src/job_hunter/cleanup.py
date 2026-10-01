@@ -180,6 +180,14 @@ def _write_export(payload: dict[str, Any], *, now: datetime, export_dir: Path) -
     return path
 
 
+@contextlib.contextmanager
+def _apply_locks():
+    """Cleanup deletes rows a running collector may be writing: hold both the shared
+    pipeline lock and the background collector's lock (see background.py)."""
+    with run_lock("job-hunter"), run_lock("collector"):
+        yield
+
+
 def run_cleanup(
     settings: Settings,
     *,
@@ -199,10 +207,11 @@ def run_cleanup(
     deleted. `jobs_only`/`reports_only` are mutually exclusive scopes; passing neither runs
     both halves.
 
-    `apply=True` holds the same shared `run_lock("job-hunter")` a `job-hunter pipeline` run
-    holds (see `pipeline.py`) — cleanup deletes rows/files a concurrent pipeline run could be
-    reading or about to write, so the two must never overlap. A dry run only reads and takes no
-    lock at all. Raises `RunLockHeld` if a pipeline (or another cleanup) is already running."""
+    `apply=True` holds both the shared `run_lock("job-hunter")` (held by `job-hunter pipeline`,
+    see `pipeline.py`) and the background collector's `run_lock("collector")` — cleanup deletes
+    rows/files a concurrent pipeline or collector run could be reading or about to write, so the
+    three must never overlap. A dry run only reads and takes no lock at all. Raises `RunLockHeld`
+    if a pipeline, another cleanup, or the collector is already running."""
     now = now or datetime.now(UTC)
     result = CleanupResult()
     do_jobs = not reports_only
@@ -210,7 +219,7 @@ def run_cleanup(
 
     export_payload: dict[str, Any] = {"cleaned_at": now.isoformat(), "applied": apply}
 
-    with run_lock("job-hunter") if apply else contextlib.nullcontext():
+    with _apply_locks() if apply else contextlib.nullcontext():
         if do_jobs:
             job_cutoff = now - _days(settings.retention.closed_job_after_days)
             with Storage(settings.database_path) as storage:
