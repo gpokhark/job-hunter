@@ -186,3 +186,39 @@ async def test_slow_mode_applies_background_concurrency_and_delay(project):
             settings, [_company("a")], CandidateProfile(), slow=True, state_path=project / "s.json"
         )
     assert seen == {"concurrency": 1, "delay": 12}
+
+
+@pytest.mark.asyncio
+async def test_archive_write_failure_is_recorded_and_reraised(project):
+    state_path = project / "state.json"
+    with patch("job_hunter.collector.adapter_class", return_value=_Ok), patch(
+        "job_hunter.background.archive_path", side_effect=OSError("disk full")
+    ), pytest.raises(OSError, match="disk full"):
+        await run_collection(
+            _settings(project), [_company("a")], CandidateProfile(),
+            slow=False, state_path=state_path,
+        )
+    state = read_state(state_path)
+    assert state.status == "failed"
+    assert "disk full" in state.error
+    assert state.completed_at is not None
+    assert not (project / "data" / "locks" / "collector.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_failure_state_write_is_best_effort_and_keeps_original_error(project):
+    real_write = background.write_state
+
+    def flaky_write(state, path=background.STATE_PATH):
+        if state.status == "failed":
+            raise OSError("state write failed")
+        real_write(state, path)
+
+    with patch("job_hunter.collector.adapter_class", return_value=_Ok), patch(
+        "job_hunter.background.archive_path", side_effect=OSError("disk full")
+    ), patch("job_hunter.background.write_state", flaky_write), pytest.raises(OSError) as info:
+        await run_collection(
+            _settings(project), [_company("a")], CandidateProfile(),
+            slow=False, state_path=project / "state.json",
+        )
+    assert str(info.value) == "disk full"

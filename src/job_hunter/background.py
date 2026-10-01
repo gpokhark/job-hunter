@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -30,6 +31,8 @@ from .config import CandidateProfile, CompanyConfig, Settings
 from .models import SourceHealth
 from .runlock import pid_alive, process_start_time, run_lock
 from .search_archive import archive_path
+
+LOGGER = logging.getLogger(__name__)
 
 STATE_PATH = Path("data/collect/state.json")
 LOG_PATH = Path("data/collect/collector.log")
@@ -170,27 +173,31 @@ async def run_collection(
             result = await Collector(
                 settings, companies, profile, source_delay_seconds=delay
             ).search(progress=progress, stop_event=stop)
+
+            if stop.is_set():
+                state.status = "stopped"
+                for source in state.sources:
+                    if source.status in {"pending", "running"}:
+                        source.status = "skipped"
+            else:
+                path = archive_path(None, companies=companies_filter)
+                atomic_write_text(
+                    path,
+                    json.dumps(result.model_dump(mode="json"), indent=2, default=str, ensure_ascii=False)
+                    + "\n",
+                )
+                state.archive = str(path)
+                state.status = "complete"
         except Exception as exc:  # recorded, not swallowed: the state file is the report
             state.status = "failed"
             state.error = f"{type(exc).__name__}: {exc}"
             state.completed_at = datetime.now(UTC)
-            write_state(state, state_path)
+            # Best-effort: a state-write failure must not replace the original error.
+            try:
+                write_state(state, state_path)
+            except Exception:
+                LOGGER.warning("could not record failed collection state", exc_info=True)
             raise
-
-        if stop.is_set():
-            state.status = "stopped"
-            for source in state.sources:
-                if source.status in {"pending", "running"}:
-                    source.status = "skipped"
-        else:
-            path = archive_path(None, companies=companies_filter)
-            atomic_write_text(
-                path,
-                json.dumps(result.model_dump(mode="json"), indent=2, default=str, ensure_ascii=False)
-                + "\n",
-            )
-            state.archive = str(path)
-            state.status = "complete"
         state.completed_at = datetime.now(UTC)
         write_state(state, state_path)
         return state
