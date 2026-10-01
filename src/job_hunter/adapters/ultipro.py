@@ -63,7 +63,7 @@ class UltiProAdapter(JobAdapter):
         board = self._board_url()
         page_size = int(self.company.config.get("page_size", 100))
         endpoint = f"{board}/JobBoardView/LoadSearchResults"
-        summaries: list[JobSummary] = []
+        summaries = self.begin_listing()
         skip = 0
         total: int | None = None
         for _ in range(int(self.company.config.get("max_pages", 50))):

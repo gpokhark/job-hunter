@@ -49,7 +49,7 @@ class SmartRecruitersAdapter(ConfigurableJsonAdapter):
         items_path = cfg.get("items_path", "content")
         total_path = cfg.get("total_path", "totalFound")
         page_size = int(cfg.get("page_size", 100))
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         offset = 0
         total = None
         for _ in range(int(cfg.get("max_pages", 50))):

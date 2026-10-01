@@ -28,7 +28,7 @@ class HtmlPaginatedAdapter(JobAdapter):
         start_url = start_url or cfg.get("list_url")
         if not start_url:
             raise SchemaError("list_url is not configured")
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         seen_urls: set[str] = set()
         url: str | None = start_url
         for page in range(int(cfg.get("max_pages", 20))):

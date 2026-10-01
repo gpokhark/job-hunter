@@ -39,7 +39,7 @@ class IcimsAttractAdapter(ConfigurableJsonAdapter):
             raise SchemaError("paginate:true requires total_path")
         limit = int(cfg.get("limit", 100))
         base_params = dict(cfg.get("params") or {})
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         seen = 0
         total = None
         for page in range(1, int(cfg.get("max_pages", 20)) + 1):

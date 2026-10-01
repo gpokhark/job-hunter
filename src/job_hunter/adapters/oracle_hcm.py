@@ -30,7 +30,7 @@ class OracleHcmAdapter(ConfigurableJsonAdapter):
         total_path = cfg.get("total_path")
         if not total_path:
             raise SchemaError("paginate:true requires total_path")
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         offset = 0
         total = None
         for _ in range(int(cfg.get("max_pages", 20))):

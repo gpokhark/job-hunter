@@ -48,7 +48,7 @@ class DayforceAdapter(JobAdapter):
             raise SchemaError("Dayforce /api/auth/csrf response missing csrfToken")
         headers = {"x-csrf-token": token, "Accept": "application/json"}
 
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         offset = 0
         for _ in range(int(cfg.get("max_pages", 20))):
             body = {

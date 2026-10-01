@@ -51,7 +51,7 @@ class CsodAdapter(JobAdapter):
         token = await self._fetch_token(token_url)
         page_size = int(cfg.get("page_size", 250))
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         for page in range(1, int(cfg.get("max_pages", 10)) + 1):
             payload = {
                 "careerSiteId": career_site_id,

@@ -59,7 +59,7 @@ class PhenomAdapter(JobAdapter):
             raise SchemaError("list_url is not configured")
         embedded_key = cfg.get("embedded_data_key", "eagerLoadRefineSearch")
         page_size = int(cfg.get("page_size", 10))
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         seen_ids: set[str] = set()
         offset = 0
         for _ in range(int(cfg.get("max_pages", 30))):

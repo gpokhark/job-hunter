@@ -62,7 +62,7 @@ class SuccessFactorsRmkV2Adapter(JobAdapter):
         base = cfg.get("detail_base_url")
         if not base:
             raise SchemaError("detail_base_url is not configured")
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         total = None
         for page in range(int(cfg.get("max_pages", 20))):
             body = {

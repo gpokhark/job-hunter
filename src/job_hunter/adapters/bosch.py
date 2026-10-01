@@ -45,7 +45,7 @@ class BoschAdapter(ConfigurableJsonAdapter):
             raise SchemaError("list_url is not configured")
         pagesize = int(cfg.get("pagesize", 100))
         headers = self._headers()
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         total = None
         for page in range(1, int(cfg.get("max_pages", 20)) + 1):
             url = _with_query(base_url, {"pagesize": pagesize, "page": page})

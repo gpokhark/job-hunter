@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+import job_hunter.adapters as adapters_pkg
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
@@ -2150,3 +2151,95 @@ async def test_apple_keeps_earlier_pages_when_a_later_batch_is_rate_limited():
         with pytest.raises(RateLimitError):
             await adapter.fetch_summaries()
     assert [job.job_id for job in adapter.kept] == ["p1"]
+
+
+CONVERTED_ADAPTERS = [
+    "adp_recruiting", "bosch", "csod", "dayforce", "eightfold", "html_paginated",
+    "icims_attract", "oracle_hcm", "paycom", "phenom", "smartrecruiters",
+    "successfactors_rmk_v2", "ultipro", "workday",
+]
+
+
+@pytest.mark.parametrize("name", CONVERTED_ADAPTERS)
+def test_paginating_adapter_registers_its_listing_for_salvage(name):
+    source = (Path(adapters_pkg.__file__).parent / f"{name}.py").read_text()
+    assert "self.begin_listing()" in source, f"{name} must register its accumulator"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_paginated_keeps_earlier_pages_when_a_later_page_is_rate_limited():
+    page1 = f"<main>{''.join(_card(f'P{i}') for i in range(2))}</main>"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page") == "2":
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return httpx.Response(200, text=page1)
+
+    respx.get(url__regex=r".*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="test", company="Test", adapter="html_paginated",
+        config={
+            "list_url": "https://jobs.example/search", "card_selector": ".job",
+            "title_selector": ".title", "link_selector": ".title",
+            "location_selector": ".location", "page_number_parameter": "page", "page_size": 2,
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = HtmlPaginatedAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(RateLimitError):
+            await adapter.fetch_summaries()
+    assert [job.job_id for job in adapter.kept] == ["P0", "P1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_multi_index_keeps_the_indexes_it_finished_before_a_rate_limit():
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/b"):
+            return httpx.Response(429)
+        return httpx.Response(200, text=f"<main>{_card('A0')}</main>")
+
+    respx.get(url__regex=r".*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="test", company="Test", adapter="html_multi_index",
+        config={
+            "index_urls": ["https://jobs.example/a", "https://jobs.example/b"],
+            "card_selector": ".job", "title_selector": ".title", "link_selector": ".title",
+            "location_selector": ".location",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = HtmlMultiIndexAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(RateLimitError):
+            await adapter.fetch_summaries()
+    assert [job.job_id for job in adapter.kept] == ["A0"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_oracle_hcm_keeps_earlier_pages_when_a_later_page_is_rate_limited():
+    base = "https://jobs.example/reqs?onlyData=true&finder=findReqs;offset=0"
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if "offset=0" in str(request.url):
+            return httpx.Response(200, json=_oracle_page(["1", "2"], total=4))
+        return httpx.Response(429)
+
+    respx.get(url__regex=r".*").mock(side_effect=_respond)
+    company = CompanyConfig(
+        key="ford", company="Ford", adapter="oracle_hcm",
+        config={
+            "paginate": True, "list_url": base,
+            "items_path": "items.0.requisitionList", "total_path": "items.0.TotalJobsCount",
+            "fields": {
+                "id": "Id", "title": "Title", "url": "Id",
+                "location": "PrimaryLocation", "posted_at": "PostedDate",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = OracleHcmAdapter(company, client, CollectionConfig(max_retries=0))
+        with pytest.raises(RateLimitError):
+            await adapter.fetch_summaries()
+    assert [job.job_id for job in adapter.kept] == ["1", "2"]

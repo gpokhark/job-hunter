@@ -49,7 +49,7 @@ class EightfoldAdapter(ConfigurableJsonAdapter):
         base_url = cfg.get("public_base_url", list_url)
         params = dict(cfg.get("params", {}))
         posted_field = cfg.get("posted_field", "postedTs")
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         start = 0
         total: int | None = None
         for _ in range(int(cfg.get("max_pages", 50))):
