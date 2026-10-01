@@ -207,6 +207,9 @@ class SourceHealth(BaseModel):
     job_count: int = 0
     message: str | None = None
     error_type: str | None = None
+    failure_kind: Literal["rate_limited", "timeout"] | None = None
+    http_status: int | None = None
+    retry_after_seconds: float | None = None
     attempted_at: datetime = Field(default_factory=utcnow)
 
 
