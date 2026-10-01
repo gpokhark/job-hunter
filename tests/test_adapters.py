@@ -10,7 +10,7 @@ import job_hunter.adapters as adapters_pkg
 from job_hunter.adapters.adp_recruiting import AdpRecruitingAdapter
 from job_hunter.adapters.apple import AppleAdapter
 from job_hunter.adapters.ashby import AshbyAdapter
-from job_hunter.adapters.base import RateLimitError, SchemaError
+from job_hunter.adapters.base import RateLimitError, SchemaError, nested
 from job_hunter.adapters.bosch import BoschAdapter
 from job_hunter.adapters.brose import BroseAdapter
 from job_hunter.adapters.eightfold import EightfoldAdapter
@@ -307,6 +307,80 @@ async def test_greenhouse_unescapes_double_encoded_content():
     assert jobs[0].department == "Engineering"
     assert detail.description == '<div class="content-intro"><p>We do sponsor visas!</p></div>'
     assert "&lt;" not in detail.description
+
+
+@pytest.mark.parametrize(
+    "data, path, expected",
+    [
+        ({"departments": [{"name": "Ops"}]}, "departments.0.name", "Ops"),
+        ({"departments": []}, "departments.0.name", None),  # empty list: index out of range
+        ({"departments": [{"name": "Ops"}]}, "departments.3.name", None),
+        ({"departments": []}, "departments.0", None),
+        ({"place": []}, "place.0", None),
+        ({"a": {"b": []}}, "a.b.0.c", None),
+        ({"departments": [{"name": "Ops"}]}, "departments.0.missing", None),  # unchanged behavior
+        ({"departments": "Ops"}, "departments.0.name", None),  # wrong type, unchanged
+    ],
+)
+def test_nested_returns_the_default_for_any_path_that_is_not_there(data, path, expected):
+    assert nested(data, path) == expected
+    assert nested(data, path, "fallback") == (expected if expected is not None else "fallback")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_job_with_no_department_does_not_fail_the_whole_greenhouse_source():
+    """Live regression (Zipline, 2026-10-01): 1 of 352 postings had `departments: []`, and
+    `departments.0.name` raised IndexError, failing the entire source for 17 consecutive runs."""
+    url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    base = {
+        "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1",
+        "location": {"name": "Austin, TX"},
+        "first_published": "2024-12-20T13:53:38-05:00",
+        "content": "&lt;p&gt;Hello&lt;/p&gt;",
+    }
+    payload = {
+        "jobs": [
+            {**base, "id": 1, "title": "Ops Lead", "departments": [{"name": "Operations"}]},
+            {**base, "id": 2, "title": "Customer Advocate", "departments": []},
+            {**base, "id": 3, "title": "Pilot", "departments": [{"name": "Flight"}]},
+        ]
+    }
+    respx.get(url).mock(return_value=httpx.Response(200, json=payload))
+    company = CompanyConfig(
+        key="example", company="Example", adapter="greenhouse",
+        config={
+            "list_url": url, "items_path": "jobs", "listing_description_path": "content",
+            "fields": {
+                "id": "id", "title": "title", "url": "absolute_url",
+                "location": "location.name", "department": "departments.0.name",
+                "posted_at": "first_published",
+            },
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        jobs = await GreenhouseAdapter(
+            company, client, CollectionConfig(max_retries=0)
+        ).fetch_summaries()
+    assert [(job.job_id, job.department) for job in jobs] == [
+        ("1", "Operations"), ("2", None), ("3", "Flight"),
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_an_items_path_that_is_not_there_still_fails_loudly():
+    """Making nested() tolerant must not make *structural* paths silent: a response whose
+    items_path no longer resolves to a list is still a SchemaError, not zero jobs."""
+    url = "https://boards-api.greenhouse.io/v1/boards/example/jobs"
+    respx.get(url).mock(return_value=httpx.Response(200, json={"items": []}))
+    company = CompanyConfig(
+        key="example", company="Example", adapter="greenhouse",
+        config={"list_url": url, "items_path": "items.0.requisitionList", "fields": {}},
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SchemaError, match="items_path did not resolve to a list"):
+            await GreenhouseAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
 
 
 def _greenhouse_company(url: str, **extra_fields):

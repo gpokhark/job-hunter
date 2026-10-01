@@ -236,10 +236,17 @@ def _retry_delay(value: str | None, attempt: int) -> float:
 
 
 def nested(data: Any, path: str, default: Any = None) -> Any:
+    """Walks a dotted path through dicts and lists; any step that is not there — a missing key,
+    a wrong type, or a list index past the end (an empty `departments` list for
+    `departments.0.name`) — returns `default`, never raises. Required structure is still
+    enforced by the callers (e.g. `items_path` must resolve to a list, else SchemaError)."""
     current = data
     for part in path.split(".") if path else []:
         if isinstance(current, list) and part.isdigit():
-            current = current[int(part)]
+            index = int(part)
+            if index >= len(current):
+                return default
+            current = current[index]
         elif isinstance(current, dict) and part in current:
             current = current[part]
         else:
