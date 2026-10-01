@@ -18,6 +18,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -201,6 +202,90 @@ async def run_collection(
         state.completed_at = datetime.now(UTC)
         write_state(state, state_path)
         return state
+
+
+def start_background(
+    *, project_root: Path, companies: str | None, slow: bool, state_path: Path = STATE_PATH
+) -> int:
+    existing = read_state(state_path)
+    if existing is not None and existing.status == "running" and is_live(existing):
+        raise CollectorRunning(
+            f"a collector is already running (pid {existing.pid}, run {existing.run_id}); "
+            "use `job-hunter collect status` or `collect stop`"
+        )
+    log_path = Path(project_root) / LOG_PATH
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "job_hunter.background", "--project", str(project_root)]
+    if companies:
+        cmd += ["--companies", companies]
+    if slow:
+        cmd.append("--slow")
+    with log_path.open("ab") as handle:
+        proc = _popen(
+            cmd, cwd=project_root, stdin=subprocess.DEVNULL, stdout=handle, stderr=handle,
+            start_new_session=True,
+        )
+    return proc.pid
+
+
+def request_stop(state_path: Path = STATE_PATH) -> bool:
+    """Cooperative stop: SIGTERM sets the runner's stop event; in-flight sources finish."""
+    state = read_state(state_path)
+    if state is None or state.status != "running" or not is_live(state):
+        return False
+    _kill(state.pid, signal.SIGTERM)
+    return True
+
+
+def format_status(state: CollectState) -> list[str]:
+    finished = sum(1 for s in state.sources if s.status in _FINISHED)
+    lines = [
+        f"collector run {state.run_id}: {effective_status(state)} (pid {state.pid}), "
+        f"{finished}/{len(state.sources)} sources finished"
+    ]
+    for source in state.sources:
+        if source.failure_kind:
+            reason = source.failure_kind.replace("_", " ")
+            if source.http_status:
+                reason += f" (HTTP {source.http_status})"
+            lines.append(f"  {reason}: {source.company} — kept {source.job_count} job(s)")
+        elif source.status == "failed":
+            lines.append(f"  failed: {source.company} — {source.message or 'no message'}")
+    if state.archive:
+        lines.append(f"archive: {state.archive}")
+    return lines
+
+
+def cli_collect(args, state_path: Path = STATE_PATH) -> int:
+    command = args.collect_command
+    if command == "start":
+        try:
+            pid = start_background(
+                project_root=Path.cwd(), companies=args.companies, slow=args.slow,
+                state_path=state_path,
+            )
+        except CollectorRunning as exc:
+            print(f"job-hunter: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({"started": True, "pid": pid, "state": str(state_path), "log": str(LOG_PATH)}))
+        return 0
+    if command == "stop":
+        if request_stop(state_path):
+            print("stop requested; in-flight sources will finish, the rest are skipped")
+            return 0
+        print("job-hunter: no live collector to stop", file=sys.stderr)
+        return 2
+    state = read_state(state_path)
+    if state is None:
+        print("job-hunter: no collection has been started in this project", file=sys.stderr)
+        return 2
+    if args.json:
+        payload = state.model_dump(mode="json")
+        payload["status"] = effective_status(state)
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(format_status(state)))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

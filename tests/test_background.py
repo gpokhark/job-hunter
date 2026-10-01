@@ -1,6 +1,9 @@
 import asyncio
+import json
 import os
+import signal
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -8,11 +11,16 @@ import pytest
 from job_hunter import background
 from job_hunter.adapters.base import RateLimitError
 from job_hunter.background import (
+    CollectorRunning,
     CollectState,
     SourceProgress,
+    cli_collect,
     effective_status,
+    format_status,
     read_state,
+    request_stop,
     run_collection,
+    start_background,
     write_state,
 )
 from job_hunter.config import (
@@ -222,3 +230,82 @@ async def test_failure_state_write_is_best_effort_and_keeps_original_error(proje
             slow=False, state_path=project / "state.json",
         )
     assert str(info.value) == "disk full"
+
+
+def _state(status="running", pid=None, **extra) -> CollectState:
+    now = datetime.now(UTC)
+    return CollectState(
+        run_id="run-1", pid=pid if pid is not None else os.getpid(), status=status, slow=False,
+        started_at=now, updated_at=now, sources=extra.pop("sources", []), **extra,
+    )
+
+
+def test_start_is_refused_while_a_live_collector_is_running(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    write_state(_state(), state_path)  # pid == this test process: live
+    monkeypatch.setattr("job_hunter.background._popen", lambda *a, **k: pytest.fail("spawned"))
+    with pytest.raises(CollectorRunning, match="already running"):
+        start_background(project_root=tmp_path, companies=None, slow=False, state_path=state_path)
+
+
+def test_start_is_allowed_when_the_recorded_run_is_abandoned(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    write_state(_state(pid=999999999), state_path)  # dead pid, still marked running
+    spawned = {}
+
+    class _Proc:
+        pid = 4242
+
+    def _fake_popen(cmd, **kwargs):
+        spawned["cmd"] = cmd
+        spawned["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr("job_hunter.background._popen", _fake_popen)
+    pid = start_background(project_root=tmp_path, companies="a,b", slow=True, state_path=state_path)
+    assert pid == 4242
+    assert spawned["cmd"][1:3] == ["-m", "job_hunter.background"]
+    assert "--companies" in spawned["cmd"] and "a,b" in spawned["cmd"] and "--slow" in spawned["cmd"]
+    assert spawned["kwargs"]["start_new_session"] is True
+
+
+def test_stop_signals_only_a_live_collector(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("job_hunter.background._kill", lambda pid, sig: calls.append((pid, sig)))
+    assert request_stop(state_path) is False  # no state file
+    write_state(_state(pid=999999999), state_path)
+    assert request_stop(state_path) is False  # abandoned
+    write_state(_state(), state_path)
+    assert request_stop(state_path) is True
+    assert calls == [(os.getpid(), signal.SIGTERM)]
+
+
+def test_format_status_lists_progress_and_rate_limited_sources():
+    sources = [
+        SourceProgress(source_key="a", company="Acme", status="ok", job_count=5),
+        SourceProgress(
+            source_key="b", company="Beta", status="warning", job_count=12,
+            failure_kind="rate_limited", http_status=429,
+        ),
+        SourceProgress(source_key="c", company="Gamma"),
+    ]
+    lines = format_status(_state(sources=sources))
+    text = "\n".join(lines)
+    assert "2/3 sources finished" in text
+    assert "Beta" in text and "rate limited" in text.lower() and "12" in text
+
+
+def test_cli_status_json_reports_effective_status(tmp_path, capsys):
+    state_path = tmp_path / "state.json"
+    write_state(_state(pid=999999999), state_path)
+    code = cli_collect(SimpleNamespace(collect_command="status", json=True), state_path=state_path)
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and out["status"] == "abandoned" and out["run_id"] == "run-1"
+
+
+def test_cli_status_without_state_exits_2(tmp_path, capsys):
+    code = cli_collect(
+        SimpleNamespace(collect_command="status", json=False), state_path=tmp_path / "nope.json"
+    )
+    assert code == 2 and "no collection" in capsys.readouterr().err.lower()
