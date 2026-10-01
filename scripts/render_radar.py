@@ -560,6 +560,29 @@ def _wants_fallback(health: dict[str, Any]) -> bool:
     return status == "failed" or (status == "warning" and bool(health.get("failure_kind")))
 
 
+def _merge_pool_jobs(
+    candidates: dict[tuple[str, str], dict[str, Any]],
+    database_path: Path,
+    source_key: str,
+    profile: CandidateProfile,
+    max_age_days: int,
+    keywords: list[str] | None,
+    now: datetime,
+) -> int:
+    """Merge one source's stored active/eligible jobs not already in `candidates`, in place;
+    returns how many were added."""
+    merged = 0
+    for job in _pool_source_jobs(
+        database_path, source_key, profile, max_age_days, keywords=keywords, now=now
+    ):
+        key = (job.source_key, job.job_id)
+        if key in candidates:
+            continue
+        candidates[key] = json.loads(job.model_dump_json())
+        merged += 1
+    return merged
+
+
 def _apply_collection_fallback(
     *,
     source_issues: list[dict[str, Any]],
@@ -631,14 +654,9 @@ def _apply_collection_fallback(
             # A partial (rate-limited/timed-out) run already stored its own jobs; add the
             # earlier ones this run didn't re-collect. Independent of last_success_at, which a
             # partial run itself just advanced.
-            for job in _pool_source_jobs(
-                database_path, source_key, profile, max_age_days, keywords=keywords, now=now
-            ):
-                key = (job.source_key, job.job_id)
-                if key in candidates:
-                    continue
-                candidates[key] = json.loads(job.model_dump_json())
-                merged += 1
+            merged = _merge_pool_jobs(
+                candidates, database_path, source_key, profile, max_age_days, keywords, now
+            )
             note = (
                 f"Collection stopped early today — showing {merged} earlier job(s) "
                 "this run did not re-collect."
@@ -646,15 +664,9 @@ def _apply_collection_fallback(
         elif not last_success_at:
             note = "Failed to scrape — no prior successful data available for this source."
         else:
-            fallback_jobs = _pool_source_jobs(
-                database_path, source_key, profile, max_age_days, keywords=keywords, now=now
+            merged = _merge_pool_jobs(
+                candidates, database_path, source_key, profile, max_age_days, keywords, now
             )
-            for job in fallback_jobs:
-                key = (job.source_key, job.job_id)
-                if key in candidates:
-                    continue
-                candidates[key] = json.loads(job.model_dump_json())
-                merged += 1
             note = (
                 f"Failed to scrape today — showing {merged} job(s) from the last successful "
                 f"scrape on {_fmt_local_date(last_success_at)}."
