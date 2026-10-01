@@ -137,7 +137,7 @@ contract test only. `stealth_html` is last and optional.
 - The runner **never writes an archive mid-run** (avoids it and `refilter_archive.py`'s
   in-place rewrite clobbering each other).
 - `job-hunter snapshot` materializes
-  a normal archive at `archive_path()` from SQLite: source scope and `source_health` come from
+  a minimal archive at its own filename, `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix for a `--companies`-scoped run; deliberately not `archive_path()`, so it cannot clobber a same-day foreground archive), from SQLite: source scope and `source_health` come from
   `state.json`'s finished sources (ok/warning counted as scope, per
   `refilter_archive._successful_source_scope` semantics), candidates from the existing refilter
   logic. It prints the exact `pipeline --no-scrape --search <path>` command to run next; review and

@@ -922,7 +922,7 @@ data, JSON-LD, Liferay DDM) and probing techniques.
    early-pagination-stop source from falsely marking jobs "closed" just because it stopped looking
    for them.
 8. `health.py`'s `detect_count_anomaly` flags (never fails) a source whose job count drops >70%
-   from its last known count.
+   from its last non-zero count (that baseline advances only on a clean `ok` run).
 
 ### Partial collection and rate limits
 
@@ -944,6 +944,45 @@ data, JSON-LD, Liferay DDM) and probing techniques.
   none), and lists such sources as `rate_limited_sources` in its `--result-json`. The pipeline
   manifest copies that list, and a pipeline that would be `complete` with any rate-limited source
   ends `partial`. `source-status` is unchanged: `failure_kind` lives in the archive, not SQLite.
+
+### 6b. Background collector (`background.py`)
+
+`job-hunter collect start [--companies A,B] [--slow]` spawns a detached process
+(`python -m job_hunter.background`) running `Collector.search()` and returns immediately with JSON
+`{started, pid, state, log}`. It refuses to start while a live collector is recorded; a recorded
+run whose PID is dead (`abandoned`) does not block a new start.
+
+- **State file:** `data/collect/state.json` (`CollectState`), written atomically after every source
+  event; log at `data/collect/collector.log`. Fields: `run_id`, `pid`, `pid_start_time`, `status`
+  (`running`/`complete`/`stopped`/`failed`), `slow`, `companies_filter`, `started_at`,
+  `updated_at`, `completed_at`, `archive`, `error`, and `sources[]` (`source_key`, `company`,
+  `status` pending/running/ok/warning/failed/unsupported/skipped, `job_count`, `message`,
+  `error_type`, `failure_kind`, `http_status`, `retry_after_seconds`, `attempted_at`,
+  `finished_at`). A `running` state whose PID is dead is reported as the derived status `abandoned`.
+- **Locks:** the runner holds only `run_lock("collector")`, never the shared `"job-hunter"` lock, so
+  refilter, review and render stay available during a collection. `cleanup --apply` refuses
+  (`RunLockHeld`) while the collector lock is held; a dry run is unaffected.
+- **Archive:** the runner never writes an archive mid-run. On normal completion (not stopped) it
+  writes the final archive at the path a foreground `search --archive` run would use
+  (`archive_path(None, ...)`, i.e. `data/searches/default_<date>.json`, with the companies suffix
+  when `--companies` was given).
+- **`collect status [--json]`:** prints `N/M sources finished`, lists rate-limited/timed-out
+  sources (reason, HTTP status, kept jobs) and failed sources; exit `2` with a message if no
+  collection was ever started.
+- **`collect stop`:** cooperative. SIGTERM goes to the live collector; in-flight sources finish,
+  not-yet-started sources are skipped, status ends `stopped`, and no archive is written.
+- **`snapshot`:** builds an archive on demand from what is stored so far. It writes a minimal
+  archive containing only FINISHED sources in `source_health` (including rate-limited/timed-out
+  reasons) to its own filename `data/searches/collect-snapshot_<date>.json` (with a `_companies-...` suffix when the run was `--companies`-scoped; deliberately not the
+  default archive's name, so it never clobbers a real same-day foreground archive), holding the
+  shared `job-hunter` lock only for that short write (exit `2` with an "in progress" message if a
+  pipeline/review/cleanup run holds it). It then runs `scripts/refilter_archive.py --no-report` on
+  it to rebuild candidates from SQLite and prints the path plus the next command:
+  `job-hunter pipeline --no-scrape --search <path>` (add `--review` to score new jobs). Exit `2` if
+  there is no state file or no source has finished yet.
+- **Slow mode:** `--slow` uses `settings.collection.background` (defaults: 1 source at a time, 30 s
+  delay between sources; see the comment in `config/settings.yaml`).
+- **Non-goal:** no scheduling. Collection is started by hand; nothing re-runs it.
 
 ---
 
@@ -1157,6 +1196,10 @@ explicit, dry-run-by-default answer:
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 | `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
 | `pipeline` | `--keyword`, `--companies`, `--limit`, `--new-only`, `--refresh-details`, `--max-candidates`, `--skip-review`, `--skip-radar`, `--no-scrape`, `--review` | search → review → radar end to end as one command, writing `data/runs/<run_id>/manifest.json` at every stage (`docs/pipeline-refilter-stale-source-plan.md`). `--no-scrape` skips the live search and instead refilters an already-resolved archive against SQLite + the current profile (rejected together with `--companies`); its own `--review` defaults **off** (opposite of normal mode's `--skip-review` opt-out) |
+| `collect start` | `--companies`, `--slow` | spawn the detached background collector (§6b); prints `{started, pid, state, log}`; refuses if a live collector is recorded |
+| `collect status` | `--json` | per-run progress, rate-limited/timed-out and failed sources; exit `2` if no collection was ever started |
+| `collect stop` | — | cooperative stop (SIGTERM to the live collector) |
+| `snapshot` | — | build `data/searches/collect-snapshot_<date>.json` from what the collector has stored so far, refilter it, print the next command (§6b); exit `2` if no state or no finished source |
 | `pipeline-status` | `--run <id>` (default: newest run overall) | prints a pipeline run's manifest as JSON; exit `2` if `status` is `failed`/`model_unavailable` |
 
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;

@@ -1,6 +1,6 @@
 ---
 name: job-hunter
-version: 1.4.0
+version: 1.5.0
 description: Run the full job-hunter pipeline — search, local-LLM review, and radar report — end to end for a keyword/title search or the candidate profile's standing criteria.
 compatibility: Requires uv and Python 3.11+; LM Studio required (this orchestrator's review stage delegates to it).
 metadata:
@@ -24,6 +24,8 @@ command that actually sequences search → review → radar and writes a durable
 skill calls `pipeline`/`pipeline-status` directly rather than invoking `job-scout`/`job-reviewer`/
 `job-radar` as sub-calls, since cross-runtime support for one skill invoking another isn't
 guaranteed across every agent runtime this project installs into.
+
+For a long or rate-limited collection that should not block this run, see `job-scout`'s "Background collection" section (`collect start`, then `snapshot` and `pipeline --no-scrape --search <path>`).
 
 ## Examples
 

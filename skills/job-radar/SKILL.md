@@ -1,6 +1,6 @@
 ---
 name: job-radar
-version: 1.6.0
+version: 1.6.1
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — pure presentation over already-recorded assessments, no scoring happens here.
 metadata:
@@ -40,7 +40,7 @@ Input:
 - optional `--refilter` mode (via `job-hunter pipeline --no-scrape`, not a `render_radar.py` flag
   itself — see step 3) when the profile changed and the existing archive needs re-evaluating first
 - optional `--new-days`/`--undated-new-days`/`--undated-stale-days` (tag-window tuning) and
-  `--no-collection-fallback` (disable the failed-source stale-job merge)
+  `--no-collection-fallback` (disable the stale-job merge for failed, rate-limited or timed-out sources)
 
 Output:
 - an HTML report at `data/radar/{slug}_{date}.html` (printed as `Wrote <path> | strong=N
@@ -122,7 +122,7 @@ Output:
 
    **Live option:** for interactive triage, `uv run python scripts/serve_radar.py --project "$CLAUDE_PROJECT_DIR" --open` serves the same report with click-to-save feedback, extra filters, and change polling. It is opt-in, loopback-only by default, and never writes `data/radar/`; the static report remains the deliverable. The live report also tracks applications (Track chip, `/applications` page; `job-hunter export-applications` rewrites `data/applications.json`/`.csv`). Each live row also has a **Resume** button: it saves that job's description under `data/output/<Company>/` and copies a prompt for the `resume-generator` skill (then `outreach-writer`).
 
-   A `failed` source's row can also carry a second sentence: the stale-source-collection fallback
+   A `failed` source's row (or a rate-limited/timed-out one that stopped early) can also carry a second sentence: the stale-source-collection fallback
    (`docs/pipeline-refilter-stale-source-plan.md` section 4.3). Rather than showing zero jobs for
    a source that failed to scrape *this* run, the report merges in that source's last active,
    still-recency-passing jobs straight from SQLite (the archive file on disk is never rewritten by

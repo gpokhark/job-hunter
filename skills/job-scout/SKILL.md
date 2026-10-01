@@ -1,6 +1,6 @@
 ---
 name: job-scout
-version: 1.1.2
+version: 1.2.0
 description: Search configured employer career sites for current U.S.-eligible jobs matching a keyword/title or the candidate profile, and archive the results for review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — this stage only searches and archives, it never scores anything.
 metadata:
@@ -80,3 +80,18 @@ Output:
 Onsite, hybrid, and remote jobs are all acceptable output — remote jobs require explicit U.S.
 eligibility evidence, already enforced by the collector. Do not substitute broad web searches for
 adapter failures unless the user explicitly requests that fallback.
+
+## Background collection
+
+For a long or rate-limited sweep, collect in the background instead of waiting on `search`:
+
+- Start: `uv run job-hunter collect start --project "$CLAUDE_PROJECT_DIR" [--companies a,b] [--slow]`
+  returns immediately. `--slow` fetches one source at a time with a delay between them.
+- Poll: `uv run job-hunter collect status --project "$CLAUDE_PROJECT_DIR"` shows progress and any
+  rate-limited, timed-out or failed sources. `collect stop` ends it cooperatively (in-flight sources
+  finish; no archive is written).
+- Build an archive any time from what has been collected so far:
+  `uv run job-hunter snapshot --project "$CLAUDE_PROJECT_DIR"`, then run the command it prints,
+  `job-hunter pipeline --no-scrape --search <path> [--review]`.
+- A completed run writes the normal archive itself.
+- Do not run `cleanup --apply` while a collector is running; it refuses.

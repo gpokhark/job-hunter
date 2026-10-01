@@ -59,6 +59,10 @@ uv run job-hunter doctor               # environment/config sanity check
 uv run job-hunter search                # run all enabled sources
 uv run job-hunter search --json --output data/latest_search.json
 uv run job-hunter search --companies honda,toyota --new-only
+uv run job-hunter collect start --slow          # background collection (state: data/collect/state.json)
+uv run job-hunter collect status [--json]
+uv run job-hunter collect stop                  # cooperative: in-flight sources finish
+uv run job-hunter snapshot                      # archive from what's stored so far; then: pipeline --no-scrape --search <path>
 uv run job-hunter source-status         # per-source health from SQLite
 uv run job-hunter source-test honda     # healthcheck one adapter live
 uv run job-hunter db-stats
@@ -292,6 +296,20 @@ ranked `SearchResult` JSON.
   error before re-raising (fixes a `--no-scrape` archive-resolution failure leaving the manifest
   stuck `running` forever — regression-tested). `RunLockHeld` → its own `lock_held` status, not
   generic `failed`.
+
+- **`src/job_hunter/background.py`** — `job-hunter collect start|status|stop` and `snapshot`: a
+  detached `python -m job_hunter.background` process runs `Collector.search()` while filtering/
+  review/render keep working against SQLite. Holds only `run_lock("collector")`, never the shared
+  `"job-hunter"` lock; writes `data/collect/state.json` atomically after every source event and
+  never writes an archive mid-run (on completion, not stop, it writes the normal
+  `archive_path(None, ...)` archive). `collect stop` is cooperative (SIGTERM: in-flight sources
+  finish, unstarted ones skipped, status `stopped`, no archive); a `running` state with a dead PID
+  reads as `abandoned` and doesn't block a new start. `snapshot` writes a minimal archive of only
+  finished sources to its own `data/searches/collect-snapshot_<date>.json` (not the default
+  archive's name — can't clobber a same-day foreground archive), holding the shared lock only for
+  that write, then runs `refilter_archive.py --no-report` on it and prints
+  `pipeline --no-scrape --search <path>`. `cleanup --apply` refuses while the collector lock is
+  held. `--slow` uses `settings.collection.background`. No scheduling, by design.
 
 - **`src/job_hunter/rootutil.py`, `atomic.py`, `runlock.py`** — portability infra. `atomic.py`/
   `runlock.py` are universal (every load-bearing writer/lock-holder uses them, hooks included).
