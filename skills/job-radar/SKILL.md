@@ -1,6 +1,6 @@
 ---
 name: job-radar
-version: 1.5.1
+version: 1.6.0
 description: Compile job-hunter's scored candidates into a two-tier report (text summary and/or HTML radar page) — reflects review progress so far, safe to re-run at any time including mid-review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — pure presentation over already-recorded assessments, no scoring happens here.
 metadata:
@@ -48,7 +48,10 @@ Output:
 - a chat-facing text summary compiled from the same data: Strong (score ≥ 75) and For-review
   (50–74) sections, `[90+]`/`[80+]`/`[New]` tags, and a below-50 excluded count
 - a leading Collection Issues note for any non-`ok` source (failed/warning/unsupported), including
-  the stale-source fallback sentence when a failed source's last-known-good jobs were merged in
+  the stale-source fallback sentence when a failed source's last-known-good jobs were merged in.
+  A source that was rate limited or timed out shows a "Rate limited"/"Timed out" badge with the
+  reason: it kept the jobs it had already fetched, and the `--result-json` lists it under
+  `rate_limited_sources` (which makes a pipeline run's status `partial`)
 - next command: none required to see results — this is the final presentation stage; `job-feedback`
   is the follow-up once the user has reviewed the report and wants to tag/adjust the profile
 

@@ -160,7 +160,9 @@ Assessment           — source_key, job_id, company, title, url, content_hash, 
                        recommended (bool), matches (2-4 strings), gaps (1-3 strings),
                        resume_path, assessed_at
 SourceHealth          — source_key, company, status (ok/warning/failed/unsupported), job_count,
-                       message, error_type, attempted_at
+                       message, error_type, attempted_at, plus optional failure_kind
+                       ("rate_limited"/"timeout"), http_status, retry_after_seconds
+                       (absent in older archives; they load unchanged)
 SearchSummary          — sources_attempted/succeeded/failed, jobs_observed, us_eligible,
                        prefilter_candidates, stale_excluded, partial_failure
 SearchResult            — run (RunInfo), summary, source_health[], candidates: list[Job]
@@ -922,6 +924,27 @@ data, JSON-LD, Liferay DDM) and probing techniques.
 8. `health.py`'s `detect_count_anomaly` flags (never fails) a source whose job count drops >70%
    from its last known count.
 
+### Partial collection and rate limits
+
+- A terminal 429 or WAF challenge (after retries) raises `RateLimitError` (`http_status`, `url`,
+  `retry_after_seconds`) instead of a generic `AdapterError`.
+- Adapters register what they have fetched so far: `begin_listing()` returns a list the base class
+  registers (per `fetch_summaries()` call), and `keep(batch)` extends `adapter.kept` page by page.
+  Not registering is valid and means "nothing to salvage".
+- On any listing failure (`RateLimitError`, timeout, other exception) the collector keeps
+  `adapter.kept`, deduplicated, and runs it through the normal detail/location/upsert path. The
+  source is recorded as `warning` with `failure_kind` (`rate_limited`/`timeout`; none for other
+  exceptions), never calls `mark_missing`, and does not advance the non-zero count baseline (only a
+  clean `ok` run does). `failed` is used only when nothing was kept; `failure_kind`/`http_status`/
+  `retry_after_seconds` are still filled when known.
+- `collection.source_timeout_seconds` (default 1200; `None` disables) bounds the listing phase of one
+  source only, not detail fetching.
+- `render_radar.py` shows "Rate limited"/"Timed out" badges in Collection Issues, extends the
+  stale-source fallback to `failed` or `warning` with a `failure_kind` (count-drop warnings still get
+  none), and lists such sources as `rate_limited_sources` in its `--result-json`. The pipeline
+  manifest copies that list, and a pipeline that would be `complete` with any rate-limited source
+  ends `partial`. `source-status` is unchanged: `failure_kind` lives in the archive, not SQLite.
+
 ---
 
 ## 7. Filtering pipeline, in order
@@ -1166,7 +1189,7 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | Script | Role |
 |---|---|
 | `review_with_lm_studio.py` | Sends each not-yet-cached U.S.-eligible candidate to a local model (LM Studio OpenAI-compatible API), **one at a time, strictly sequential**, persisting each verdict immediately (§8.4). `--input` (search JSON; if omitted, resolved via `--keyword`/newest-overall), `--keyword` (resolve `--input` by slug), `--config` (LM Studio connection), `--limit` (cap *new* reviews), `--force`, `--status` (print remaining/cached counts, no model calls, no changes). Strict JSON-schema validation of the model's verdict (`ModelVerdict`) — rejects malformed responses rather than coercing them. |
-| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score, with one disclosed exception: for a `failed` (never `warning`/`unsupported`) source, merges that source's current active/eligible/prefilter-passing/recency-passing jobs from SQLite (`active_pool.source_jobs()`) into the rendered candidate pool, extending its Collection Issues note with how many jobs came from the fallback and when it last actually succeeded — never rewrites the archive file, only the rendered HTML (§4.3 of `docs/pipeline-refilter-stale-source-plan.md`). `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10), `--no-collection-fallback` (disable the merge, default on). |
+| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score, with one disclosed exception: for a `failed` source or a `warning` that carries a `failure_kind` (rate-limited/timed-out; never `unsupported`, never a count-drop `warning`), merges that source's current active/eligible/prefilter-passing/recency-passing jobs from SQLite (`active_pool.source_jobs()`) into the rendered candidate pool, extending its Collection Issues note with how many jobs came from the fallback and when it last actually succeeded — never rewrites the archive file, only the rendered HTML (§4.3 of `docs/pipeline-refilter-stale-source-plan.md`). `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10), `--no-collection-fallback` (disable the merge, default on). |
 | `assessments_to_csv.py` | Human-readable `data/assessments.csv` from the assessments store. |
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |

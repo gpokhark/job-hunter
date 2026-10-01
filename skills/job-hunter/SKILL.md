@@ -1,6 +1,6 @@
 ---
 name: job-hunter
-version: 1.3.1
+version: 1.4.0
 description: Run the full job-hunter pipeline — search, local-LLM review, and radar report — end to end for a keyword/title search or the candidate profile's standing criteria.
 compatibility: Requires uv and Python 3.11+; LM Studio required (this orchestrator's review stage delegates to it).
 metadata:
@@ -100,6 +100,9 @@ Output:
    relay `error` verbatim. Report `candidates`, and — once review ran — `reviewed`/
    `skipped_cached`/`failed`; for a `--no-scrape` run, also report `gained`/`lost`/`diff_report`
    from the refilter stage (the same vocabulary `refilter_archive.py`'s own HTML diff report uses).
+   A `partial` status can also mean a source was rate limited or timed out: it kept the jobs it had
+   already fetched, is listed under `rate_limited_sources` in the manifest, and is named in the
+   radar's Collection Issues with the reason — relay that to the user.
 6. Compile and present the results exactly as `job-radar`'s `SKILL.md` describes it — its step 5
    (tiering into Strong/For-review, `[90+]`/`[80+]`/`[New]` tags) and step 10 (never invent salary,
    sponsorship, arrangement, qualifications, or posting dates) apply here unchanged; this skill

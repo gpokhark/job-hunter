@@ -60,14 +60,16 @@ moving scoring into Python.
 - `SourceHealth` gains optional `failure_kind: Literal["rate_limited", "timeout"] | None`,
   `http_status: int | None`, `retry_after_seconds: float | None`. `HealthStatus` is **unchanged**
   (decision: reuse `warning` rather than add a `partial` status; old archives stay valid).
-- `JobAdapter` gains `self.kept: list[JobSummary]` and `keep(batch)`, which extends it. Adapters
-  call `self.keep(page_summaries)` after each successfully parsed page. Not calling it is valid
-  and means "nothing to salvage".
+- `JobAdapter` gains `self.kept: list[JobSummary]` and `keep(batch)`, which extends it (used by
+  Apple, per page). Most paginating adapters instead call `jobs = self.begin_listing()`, which
+  returns a list the base registers (a fresh one per `fetch_summaries()` call), so their existing
+  `.append`/`.extend` calls feed `adapter.kept` with no loop surgery. Not registering is valid and
+  means "nothing to salvage".
 
 ### 4.2 Collector (`collector.py`, `config.py`)
 
 - `fetch_summaries()` runs under `asyncio.timeout(collection.source_timeout_seconds)` (new
-  `CollectionConfig` field, default `1200`, `None`/0 disables). The bound covers the listing
+  `CollectionConfig` field, default `1200`, `None` disables; `gt=0`, so no `0`). The bound covers the listing
   phase only.
 - On `RateLimitError`, timeout, or any other exception, the collector takes `adapter.kept`:
   - **non-empty:** deduplicate by `job_id`, run the normal detail/location/sponsorship/salary/
@@ -93,8 +95,10 @@ moving scoring into Python.
   for the source (the partial run's own jobs already in the DB are included), and
   `fallback_provenance` records keep their structured shape. Count-drop `warning`s (no
   `failure_kind`) keep today's no-fallback behavior; the docstring's scope rationale is updated.
-- `pipeline --result-json` and the manifest list sources with a `failure_kind`; `source-status`
-  prints `failure_kind` when set.
+- The radar's `--result-json` lists sources with a `failure_kind` as `rate_limited_sources`; the
+  pipeline derives the manifest field and `partial` status from it in the radar stage (live and
+  `--no-scrape` alike). `source-status` is unchanged: `failure_kind` is not stored in SQLite (§6),
+  so `collect status` and the radar show it.
 
 ### 4.4 Adapter rollout
 
@@ -102,7 +106,12 @@ Core ships first with no adapter converted (behavior unchanged except timeout/re
 convert the paginating adapters (Apple, `html_paginated`, `html_multi_index`, Workday, Oracle
 HCM, Eightfold, Phenom, `json_api`, `adp_recruiting`, `csod`, `successfactors_rmk(_v2)`,
 SmartRecruiters, UltiPro, Paycom, Paylocity, Dayforce, `icims_attract`, `zf`, `bosch`, `brose`)
-with one `self.keep(...)` call per page and one test each. `stealth_html` is last and optional.
+by registering their listings (`begin_listing()` or one `keep(...)` per page). Behavior tests ("a 429
+on page N keeps pages 1..N-1") cover html_paginated, html_multi_index, oracle_hcm, smartrecruiters,
+adp_recruiting, eightfold, bosch, successfactors_rmk_v2 and ultipro-style recipes where an existing
+pagination test supplies the fixture shape; csod, dayforce, icims_attract, phenom, paycom and
+workday have no pagination fixture, so they get a static registration guard plus the shared
+contract test only. `stealth_html` is last and optional.
 
 ## 5. Phase 2 — background collector
 
@@ -119,18 +128,20 @@ with one `self.keep(...)` call per page and one test each. `stealth_html` is las
   failure_kind, http_status, retry_after_seconds, message, finished_at}`. `abandoned` is derived
   by `collect status` using the same PID + start-time liveness check as `pipeline-status`.
 - The runner reuses `Collector`'s per-source path (`_collect_source`), so Phase 1 behavior
-  (partial keeping, timeouts, health) applies unchanged. `collect stop` sends SIGTERM to the
-  process group; the runner finishes the in-flight source's write-out, marks `stopped`, exits.
+  (partial keeping, timeouts, health) applies unchanged. `collect stop` is cooperative: sources not
+  yet started are skipped, in-flight sources finish and persist, then the runner marks `stopped`
+  and exits.
 
 ### 5.2 Independence from filter/render
 
 - The runner **never writes an archive mid-run** (avoids it and `refilter_archive.py`'s
   in-place rewrite clobbering each other).
-- `job-hunter snapshot` (also reachable as `pipeline --no-scrape --collect-state`) materializes
+- `job-hunter snapshot` materializes
   a normal archive at `archive_path()` from SQLite: source scope and `source_health` come from
   `state.json`'s finished sources (ok/warning counted as scope, per
   `refilter_archive._successful_source_scope` semantics), candidates from the existing refilter
-  logic. Review and radar then run as today. It may be run at any time, repeatedly; each
+  logic. It prints the exact `pipeline --no-scrape --search <path>` command to run next; review and
+  radar then run as today. It may be run at any time, repeatedly; each
   snapshot reflects whatever is stored then, and each rate-limited/timed-out source appears in
   its `source_health` with `failure_kind`.
 - On completion the runner makes a final snapshot the same way.

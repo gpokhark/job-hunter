@@ -95,7 +95,9 @@ ranked `SearchResult` JSON.
   `adapters/__init__.py`'s `ADAPTERS` dict, selected via `companies.yaml`'s `adapter` key. All
   inherit `JobAdapter` (`adapters/base.py`): retry-with-backoff `request()` (429/500/502/503/504 +
   network/timeout, honors `Retry-After`), default `healthcheck()`. Adapters implement
-  `fetch_summaries()` (required), optional `fetch_detail()`.
+  `fetch_summaries()` (required), optional `fetch_detail()`. A terminal 429/WAF raises
+  `RateLimitError` (`http_status`, `retry_after_seconds`); paginating adapters register their
+  accumulator with `begin_listing()` (or `keep(batch)` per page) so a rate limit keeps earlier pages.
 
   `json_api.py`'s `ConfigurableJsonAdapter` is a generic JSON-listing kernel driven by
   `companies.yaml` config (`list_url`, `items_path`, `fields`); several adapters are thin
@@ -136,6 +138,12 @@ ranked `SearchResult` JSON.
   sorted, so it always fetches the full catalog. `storage.mark_missing(stale_before=...)` prevents
   early-pagination-stop from falsely closing jobs it simply stopped looking for. See
   `docs/SPEC.md` §12.
+
+  On any listing failure (`RateLimitError` from a terminal 429/WAF, a timeout, or another
+  exception) it keeps `adapter.kept` and records a `warning` `SourceHealth` with `failure_kind`
+  (`rate_limited`/`timeout`), `http_status`, `retry_after_seconds` — no `mark_missing`, count
+  baseline not advanced; `failed` only when nothing was kept. `collection.source_timeout_seconds`
+  (default 1200, `None` disables) bounds the listing phase only.
 
 - **`location.py`** — `evaluate_location` → `LocationDecision` (`us_eligible`, `confidence`,
   `evidence`). Precedence: structured country/state fields → "remote in the U.S." phrasing → U.S.
@@ -427,8 +435,9 @@ ranked `SearchResult` JSON.
   guards against adapters "succeeding" against a changed page structure while returning far
   fewer/no jobs. The baseline ignores zero-job runs: storing 0 as the baseline once let a second
   empty run compare 0 → 0 unflagged (Apple vanished from the 2026-09-30 radar this way, and the
-  radar's stale-source fallback only covers `failed` sources). `apple.py` also raises on an empty
-  first page, so that case is `failed` and fallback-eligible.
+  radar's stale-source fallback only covers `failed` or rate-limited/timed-out `warning` sources). `apple.py` also raises on an empty
+  first page, so that case is `failed` and fallback-eligible. Only a clean `ok` run advances the
+  baseline; a rate-limited/timed-out partial run (a `warning` with `failure_kind`) never does.
 
 - **`models.py`** — pydantic schema: `JobSummary` (listing data) → `Job` (summary + detail +
   location decision + dedup metadata); `SearchResult` is the CLI/skill output envelope.
@@ -511,11 +520,13 @@ ranked `SearchResult` JSON.
 
   One disclosed exception to "pure presentation": the stale-source-collection fallback
   (`docs/pipeline-refilter-stale-source-plan.md` §4.3) — a source whose live collection `failed`
-  this run (not `warning`, which had real live data; not `unsupported`, which has no cached data)
-  still has last-known-good jobs in SQLite. `build()` merges that source's current active/
+  this run, or a `warning` carrying a `failure_kind` (rate-limited/timed-out: only a partial listing
+  was kept) — not a count-drop `warning`, which had real live data; not `unsupported`, which has no
+  cached data — still has last-known-good jobs in SQLite. `build()` merges that source's current active/
   eligible/prefilter/recency-passing jobs (`active_pool.source_jobs()`) into the rendered pool,
   extending its Collection Issues row with a note (job count + last-collected time, or "no prior
-  data" if never succeeded) — no per-row badge, the note is the only signal. This is why `build()`
+  data" if never succeeded); a "Rate limited"/"Timed out" badge marks the row, and `rate_limited_sources`
+  in the radar's `--result-json` feeds `PipelineManifest` (a would-be `complete` run with any ends `partial`). This is why `build()`
   takes `database_path`; the archive file is never rewritten, only the HTML, so re-running stays
   idempotent. `--no-collection-fallback` (default: on) restores the old no-jobs note. Scoped to
   `render_radar.py` alone, not `collector.py` — the live collector's meaning ("jobs fetched this

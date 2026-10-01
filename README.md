@@ -76,6 +76,8 @@ uv run job-hunter pipeline --keyword "ADAS,Robotics"
 uv run job-hunter pipeline --no-scrape [--review]        # re-filter + re-render, no new scrape
 uv run job-hunter pipeline --no-scrape --search <path>   # ...this exact archive, not a resolved one
 uv run job-hunter pipeline-status [--run <run-id>]       # poll/inspect a pipeline run's manifest
+# A rate-limited or timed-out source keeps what it fetched and is named in the radar's
+# Collection Issues with the reason; the pipeline then ends `partial`.
 
 uv run job-hunter search
 uv run job-hunter search --json --archive [--keyword "ADAS,Robotics"]
