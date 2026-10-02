@@ -29,6 +29,7 @@ def make_job(**updates):
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    monkeypatch.delenv("JOB_HUNTER_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "settings.yaml").write_text("{}\n")
@@ -136,6 +137,7 @@ def test_near_misses_writes_reports_and_advances_state(project, tmp_path, capsys
     assert main(["near-misses", "--output-dir", str(out)]) == 0
     printed = capsys.readouterr().out
     assert "Near-misses: 1 new job(s)" in printed
+    assert "not shown" not in printed
     assert len(list(out.glob("*.html"))) == 1 and len(list(out.glob("*.csv"))) == 1
     assert "last_scan_at" in json.loads((out / "state.json").read_text())
 
@@ -171,8 +173,25 @@ def test_first_run_is_capped_at_100_rows_without_a_limit(project, tmp_path, caps
     with Storage(project / "data" / "jobs.sqlite3") as storage:
         for i in range(120):
             storage.upsert_job(make_job(job_id=f"n{i}", title=f"Pastry Chef {i}", description=NEAR_DESC))
-    assert main(["near-misses", "--output-dir", str(tmp_path / "r")]) == 0
-    assert "Near-misses: 100 new job(s)" in capsys.readouterr().out
+    out = tmp_path / "r"
+    assert main(["near-misses", "--output-dir", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "Near-misses: 100 new job(s)" in printed
+    note = "20 more near-miss(es) were not shown and will not reappear in later new-since scans"
+    assert note in printed and "--all --limit 120" in printed
+    (page,) = out.glob("*.html")
+    assert note in page.read_text()
+    # state still advances (re-showing the same top-ranked rows forever would stall the scan)
+    assert "last_scan_at" in json.loads((out / "state.json").read_text())
+
+
+def test_truncation_note_without_state_says_the_rows_will_reappear(project, tmp_path, capsys):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        for i in range(3):
+            storage.upsert_job(make_job(job_id=f"n{i}", title=f"Pastry Chef {i}", description=NEAR_DESC))
+    assert main(["near-misses", "--output-dir", str(tmp_path / "r"), "--no-state", "--limit", "1"]) == 0
+    printed = capsys.readouterr().out
+    assert "2 more near-miss(es) were not shown (--no-state: they will be listed again); re-run with --limit 3" in printed
 
 
 def test_near_misses_project_flag_and_options_parse():
@@ -219,3 +238,74 @@ def test_near_misses_with_a_missing_database_exits_2(tmp_path, monkeypatch, caps
     (tmp_path / "config" / "candidate_profile.yaml").write_text(PROFILE_YAML)
     assert main(["near-misses", "--output-dir", str(tmp_path / "r")]) == 2
     assert "no database at" in capsys.readouterr().err
+
+
+def _fingerprint(db):
+    import os
+
+    return {p.name: (p.read_bytes(), os.stat(p).st_mtime_ns) for p in sorted(db.parent.glob(db.name + "*"))}
+
+
+def test_diagnostics_never_write_or_migrate_the_database(project, tmp_path, capsys):
+    import sqlite3
+
+    _near_miss_project(project)
+    db = project / "data" / "jobs.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA user_version = 1")  # pretend later migrations are still pending
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    before = _fingerprint(db)
+    assert main(["why-missed", "ford:71202"]) == 0
+    assert main(["why-missed", "71202"]) == 0
+    assert main(["why-missed", "https://nowhere.example/job/1234567"]) == 2
+    assert main(["near-misses", "--output-dir", str(tmp_path / "r"), "--no-state"]) == 0
+    capsys.readouterr()
+    assert _fingerprint(db) == before
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    conn.close()
+
+
+def test_many_title_matches_say_more_than_the_cap_not_the_cap(project, capsys):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        for i in range(55):
+            storage.upsert_job(make_job(job_id=f"w{i}", source_key="wide", title=f"Widget Maker {i}"))
+    assert main(["why-missed", "widget maker"]) == 2
+    err = capsys.readouterr().err
+    assert "more than 50 stored jobs match" in err
+    assert main(["why-missed", "widget maker 1"]) == 2  # 1, 10-19: an exact count
+    assert "11 stored jobs match" in capsys.readouterr().err
+
+
+def _source_health(project, key, status="ok"):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        storage.connection.execute(
+            "INSERT OR REPLACE INTO source_health (source_key, company, last_attempt_at, last_success_at, "
+            "last_job_count, consecutive_failures, last_status) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (key, key.title(), "2026-09-30T10:00:00+00:00", "2026-09-30T10:00:00+00:00", 842, status),
+        )
+        storage.connection.commit()
+
+
+def test_never_collected_url_names_the_likely_source_by_stored_host(project, capsys):
+    _source_health(project, "ford")
+    assert main(["why-missed", "https://efds.example/hcmUI/job/99999999"]) == 2
+    err = capsys.readouterr().err
+    assert "likely source" in err.lower() and "ford" in err
+    assert "last run: ok" in err and "2026-09-30" in err
+    assert "job-hunter source-test ford" in err
+
+
+def test_never_collected_url_names_the_likely_source_by_host_label(project, capsys):
+    _source_health(project, "ford")
+    assert main(["why-missed", "https://www.careers.ford.com/job/-/-/48560/101370456832"]) == 2
+    err = capsys.readouterr().err
+    assert "no stored job matches" in err
+    assert "job-hunter source-test ford" in err and "last run: ok" in err
+
+
+def test_never_collected_url_with_an_unknown_host_keeps_the_generic_hint(project, capsys):
+    assert main(["why-missed", "https://jobs.unknown.example/job/123456"]) == 2
+    err = capsys.readouterr().err
+    assert "likely source" not in err.lower() and "source-test <key>" in err

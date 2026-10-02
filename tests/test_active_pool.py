@@ -249,10 +249,13 @@ def test_find_jobs_url_token_matches_job_id_exactly(tmp_path):
 
 def test_find_jobs_url_token_matches_bounded_canonical_url_segment_only(tmp_path):
     db = _seed_tokens(tmp_path)
+    # an exact job_id beats canonical-url token matches
+    assert {s.job.source_key for s in find_jobs(db, "https://x.example/job/48560")} == {"idco"}
+    with Storage(db) as storage:
+        storage.connection.execute("DELETE FROM jobs WHERE source_key='idco'")
+        storage.connection.commit()
     found = {s.job.source_key for s in find_jobs(db, "https://x.example/job/48560")}
-    assert "segco" in found
-    assert "longco" not in found
-    assert "hexco" not in found
+    assert found == {"segco"}  # not longco (9485601) nor hexco (a148560f9c2)
 
 
 def test_find_jobs_url_token_inside_longer_digit_run_alone_matches_nothing(tmp_path):
@@ -298,3 +301,130 @@ def test_find_jobs_url_last_token_matches_even_when_earlier_token_is_shared(tmp_
         )
     found = find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832")
     assert [s.job.job_id for s in found] == ["101370456832"]
+
+
+# --- URL resolution across real platform shapes (stored job_id is often a hash; the real id
+# lives in the canonical URL's last segment or its query string) ---
+
+WD = "https://cat.wd5.myworkdayjobs.com/en-US/CaterpillarCareers/job/Godollo-Budapest/Mrnk-gyakornok_R0000391568"
+WD_JR = "https://stoneridge.wd5.myworkdayjobs.com/en-US/Careers/job/Barneveld-Netherlands/Systems-Engineer_JR102607"
+ASHBY = "https://jobs.ashbyhq.com/openai/000cf0f2-090d-40c6-b9f8-1699db9a4c68"
+LEVER = "https://jobs.lever.co/zoox/000392a0-3844-47c4-b580-d56d9a97620c"
+APPLE = "https://jobs.apple.com/en-us/details/200462446-0836/product-design-engineer-iphone"
+
+
+def _seed_shapes(tmp_path):
+    db = tmp_path / "shapes.sqlite3"
+    with Storage(db) as storage:
+        rows = [
+            ("caterpillar", "hash-cat-1", WD),
+            ("caterpillar", "hash-cat-2", WD.replace("_R0000391568", "_R0000391569")),
+            ("stoneridge", "hash-sr-1", WD_JR),
+            ("stoneridge", "hash-sr-2", WD_JR.replace("JR102607", "JR102608")),
+            ("openai", "000cf0f2-090d-40c6-b9f8-1699db9a4c68", ASHBY),
+            ("zoox", "000392a0-3844-47c4-b580-d56d9a97620c", LEVER),
+            ("waymo", "6499165", "https://careers.withwaymo.com/jobs?gh_jid=6499165"),
+            ("waymo", "6499166", "https://careers.withwaymo.com/jobs?gh_jid=6499166"),
+            ("fanuc", "5001120355006", "https://myjobs.adp.com/fanuc/cx/job-details?reqId=5001120355006"),
+            ("fanuc", "5001120355007", "https://myjobs.adp.com/fanuc/cx/job-details?reqId=5001120355007"),
+            ("apple", "200462446-0836", APPLE),
+            ("apple", "200462447-0836", "https://jobs.apple.com/en-us/details/200462447-0836/other-role"),
+            ("apple", "200462448-0836", "https://jobs.apple.com/en-us/details/200462448-0836/third-role"),
+            ("rivian", "19528", "https://careers.rivian.com/careers-home/jobs/19528"),
+            ("other", "x1", "https://other.example/careers/19528-something/apply"),
+            ("bosch", "REF1018E", "https://jobs.bosch.com/en/job/REF1018E-industrial-maintenance-technician"),
+        ]
+        for source, job_id, url in rows:
+            storage.upsert_job(make_job(source_key=source, job_id=job_id, title=f"{source} {job_id}", url=url))
+    return db
+
+
+def _keys(found):
+    return [(s.job.source_key, s.job.job_id) for s in found]
+
+
+def test_find_jobs_url_with_tracking_query_and_trailing_slash_resolves_exactly(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, WD + "?utm_source=share")) == [("caterpillar", "hash-cat-1")]
+    assert _keys(find_jobs(db, WD + "/")) == [("caterpillar", "hash-cat-1")]
+    assert _keys(find_jobs(db, WD.replace("https://cat.", "HTTPS://CAT.") + "#top")) == [("caterpillar", "hash-cat-1")]
+
+
+def test_find_jobs_workday_r_and_jr_ids_in_a_different_url_shape(tmp_path):
+    db = _seed_shapes(tmp_path)
+    other = "https://cat.wd5.myworkdayjobs.com/CaterpillarCareers/job/Elsewhere/Some-Title_R0000391568?source=x"
+    assert _keys(find_jobs(db, other)) == [("caterpillar", "hash-cat-1")]
+    jr = "https://stoneridge.wd5.myworkdayjobs.com/Careers/details/Systems-Engineer_JR102607"
+    assert _keys(find_jobs(db, jr)) == [("stoneridge", "hash-sr-1")]
+
+
+def test_find_jobs_ashby_and_lever_uuid_ids(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, ASHBY + "/application?utm_source=share")) == [
+        ("openai", "000cf0f2-090d-40c6-b9f8-1699db9a4c68")
+    ]
+    assert _keys(find_jobs(db, LEVER + "?lever-source=x")) == [("zoox", "000392a0-3844-47c4-b580-d56d9a97620c")]
+
+
+def test_find_jobs_ids_in_the_query_string(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, "https://careers.withwaymo.com/jobs/?gh_jid=6499166&utm_source=share")) == [
+        ("waymo", "6499166")
+    ]
+    assert _keys(find_jobs(db, "https://myjobs.adp.com/fanuc/cx/job-details?lang=en&reqId=5001120355007")) == [
+        ("fanuc", "5001120355007")
+    ]
+
+
+def test_find_jobs_apple_digits_dash_digits_id_is_matched_whole_not_by_its_shared_tail(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, APPLE + "?team=SFTWR")) == [("apple", "200462446-0836")]
+    assert _keys(find_jobs(db, APPLE + "/")) == [("apple", "200462446-0836")]
+    unknown = "https://jobs.apple.com/en-us/details/299999999-0836/unknown-role"
+    assert find_jobs(db, unknown) == []
+
+
+def test_find_jobs_exact_job_id_takes_precedence_over_url_substring_matches(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, "https://careers.rivian.com/careers-home/jobs/19528?lang=en-us")) == [
+        ("rivian", "19528")
+    ]
+
+
+def test_find_jobs_alphanumeric_id_prefix_of_a_slug_segment(tmp_path):
+    db = _seed_shapes(tmp_path)
+    found = find_jobs(db, "https://jobs.bosch.com/en/job/REF1018E-renamed-title?utm_source=share")
+    assert _keys(found) == [("bosch", "REF1018E")]
+
+
+def test_find_jobs_url_never_falls_through_to_a_title_match(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert find_jobs(db, "https://nowhere.example/rivian") == []
+
+
+def test_find_jobs_results_are_deterministically_ordered(tmp_path):
+    db = _seed_lookup(tmp_path)
+    assert _keys(find_jobs(db, "71202")) == [("abb", "71202"), ("ford", "71202")]
+
+
+def test_raw_active_jobs_readonly_never_writes_or_migrates_the_database(tmp_path):
+    import os
+    import sqlite3
+
+    db = tmp_path / "jobs.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(make_job())
+        storage.connection.execute("PRAGMA user_version = 1")
+        storage.connection.commit()
+    # fold the WAL in so the main file is the whole database
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    before = (db.read_bytes(), os.stat(db).st_mtime_ns)
+    jobs = raw_active_jobs(db, readonly=True)
+    assert [j.job_id for j in jobs] == ["1"]
+    assert raw_active_jobs(db, {"apple"}, readonly=True)[0].source_key == "apple"
+    assert (db.read_bytes(), os.stat(db).st_mtime_ns) == before
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    conn.close()

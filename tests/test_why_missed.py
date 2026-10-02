@@ -143,3 +143,38 @@ def test_to_dict_is_json_serializable_and_render_text_names_every_stage():
     assert "Verdict: Stopped at: prefilter" in text
     assert "test supervisor" in text and "job-feedback" in text
     assert "Nothing was changed" in text
+
+
+def test_suggestions_for_a_job_also_blocked_earlier_are_annotated():
+    result = explain(
+        stored(status="closed", missing=3), profile=PROFILE, max_age_days=30, now=NOW,
+        source_health=None, archive=None, assessment=None, pool=pool,
+    )
+    assert result.suggestions  # still useful vocabulary
+    assert result.also_blocked_by == ["collected"]
+    assert "also blocked by collected" in render_text(result)
+    assert run().also_blocked_by == []
+    assert "also blocked by" not in render_text(run())
+
+
+def test_gain_text_says_including_this_one_only_when_the_job_is_in_the_pool():
+    assert "including this one" in render_text(run())
+    others = lambda: [j for j in pool() if j.source_key != "ford"]  # noqa: E731
+    result = run(pool=others)
+    assert result.job_in_pool is False
+    assert "including this one" not in render_text(result)
+
+
+def test_failed_source_detail_says_the_fallback_needs_the_filters_to_pass():
+    result = run(job=make_job(title="Robotics Supervisor"), archive=ArchiveInfo("a.json", False, "failed"))
+    assert "if it passes the filters" in stage(result, "in archive").detail
+
+
+def test_why_missed_uses_the_shared_broad_threshold():
+    import inspect
+
+    from job_hunter import why_missed
+    from job_hunter.vocabulary import BROAD_TERM_THRESHOLD
+
+    assert inspect.signature(why_missed.suggest_terms).parameters["broad_threshold"].default == BROAD_TERM_THRESHOLD
+    assert inspect.signature(why_missed.explain).parameters["broad_threshold"].default == BROAD_TERM_THRESHOLD

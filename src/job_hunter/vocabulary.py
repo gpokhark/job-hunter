@@ -29,6 +29,10 @@ GENERIC_TITLE_TOKENS = frozenset(
     }
 )
 
+#: A suggested term admitting more than this many already-rejected jobs is flagged "broad" (shared
+#: by `why-missed` suggestions and `near-misses` vocabulary hints).
+BROAD_TERM_THRESHOLD = 40
+
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9+#./-]*")
 
 
@@ -62,7 +66,7 @@ def rejected_pool(
     (`no_positive_match`) — deliberate rejections (exclude/soft-exclude rules) are not included."""
     return [
         job
-        for job in raw_active_jobs(database_path)
+        for job in raw_active_jobs(database_path, readonly=True)
         if passes_recency(job, max_age_days, now=now)
         and evaluate_prefilter(job, profile).rule is PrefilterRule.NO_POSITIVE_MATCH
     ]

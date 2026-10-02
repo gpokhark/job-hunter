@@ -280,7 +280,7 @@ def parser() -> argparse.ArgumentParser:
     near_misses.add_argument("--min-terms", type=nonneg_int, default=3, help="distinct strong terms required (default 3)")
     near_misses.add_argument("--limit", type=nonneg_int, default=None, help="cap rows (default 100 when listing everything)")
     near_misses.add_argument("--all", action="store_true", help="list all, not only jobs first seen since the last scan")
-    near_misses.add_argument("--ignore-term", action="append", default=[], help="strong term to ignore (repeatable; defaults to a generic set)")
+    near_misses.add_argument("--ignore-term", action="append", default=[], help="strong term to ignore (repeatable; added to the default generic set)")
     near_misses.add_argument("--output-dir", type=Path, default=None, help="where to write the report (default data/near-miss/)")
     near_misses.add_argument("--no-state", action="store_true", help="do not advance the last-scan marker")
     # --project is registered on the root parser above so `job-hunter --project X <command>`

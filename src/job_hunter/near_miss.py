@@ -27,7 +27,7 @@ from .atomic import atomic_write_text
 from .config import CandidateProfile, load_profile
 from .models import Job, PrefilterRule
 from .prefilter import evaluate_prefilter, passes_recency
-from .vocabulary import phrase_gain, title_phrases
+from .vocabulary import BROAD_TERM_THRESHOLD, phrase_gain, title_phrases
 
 #: Strong terms too generic to count toward a near-miss (kept in the profile for the soft-exclude
 #: rescue, but "vehicle"/"driving" alone say nothing about a role). Override with --ignore-term.
@@ -112,6 +112,7 @@ class VocabularyHint:
     near_miss_jobs: int
     gain: int
     samples: tuple[str, ...]
+    broad: bool = False
 
 
 @dataclass
@@ -122,6 +123,7 @@ class ScanResult:
     empty_department: int
     coverage: list[SourceCoverage] = field(default_factory=list)
     hints: list[VocabularyHint] = field(default_factory=list)
+    truncated: int = 0  # near-misses beyond `limit`, not in `rows`
 
 
 def _aware(moment: datetime) -> datetime:
@@ -133,7 +135,11 @@ def _vocabulary_hints(
 ) -> list[VocabularyHint]:
     frequency: Counter[str] = Counter()
     for row in rows:
-        frequency.update(set(title_phrases(row.title)))
+        title_lower = row.title.lower()
+        # same rule as why_missed.suggest_terms: a window that is not a literal substring of the
+        # title (e.g. "calibration test" from "Calibration & Test") can never match it, so it
+        # must not count here either, or near_miss_jobs and gain would describe different jobs
+        frequency.update({p for p in title_phrases(row.title) if p in title_lower})
     hints: list[VocabularyHint] = []
     for phrase, count in frequency.items():
         if count < min_jobs:
@@ -143,7 +149,9 @@ def _vocabulary_hints(
         gain = phrase_gain(profile, phrase, pool)
         if gain.count == 0:
             continue
-        hints.append(VocabularyHint(phrase, count, gain.count, gain.samples))
+        hints.append(
+            VocabularyHint(phrase, count, gain.count, gain.samples, gain.count > BROAD_TERM_THRESHOLD)
+        )
     hints.sort(key=lambda h: (-h.near_miss_jobs, h.gain, -len(h.term), h.term))
     return hints[:top]
 
@@ -159,7 +167,7 @@ def scan(
     limit: int | None = None,
     now: datetime | None = None,
 ) -> ScanResult:
-    eligible = [j for j in raw_active_jobs(database_path) if passes_recency(j, max_age_days, now=now)]
+    eligible = [j for j in raw_active_jobs(database_path, readonly=True) if passes_recency(j, max_age_days, now=now)]
     pool = [j for j in eligible if evaluate_prefilter(j, profile).rule is PrefilterRule.NO_POSITIVE_MATCH]
 
     ignored = {t.lower() for t in ignore_terms}
@@ -182,7 +190,9 @@ def scan(
             )
         )
     rows.sort(key=lambda r: (-r.score, -r.occurrences, r.source_key, r.title))
+    truncated = 0
     if limit is not None:
+        truncated = max(0, len(rows) - limit)
         rows = rows[:limit]
 
     totals: Counter[str] = Counter(j.source_key for j in eligible)
@@ -198,6 +208,7 @@ def scan(
         empty_department=sum(empties.values()),
         coverage=coverage,
         hints=_vocabulary_hints(rows, profile, pool),
+        truncated=truncated,
     )
 
 
@@ -218,7 +229,9 @@ def render_csv(rows: list[NearMiss]) -> str:
     return buffer.getvalue()
 
 
-def render_html(result: ScanResult, *, generated_at: datetime, since: datetime | None) -> str:
+def render_html(
+    result: ScanResult, *, generated_at: datetime, since: datetime | None, truncation_note: str | None = None
+) -> str:
     e = html.escape
     scope = f"new since {_fmt_day(since)}" if since else "all (no previous scan)"
     empty_pct = (100 * result.empty_department // result.eligible_recent) if result.eligible_recent else 0
@@ -232,13 +245,15 @@ def render_html(result: ScanResult, *, generated_at: datetime, since: datetime |
         f"{result.eligible_recent} eligible and recent. These jobs failed the title/department gate "
         "but mention several strong-relevance terms in their descriptions. They are <b>not</b> "
         "reviewed, scored, or in the radar.</p>",
+        f"<p><b>{e(truncation_note)}</b></p>" if truncation_note else "",
         "<h2>Near-misses</h2><table><tr><th>#</th><th>Source</th><th>Title</th><th>Score</th>"
-        "<th>Terms</th><th>Posted</th><th>Link</th></tr>",
+        "<th>Terms</th><th>Posted</th><th>First seen</th><th>Link</th></tr>",
     ]
     for rank, row in enumerate(result.rows, 1):
         parts.append(
             f"<tr><td>{rank}</td><td>{e(row.source_key)}</td><td>{e(row.title)}</td><td>{row.score}</td>"
             f"<td>{e(', '.join(row.terms))}</td><td>{e(_fmt_day(row.posted_at))}</td>"
+            f"<td>{e(_fmt_day(row.first_seen_at))}</td>"
             f"<td><a href='{e(row.url, quote=True)}'>open</a></td></tr>"
         )
     parts.append("</table><h2>Vocabulary hints</h2>")
@@ -246,8 +261,9 @@ def render_html(result: ScanResult, *, generated_at: datetime, since: datetime |
         parts.append("<table><tr><th>Title term</th><th>In near-misses</th><th>Would admit</th><th>Examples</th><th>Preview</th></tr>")
         for hint in result.hints:
             preview = f'uv run python scripts/diff_profile.py --add "target_title_terms:{hint.term}"'
+            broad = " [broad]" if hint.broad else ""
             parts.append(
-                f"<tr><td>{e(hint.term)}</td><td>{hint.near_miss_jobs}</td><td>{hint.gain} job(s)</td>"
+                f"<tr><td>{e(hint.term)}</td><td>{hint.near_miss_jobs}</td><td>{hint.gain} job(s){broad}</td>"
                 f"<td>{e('; '.join(hint.samples))}</td><td><code>{e(preview)}</code></td></tr>"
             )
         parts.append("</table><p>Add terms only through the job-feedback skill (preview, then confirm).</p>")
@@ -277,6 +293,26 @@ def write_last_scan(state_path: Path, moment: datetime) -> None:
     atomic_write_text(state_path, json.dumps({"last_scan_at": moment.isoformat()}) + "\n")
 
 
+def truncation_note(truncated: int, shown: int, *, advances_state: bool) -> str | None:
+    """What the user must know when `--limit` (or the first-run cap) dropped near-misses.
+
+    State still advances past dropped rows: rows are ranked by score, not age, so holding the
+    marker back would re-list the same top rows on every scan and never progress. The note says
+    so, and how to see everything."""
+    if not truncated:
+        return None
+    total = shown + truncated
+    if advances_state:
+        return (
+            f"{truncated} more near-miss(es) were not shown and will not reappear in later new-since "
+            f"scans; re-run with --all --limit {total} to see them."
+        )
+    return (
+        f"{truncated} more near-miss(es) were not shown (--no-state: they will be listed again); "
+        f"re-run with --limit {total} to see them."
+    )
+
+
 def cli_near_misses(args, settings) -> int:
     if not Path(settings.database_path).exists():
         print(f"job-hunter: no database at {settings.database_path}; run a search first", file=sys.stderr)
@@ -304,10 +340,11 @@ def _near_misses(args, settings) -> int:
         limit=limit,
         now=now,
     )
+    note = truncation_note(result.truncated, len(result.rows), advances_state=not args.no_state)
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d-T-%H-%M-%S")
     html_path, csv_path = out_dir / f"{stamp}.html", out_dir / f"{stamp}.csv"
     try:
-        atomic_write_text(html_path, render_html(result, generated_at=now, since=since))
+        atomic_write_text(html_path, render_html(result, generated_at=now, since=since, truncation_note=note))
         atomic_write_text(csv_path, render_csv(result.rows))
         if not args.no_state:
             write_last_scan(state_path, now)
@@ -318,6 +355,8 @@ def _near_misses(args, settings) -> int:
         f"Near-misses: {len(result.rows)} new job(s) (scanned {result.pool_size} rejected of "
         f"{result.eligible_recent} eligible)"
     )
+    if note:
+        print(f"  {note}")
     print(f"  report: {html_path}")
     print(f"  csv:    {csv_path}")
     return 0

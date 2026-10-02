@@ -220,3 +220,47 @@ def test_naive_state_timestamp_reads_as_none(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"last_scan_at": "2026-10-01T00:00:00"}))
     assert read_last_scan(state) is None
+
+
+def test_hints_count_only_titles_that_literally_contain_the_phrase(tmp_path):
+    desc = "perception lidar ADAS sensor fusion"
+    db = seed(tmp_path, [
+        make_job(job_id="1", title="Calibration Test Rig Tech", description=desc),
+        make_job(job_id="2", title="Calibration & Test Tech", description=desc),
+    ])
+    by_term = {h.term: h for h in scan(db, PROFILE, 30, now=NOW).hints}
+    # "calibration test" is a window of both titles but a literal substring of only one, so it
+    # is below the two-job floor; near_miss_jobs and gain must describe the same jobs
+    assert "calibration test" not in by_term
+    assert all(h.near_miss_jobs <= h.gain for h in by_term.values())
+
+
+def test_hints_flag_broad_terms_with_the_shared_threshold(tmp_path):
+    from job_hunter.vocabulary import BROAD_TERM_THRESHOLD
+
+    desc = "perception lidar ADAS sensor fusion"
+    jobs = [make_job(job_id=str(i), title=f"Pastry Chef {i}", description=desc) for i in range(BROAD_TERM_THRESHOLD + 1)]
+    jobs += [make_job(job_id="c1", title="Calibration Tech", description=desc),
+             make_job(job_id="c2", title="Calibration Lead", description=desc)]
+    result = scan(seed(tmp_path, jobs), PROFILE, 30, now=NOW)
+    by_term = {h.term: h for h in result.hints}
+    assert by_term["pastry chef"].broad is True
+    assert by_term["calibration"].broad is False
+    assert "[broad]" in render_html(result, generated_at=NOW, since=None)
+
+
+def test_scan_reports_how_many_rows_the_limit_truncated(tmp_path):
+    jobs = [make_job(job_id=str(i), title=f"Role {i}", description="perception lidar ADAS") for i in range(5)]
+    db = seed(tmp_path, jobs)
+    assert scan(db, PROFILE, 30, limit=2, now=NOW).truncated == 3
+    assert scan(db, PROFILE, 30, now=NOW).truncated == 0
+
+
+def test_render_html_shows_first_seen_and_a_truncation_note(tmp_path):
+    result = _result(tmp_path)
+    page = render_html(result, generated_at=NOW, since=None)
+    assert "<th>First seen</th>" in page
+    assert "were not shown" not in page
+    result.truncated = 7
+    page = render_html(result, generated_at=NOW, since=None, truncation_note="7 more near-miss(es) were not shown")
+    assert "7 more near-miss(es) were not shown" in page

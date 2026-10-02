@@ -15,13 +15,14 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from .active_pool import StoredJob, find_jobs
+from .active_pool import StoredJob, connect_readonly, find_jobs, url_host
 from .config import CandidateProfile, load_profile
 from .models import Job, PrefilterRule
 from .prefilter import evaluate_prefilter, passes_recency
 from .search_archive import resolve_search_path
-from .vocabulary import phrase_gain, rejected_pool, title_phrases
+from .vocabulary import BROAD_TERM_THRESHOLD, phrase_gain, rejected_pool, title_phrases
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,10 @@ class WhyMissed:
     verdict: str
     suggestions: list[TermSuggestion] = field(default_factory=list)
     preview_commands: list[str] = field(default_factory=list)
+    # stages before the prefilter that also fail: a new title term alone will not surface the job
+    also_blocked_by: list[str] = field(default_factory=list)
+    # whether the job itself is in the rejected pool the gains are counted over
+    job_in_pool: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -66,7 +71,7 @@ def suggest_terms(
     pool: list[Job],
     *,
     max_suggestions: int = 5,
-    broad_threshold: int = 40,
+    broad_threshold: int = BROAD_TERM_THRESHOLD,
 ) -> list[TermSuggestion]:
     """Title phrases that, appended to `target_title_terms`, admit `job` under the real gate,
     most precise first (smallest gain, then longest). A phrase that is not a substring of the
@@ -121,7 +126,7 @@ def explain(
     pool: Callable[[], list[Job]],
     keywords: list[str] | None = None,
     now: datetime | None = None,
-    broad_threshold: int = 40,
+    broad_threshold: int = BROAD_TERM_THRESHOLD,
     max_suggestions: int = 5,
 ) -> WhyMissed:
     job = stored.job
@@ -156,7 +161,8 @@ def explain(
             Stage(
                 "in archive", False,
                 f"no - {archive.path} has this source as {archive.source_status!r}, so the radar can "
-                "only show its jobs through the stale-source fallback, which never scores them",
+                "only show this job through the stale-source fallback if it passes the filters, and "
+                "that fallback never scores it",
             )
         )
     else:
@@ -190,15 +196,22 @@ def explain(
 
     suggestions: list[TermSuggestion] = []
     previews: list[str] = []
+    blocked: list[str] = []
+    in_pool = False
     if decision.rule is PrefilterRule.NO_POSITIVE_MATCH and keywords is None:
+        jobs = pool()
+        in_pool = any(j.source_key == job.source_key and j.job_id == job.job_id for j in jobs)
         suggestions = suggest_terms(
-            job, profile, pool(), max_suggestions=max_suggestions, broad_threshold=broad_threshold
+            job, profile, jobs, max_suggestions=max_suggestions, broad_threshold=broad_threshold
         )
         previews = [
             f'uv run python scripts/diff_profile.py --add "target_title_terms:{s.term}"'
             for s in suggestions
         ]
-    return WhyMissed(job.source_key, job.job_id, job.title, stages, verdict, suggestions, previews)
+        blocked = [s.name for s in stages[: stages.index(prefilter)] if s.ok is False]
+    return WhyMissed(
+        job.source_key, job.job_id, job.title, stages, verdict, suggestions, previews, blocked, in_pool
+    )
 
 
 def render_text(result: WhyMissed) -> str:
@@ -208,10 +221,19 @@ def render_text(result: WhyMissed) -> str:
     lines.append(f"Verdict: {result.verdict}")
     if result.suggestions:
         lines.append("")
+        scope = (
+            "including this one" if result.job_in_pool
+            else "this job is not among them: it is closed, ineligible or stale"
+        )
         lines.append(
             "Suggested title terms (each shows how many already-rejected jobs it would admit, "
-            "including this one):"
+            f"{scope}):"
         )
+        if result.also_blocked_by:
+            lines.append(
+                f"  Note: this job is also blocked by {', '.join(result.also_blocked_by)}; a title "
+                "term alone will not bring it into the radar."
+            )
         for number, s in enumerate(result.suggestions, 1):
             broad = "  [broad]" if s.broad else ""
             lines.append(f'  {number}. "{s.term}" admits {s.gain} job(s){broad}')
@@ -227,8 +249,7 @@ def render_text(result: WhyMissed) -> str:
 
 
 def _query_one(database_path: Path, sql: str, params: tuple) -> dict | None:
-    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=30)
-    conn.row_factory = sqlite3.Row
+    conn = connect_readonly(database_path)
     try:
         row = conn.execute(sql, params).fetchone()
         return dict(row) if row else None
@@ -268,21 +289,80 @@ def cli_why_missed(args, settings) -> int:
         return 2
 
 
+def likely_sources(database_path: Path, ref: str, *, limit: int = 3) -> list[tuple[str, str, dict | None]]:
+    """For a URL that matched no stored job: the sources it most likely belongs to, read-only, as
+    `(source_key, why, source_health row or None)`. First the sources whose stored canonical
+    URLs share the URL's host; otherwise a source whose key is one of the host's labels
+    (`careers.ford.com` -> `ford`, since a careers front end often differs from the ATS host)."""
+    if "://" not in ref:
+        return []
+    host = url_host(urlsplit(ref))
+    if not host:
+        return []
+    conn = connect_readonly(database_path)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_key, canonical_url FROM jobs WHERE instr(lower(canonical_url), ?) > 0",
+            (host,),
+        ).fetchall()
+        keys = sorted({r["source_key"] for r in rows if url_host(urlsplit(r["canonical_url"] or "")) == host})
+        why = "stored jobs share this host"
+        if not keys:
+            labels = set(host.split("."))
+            known = [r["source_key"] for r in conn.execute("SELECT source_key FROM source_health")]
+            keys = sorted(k for k in known if {k, k.replace("_", ""), k.replace("_", "-")} & labels)
+            why = "its key is part of this host"
+        result = []
+        for key in keys[:limit]:
+            health = conn.execute(
+                "SELECT last_status, last_attempt_at, last_success_at, last_job_count "
+                "FROM source_health WHERE source_key=?", (key,),
+            ).fetchone()
+            result.append((key, why, dict(health) if health else None))
+        return result
+    finally:
+        conn.close()
+
+
+def _stamp(value: str | None) -> str:
+    return value[:16].replace("T", " ") if value else "never"
+
+
 def _why_missed(args, settings) -> int:
     ref = args.ref
-    matches = find_jobs(settings.database_path, ref)
+    cap = 50
+    matches = find_jobs(settings.database_path, ref, limit=cap + 1)
     if not matches:
         print(f"job-hunter: no stored job matches {ref!r}.", file=sys.stderr)
         print(
             "  Try the job id (e.g. 71202), source_key:job_id (e.g. ford:71202) or part of the title. "
-            "A careers-site URL only matches when its path carries an id this project stored. If the "
-            "job was never collected, check its source with `job-hunter source-test <key>`.",
+            "A careers-site URL only matches when it carries an id this project stored.",
             file=sys.stderr,
         )
+        sources = likely_sources(settings.database_path, ref)
+        for key, why, health in sources:
+            if health:
+                state = (
+                    f"last run: {health['last_status']} at {_stamp(health['last_attempt_at'])}, "
+                    f"{health['last_job_count']} jobs, last success {_stamp(health['last_success_at'])}"
+                )
+            else:
+                state = "no recorded source health"
+            print(
+                f"  Likely source: {key} ({why}) - {state}. If the job was never collected, check "
+                f"it with `job-hunter source-test {key}`.",
+                file=sys.stderr,
+            )
+        if not sources:
+            print(
+                "  If the job was never collected, check its source with `job-hunter source-test <key>`.",
+                file=sys.stderr,
+            )
         return 2
     if len(matches) > 1:
+        count = f"more than {cap}" if len(matches) > cap else str(len(matches))
         print(
-            f"job-hunter: {len(matches)} stored jobs match {ref!r}; re-run with source_key:job_id:",
+            f"job-hunter: {count} stored jobs match {ref!r}; re-run with source_key:job_id:",
             file=sys.stderr,
         )
         for number, match in enumerate(matches[:20], 1):
