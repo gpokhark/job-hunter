@@ -119,3 +119,62 @@ def test_database_missing_a_table_exits_2_not_a_traceback(project, capsys):
 def test_explicit_missing_search_path_exits_2(project, capsys):
     assert main(["why-missed", "ford:71202", "--search", "data/searches/nope.json"]) == 2
     assert "nope.json" in capsys.readouterr().err
+
+
+NEAR_DESC = "perception lidar ADAS sensor fusion"
+
+
+def _near_miss_project(project):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        storage.upsert_job(make_job(job_id="9", source_key="acme", title="Pastry Chef", description=NEAR_DESC))
+    return project
+
+
+def test_near_misses_writes_reports_and_advances_state(project, tmp_path, capsys):
+    _near_miss_project(project)
+    out = tmp_path / "reports"
+    assert main(["near-misses", "--output-dir", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "Near-misses: 1 new job(s)" in printed
+    assert len(list(out.glob("*.html"))) == 1 and len(list(out.glob("*.csv"))) == 1
+    assert "last_scan_at" in json.loads((out / "state.json").read_text())
+
+
+def test_second_run_lists_only_new_jobs_and_all_lists_everything_again(project, tmp_path, capsys):
+    _near_miss_project(project)
+    out = tmp_path / "reports"
+    main(["near-misses", "--output-dir", str(out)])
+    capsys.readouterr()
+    assert main(["near-misses", "--output-dir", str(out)]) == 0
+    assert "Near-misses: 0 new job(s)" in capsys.readouterr().out
+    assert main(["near-misses", "--output-dir", str(out), "--all"]) == 0
+    assert "Near-misses: 1 new job(s)" in capsys.readouterr().out
+
+
+def test_no_state_flag_leaves_state_untouched(project, tmp_path):
+    _near_miss_project(project)
+    out = tmp_path / "reports"
+    assert main(["near-misses", "--output-dir", str(out), "--no-state"]) == 0
+    assert not (out / "state.json").exists()
+
+
+def test_an_unwritable_output_location_exits_2_and_never_advances_state(project, tmp_path, capsys):
+    _near_miss_project(project)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    assert main(["near-misses", "--output-dir", str(blocker / "sub")]) == 2
+    assert "could not write the near-miss report" in capsys.readouterr().err
+    assert not (blocker / "sub").exists()
+
+
+def test_first_run_is_capped_at_100_rows_without_a_limit(project, tmp_path, capsys):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        for i in range(120):
+            storage.upsert_job(make_job(job_id=f"n{i}", title=f"Pastry Chef {i}", description=NEAR_DESC))
+    assert main(["near-misses", "--output-dir", str(tmp_path / "r")]) == 0
+    assert "Near-misses: 100 new job(s)" in capsys.readouterr().out
+
+
+def test_near_misses_project_flag_and_options_parse():
+    args = parser().parse_args(["near-misses", "--project", "/z", "--min-terms", "2", "--ignore-term", "lidar", "--all"])
+    assert args.project == Path("/z") and args.min_terms == 2 and args.ignore_term == ["lidar"] and args.all

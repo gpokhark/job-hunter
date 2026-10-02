@@ -5,19 +5,24 @@ and a department-coverage table.
 This is a *human-only scouting aid* in the spirit of docs/broad-match-plan.md (which concluded
 description similarity is unreliable as a filter but good for keyword discovery). Near-misses are
 never LLM-scored, never added to `candidates`, never merged into the radar, and nothing here
-changes the gate. Pure functions over `raw_active_jobs()`; report writing lives in Task 6."""
+changes the gate. Pure functions over `raw_active_jobs()`; report writing is below."""
 
 from __future__ import annotations
 
+import csv
 import html
+import io
+import json
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .active_pool import raw_active_jobs
-from .config import CandidateProfile
+from .atomic import atomic_write_text
+from .config import CandidateProfile, load_profile
 from .models import Job, PrefilterRule
 from .prefilter import evaluate_prefilter, passes_recency
 from .vocabulary import phrase_gain, title_phrases
@@ -192,3 +197,111 @@ def scan(
         coverage=coverage,
         hints=_vocabulary_hints(rows, profile, pool),
     )
+
+
+def _fmt_day(moment: datetime | None) -> str:
+    return moment.astimezone().strftime("%Y-%m-%d") if moment else ""
+
+
+def render_csv(rows: list[NearMiss]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["rank", "source", "title", "score", "terms", "posted", "first_seen", "url"])
+    for rank, row in enumerate(rows, 1):
+        writer.writerow(
+            [rank, row.source_key, row.title, row.score, "; ".join(row.terms),
+             _fmt_day(row.posted_at), _fmt_day(row.first_seen_at), row.url]
+        )
+    return buffer.getvalue()
+
+
+def render_html(result: ScanResult, *, generated_at: datetime, since: datetime | None) -> str:
+    e = html.escape
+    scope = f"new since {_fmt_day(since)}" if since else "all (no previous scan)"
+    empty_pct = (100 * result.empty_department // result.eligible_recent) if result.eligible_recent else 0
+    parts = [
+        "<!DOCTYPE html><meta charset='utf-8'><title>Near-miss report</title>",
+        "<style>body{font:14px system-ui;margin:2rem;max-width:1100px}table{border-collapse:collapse;width:100%}"
+        "td,th{border-bottom:1px solid #ddd;padding:4px 8px;text-align:left;vertical-align:top}"
+        "code{background:#f3f3f3;padding:1px 4px}h2{margin-top:2rem}</style>",
+        f"<h1>Near-miss report</h1><p>{e(generated_at.astimezone().strftime('%Y-%m-%d %H:%M'))} - "
+        f"{len(result.rows)} job(s), {e(scope)}. Scanned {result.pool_size} rejected jobs of "
+        f"{result.eligible_recent} eligible and recent. These jobs failed the title/department gate "
+        "but mention several strong-relevance terms in their descriptions. They are <b>not</b> "
+        "reviewed, scored, or in the radar.</p>",
+        "<h2>Near-misses</h2><table><tr><th>#</th><th>Source</th><th>Title</th><th>Score</th>"
+        "<th>Terms</th><th>Posted</th><th>Link</th></tr>",
+    ]
+    for rank, row in enumerate(result.rows, 1):
+        parts.append(
+            f"<tr><td>{rank}</td><td>{e(row.source_key)}</td><td>{e(row.title)}</td><td>{row.score}</td>"
+            f"<td>{e(', '.join(row.terms))}</td><td>{e(_fmt_day(row.posted_at))}</td>"
+            f"<td><a href='{e(row.url, quote=True)}'>open</a></td></tr>"
+        )
+    parts.append("</table><h2>Vocabulary hints</h2>")
+    if result.hints:
+        parts.append("<table><tr><th>Title term</th><th>In near-misses</th><th>Would admit</th><th>Examples</th><th>Preview</th></tr>")
+        for hint in result.hints:
+            preview = f'uv run python scripts/diff_profile.py --add "target_title_terms:{hint.term}"'
+            parts.append(
+                f"<tr><td>{e(hint.term)}</td><td>{hint.near_miss_jobs}</td><td>{hint.gain} job(s)</td>"
+                f"<td>{e('; '.join(hint.samples))}</td><td><code>{e(preview)}</code></td></tr>"
+            )
+        parts.append("</table><p>Add terms only through the job-feedback skill (preview, then confirm).</p>")
+    else:
+        parts.append("<p>No new title vocabulary stood out.</p>")
+    parts.append(
+        f"<h2>Department coverage</h2><p>{result.empty_department} of {result.eligible_recent} eligible jobs "
+        f"({empty_pct}%) have no department - <b>title is the only gate signal</b> for them. Top sources:</p>"
+        "<table><tr><th>Source</th><th>Jobs without a department</th><th>of total</th></tr>"
+    )
+    for item in result.coverage[:10]:
+        parts.append(f"<tr><td>{e(item.source_key)}</td><td>{item.empty_department}</td><td>{item.total}</td></tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def read_last_scan(state_path: Path) -> datetime | None:
+    try:
+        return datetime.fromisoformat(json.loads(state_path.read_text(encoding="utf-8"))["last_scan_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def write_last_scan(state_path: Path, moment: datetime) -> None:
+    atomic_write_text(state_path, json.dumps({"last_scan_at": moment.isoformat()}) + "\n")
+
+
+def cli_near_misses(args, settings) -> int:
+    out_dir = Path(args.output_dir) if args.output_dir else settings.database_path.parent / "near-miss"
+    state_path = out_dir / "state.json"
+    since = None if args.all else read_last_scan(state_path)
+    limit = args.limit if args.limit is not None else (100 if since is None else None)
+    now = datetime.now(UTC)
+    result = scan(
+        settings.database_path,
+        load_profile(),
+        settings.search.max_posting_age_days,
+        ignore_terms=GENERIC_STRONG_TERMS | frozenset(t.lower() for t in args.ignore_term),
+        min_terms=args.min_terms,
+        since=since,
+        limit=limit,
+        now=now,
+    )
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%d-T-%H-%M-%S")
+    html_path, csv_path = out_dir / f"{stamp}.html", out_dir / f"{stamp}.csv"
+    try:
+        atomic_write_text(html_path, render_html(result, generated_at=now, since=since))
+        atomic_write_text(csv_path, render_csv(result.rows))
+        if not args.no_state:
+            write_last_scan(state_path, now)
+    except OSError as exc:
+        print(f"job-hunter: could not write the near-miss report: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"Near-misses: {len(result.rows)} new job(s) (scanned {result.pool_size} rejected of "
+        f"{result.eligible_recent} eligible)"
+    )
+    print(f"  report: {html_path}")
+    print(f"  csv:    {csv_path}")
+    return 0

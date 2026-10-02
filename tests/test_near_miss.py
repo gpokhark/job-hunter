@@ -1,3 +1,5 @@
+import csv
+import io
 from datetime import UTC, datetime, timedelta
 
 from job_hunter.config import CandidateProfile
@@ -6,8 +8,12 @@ from job_hunter.near_miss import (
     GENERIC_STRONG_TERMS,
     html_to_text,
     matched_terms,
+    read_last_scan,
+    render_csv,
+    render_html,
     scan,
     strip_boilerplate,
+    write_last_scan,
 )
 from job_hunter.storage import Storage
 
@@ -169,3 +175,30 @@ def test_hints_skip_phrases_that_would_admit_nothing_new(tmp_path):
     by_term = {h.term: h for h in scan(db, profile, 30, now=NOW).hints}
     assert "pastry chef" in by_term
     assert "supervisor" not in by_term and "pastry supervisor" not in by_term
+
+
+def _result(tmp_path, title="Perception <script>alert(1)</script> & Co"):
+    db = seed(tmp_path, [make_job(job_id="a", title=title, description="perception lidar ADAS sensor fusion")])
+    return scan(db, PROFILE, 30, now=NOW)
+
+
+def test_render_html_escapes_titles_and_shows_coverage_and_hints(tmp_path):
+    page = render_html(_result(tmp_path), generated_at=NOW, since=None)
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "&amp; Co" in page
+    assert "title is the only gate signal" in page
+
+
+def test_render_csv_has_a_header_and_one_row_per_near_miss(tmp_path):
+    rows = list(csv.reader(io.StringIO(render_csv(_result(tmp_path).rows))))
+    assert rows[0] == ["rank", "source", "title", "score", "terms", "posted", "first_seen", "url"]
+    assert len(rows) == 2 and rows[1][0] == "1" and rows[1][3] == "4"
+
+
+def test_state_round_trip_and_missing_or_corrupt_state_means_no_since(tmp_path):
+    state = tmp_path / "near-miss" / "state.json"
+    assert read_last_scan(state) is None
+    write_last_scan(state, NOW)
+    assert read_last_scan(state) == NOW
+    state.write_text("not json")
+    assert read_last_scan(state) is None
