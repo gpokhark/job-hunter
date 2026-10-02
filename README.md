@@ -76,6 +76,8 @@ uv run job-hunter pipeline --keyword "ADAS,Robotics"
 uv run job-hunter pipeline --no-scrape [--review]        # re-filter + re-render, no new scrape
 uv run job-hunter pipeline --no-scrape --search <path>   # ...this exact archive, not a resolved one
 uv run job-hunter pipeline-status [--run <run-id>]       # poll/inspect a pipeline run's manifest
+# A rate-limited or timed-out source keeps what it fetched and is named in the radar's
+# Collection Issues with the reason; the pipeline then ends `partial`.
 
 uv run job-hunter search
 uv run job-hunter search --json --archive [--keyword "ADAS,Robotics"]
@@ -84,6 +86,10 @@ uv run job-hunter source-status
 uv run job-hunter source-test honda
 uv run job-hunter db-stats
 uv run job-hunter export --format json
+uv run job-hunter collect start [--companies a,b] [--slow]   # background collection; returns immediately
+uv run job-hunter collect status [--json]                     # progress, rate-limited/failed sources
+uv run job-hunter collect stop                                # cooperative stop (in-flight sources finish)
+uv run job-hunter snapshot                                    # archive from what's collected so far, then pipeline --no-scrape --search <path>
 uv run job-hunter cleanup                 # dry run — reports what's eligible, deletes nothing
 uv run job-hunter cleanup --apply         # deletes closed jobs / old reports, writes an export first
 uv run job-hunter resolve-search [--keyword "..."] [--search <path>]

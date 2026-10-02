@@ -44,7 +44,7 @@ class PaycomAdapter(JobAdapter):
         token = await self._fetch_token(career_page_url)
         headers = {"Authorization": f"Bearer {token}"}
         page_size = int(cfg.get("page_size", 200))
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         skip = 0
         total: int | None = None
         for _ in range(int(cfg.get("max_pages", 20))):

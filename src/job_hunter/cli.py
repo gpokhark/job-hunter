@@ -72,6 +72,20 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("--debug", action="store_true")
     sub.add_parser("doctor")
     sub.add_parser("source-status")
+    collect = sub.add_parser("collect", help="run the collector in the background")
+    collect_sub = collect.add_subparsers(dest="collect_command", required=True)
+    collect_start = collect_sub.add_parser("start")
+    collect_start.add_argument("--companies", default=None)
+    collect_start.add_argument(
+        "--slow", action="store_true",
+        help="use settings collection.background (1 source at a time, delay between sources)",
+    )
+    collect_status = collect_sub.add_parser("status")
+    collect_status.add_argument("--json", action="store_true")
+    collect_sub.add_parser("stop")
+    for collect_parser in collect_sub.choices.values():
+        add_project_argument(collect_parser, suppress_default=True)
+    sub.add_parser("snapshot", help="build an archive from what the collector has stored so far")
     test = sub.add_parser("source-test")
     test.add_argument("company")
     sub.add_parser("db-stats")
@@ -459,6 +473,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor()
         settings = load_settings()
+        if args.command == "collect":
+            from .background import cli_collect
+
+            return cli_collect(args)
+        if args.command == "snapshot":
+            from .background import cli_snapshot
+
+            return cli_snapshot()
         if args.command == "export-applications":
             with Storage(settings.database_path) as storage:
                 rows = storage.export_applications()

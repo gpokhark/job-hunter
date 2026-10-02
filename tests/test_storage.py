@@ -5,13 +5,16 @@ import pytest
 from pydantic import ValidationError
 
 from job_hunter import storage as storage_module
+from job_hunter.health import detect_count_anomaly
 from job_hunter.models import (
     Application,
     ApplicationStatus,
     Assessment,
+    HealthStatus,
     Job,
     JobFeedback,
     LocationConfidence,
+    SourceHealth,
 )
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
@@ -721,3 +724,60 @@ def test_cleanup_never_touches_applications_or_their_tombstones(tmp_path):
         assert set(deleted) == {"jobs", "assessments", "job_feedback"}  # return shape unchanged
         assert storage.get_application("acme", "stale")["status"] == "applied"
         assert storage.get_application_tombstone("acme", "other") is not None
+
+
+# --- count-anomaly baseline: a zero-job run must never become the new "previous count" --------
+
+
+def _record(storage, count, status=HealthStatus.OK):
+    storage.update_health(
+        SourceHealth(source_key="apple", company="Apple", status=status, job_count=count)
+    )
+
+
+def test_previous_job_count_survives_a_zero_job_run(tmp_path):
+    """Regression: Apple stored last_job_count=0 after an empty run, so the next empty run
+    compared 0 -> 0, was not flagged, and Apple vanished from the radar."""
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _record(storage, 1320)
+        _record(storage, 0, HealthStatus.WARNING)
+        _record(storage, 0)
+        assert storage.previous_job_count("apple") == 1320
+        health = SourceHealth(source_key="apple", company="Apple", status=HealthStatus.OK)
+        assert detect_count_anomaly(health, storage.previous_job_count("apple")).status == (
+            HealthStatus.WARNING
+        )
+
+
+def test_previous_job_count_follows_a_nonzero_count_and_is_none_for_unseen_source(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        assert storage.previous_job_count("apple") is None
+        _record(storage, 1320)
+        _record(storage, 400)
+        assert storage.previous_job_count("apple") == 400
+
+
+def test_previous_job_count_is_none_when_source_never_returned_jobs(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _record(storage, 0)
+        assert storage.previous_job_count("apple") in (None, 0)
+
+
+def test_migration_backfills_nonzero_baseline_from_last_job_count(tmp_path):
+    path = tmp_path / "jobs.sqlite3"
+    with Storage(path) as storage:
+        _record(storage, 900)
+        storage.connection.execute("UPDATE source_health SET last_nonzero_job_count=NULL")
+        storage.connection.execute("PRAGMA user_version = 4")
+        storage.connection.commit()
+    with Storage(path) as storage:
+        assert storage.previous_job_count("apple") == 900
+
+
+def test_a_partial_warning_run_does_not_replace_the_baseline(tmp_path):
+    with Storage(tmp_path / "jobs.sqlite3") as storage:
+        _record(storage, 1320)
+        _record(storage, 340, HealthStatus.WARNING)
+        assert storage.previous_job_count("apple") == 1320
+        _record(storage, 1400)
+        assert storage.previous_job_count("apple") == 1400

@@ -21,7 +21,7 @@ class WorkdayAdapter(ConfigurableJsonAdapter):
             raise SchemaError("list_url is not configured")
         limit = int(cfg.get("page_size", 20))
         offset = 0
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         total: int | None = None
         while offset < int(cfg.get("max_jobs", 2000)):
             payload = {

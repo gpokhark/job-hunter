@@ -207,6 +207,9 @@ class SourceHealth(BaseModel):
     job_count: int = 0
     message: str | None = None
     error_type: str | None = None
+    failure_kind: Literal["rate_limited", "timeout"] | None = None
+    http_status: int | None = None
+    retry_after_seconds: float | None = None
     attempted_at: datetime = Field(default_factory=utcnow)
 
 
@@ -315,6 +318,9 @@ class PipelineManifest(BaseModel):
     archive: str | None = None
     radar: str | None = None
     candidates: int | None = None
+    # Sources the radar reported as rate limited / timed out this run (its `--result-json`
+    # `rate_limited_sources`): provenance for a caller polling the manifest, never a gate.
+    rate_limited_sources: list[dict[str, Any]] | None = None
     # Populated only by --no-scrape mode's REFILTER stage, read from
     # scripts/refilter_archive.py's own structured `--result-json` output (not stdout parsing —
     # see pipeline.py's `_run_pipeline_body`). `gained`/`lost` name the exact vocabulary

@@ -112,6 +112,7 @@ def test_build_groups_by_score_and_tags_tiers(tmp_path):
         "source_issues": 0,
         "failed": 0,
         "stale_source_fallback": [],
+        "rate_limited_sources": [],
     }
     html = output_path.read_text()
     assert "Exceptional Role" in html
@@ -674,6 +675,7 @@ def test_never_reviewed_row_matches_scored_row_layout(tmp_path):
         "source_issues": 0,
         "failed": 0,
         "stale_source_fallback": [],
+        "rate_limited_sources": [],
     }
     html = output_path.read_text()
     assert 'data-source-key="ford"' in html
@@ -985,8 +987,9 @@ def test_collection_fallback_with_no_prior_success_merges_nothing(tmp_path):
 
 
 def test_collection_fallback_never_triggers_for_warning_or_unsupported_sources(tmp_path):
-    """Deliberately scoped to status == "failed" only — a warning source already produced real
-    live data this run (just fewer jobs than health.py's count-anomaly check expected), and an
+    """Scoped to `failed` or a warning that stopped early (failure_kind/error_type) — a count-drop
+    warning already produced real live data this run (just fewer jobs than health.py's
+    count-anomaly check expected), and an
     unsupported source never has cached data to fall back to; neither should ever pull in old
     SQLite jobs or gain the fallback note text."""
     now = datetime(2026, 9, 17, tzinfo=UTC)
@@ -1470,3 +1473,138 @@ def test_live_render_has_a_stop_server_button_and_static_does_not(tmp_path):
     assert '<button type="button" id="live-stop" class="live-stop">Stop server</button>' in html
     static, _ = render(**_golden_inputs(tmp_path))
     assert "live-stop" not in static and "Stop server" not in static
+
+
+_RATE_LIMITED_ROW = {
+    "source_key": "waymo", "company": "Waymo", "status": "warning", "job_count": 12,
+    "failure_kind": "rate_limited", "http_status": 429, "retry_after_seconds": 90.0,
+    "message": (
+        "rate limited (HTTP 429), Retry-After 90s; kept 12 job(s) fetched before it stopped; "
+        "remainder not collected, will retry next run"
+    ),
+}
+
+
+def _build_with_health(tmp_path, rows, *, stored_jobs=()):
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        for job in stored_jobs:
+            storage.upsert_job(job)
+    search_path = tmp_path / "search.json"
+    search_path.write_text(json.dumps(_search_json([], source_health=rows)))
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+    stats = build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]),
+        max_age_days=30,
+    )
+    return stats, output_path.read_text()
+
+
+def test_rate_limited_partial_source_shows_badge_reason_and_merges_earlier_jobs(tmp_path):
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    earlier = _make_stored_job(
+        source_key="waymo", company="Waymo", job_id="earlier",
+        title="AV Perception Engineer", posted_at=now - timedelta(days=5),
+    )
+    stats, html = _build_with_health(tmp_path, [_RATE_LIMITED_ROW], stored_jobs=[earlier])
+    assert 'class="tag tag-source-ratelimited"' in html
+    assert "Rate limited" in html
+    assert "kept 12 job(s) fetched before it stopped" in html
+    assert "Collection stopped early today — showing 1 earlier job(s)" in html
+    assert "AV Perception Engineer" in html
+    assert stats["rate_limited_sources"] == [
+        {
+            "source_key": "waymo", "company": "Waymo", "status": "warning",
+            "failure_kind": "rate_limited", "http_status": 429,
+            "retry_after_seconds": 90.0, "jobs_kept": 12,
+        }
+    ]
+    assert stats["stale_source_fallback"] == [
+        {"source_key": "waymo", "merged_count": 1, "last_success_at": None}
+    ]
+
+
+def test_timed_out_source_with_nothing_kept_is_labelled_timed_out(tmp_path):
+    row = {
+        "source_key": "waymo", "company": "Waymo", "status": "failed", "job_count": 0,
+        "failure_kind": "timeout", "message": "listing timed out after 1200s",
+    }
+    stats, html = _build_with_health(tmp_path, [row])
+    assert 'class="tag tag-source-timeout"' in html
+    assert "Timed out" in html
+    assert stats["rate_limited_sources"][0]["failure_kind"] == "timeout"
+    assert stats["rate_limited_sources"][0]["jobs_kept"] == 0
+
+
+def test_legacy_health_rows_without_failure_fields_render_as_before(tmp_path):
+    rows = [
+        {"source_key": "a", "company": "A", "status": "warning", "message": "Job count dropped 80%."},
+        {"source_key": "b", "company": "B", "status": "failed", "message": "Connection reset."},
+    ]
+    stats, html = _build_with_health(tmp_path, rows)
+    assert 'class="tag tag-source-warning"' in html
+    assert 'class="tag tag-source-failed"' in html
+    assert "Rate limited" not in html and "Timed out" not in html
+    assert stats["rate_limited_sources"] == []
+
+
+def _early_stop_row(**updates):
+    row = {
+        "source_key": "waymo", "company": "Waymo", "status": "warning", "job_count": 3,
+        "error_type": "ValueError",
+        "message": "ValueError: bad page; kept 3 job(s) fetched before it stopped; "
+        "remainder not collected, will retry next run",
+    }
+    row.update(updates)
+    return row
+
+
+def test_early_stopped_warning_without_failure_kind_merges_earlier_jobs_and_is_listed(tmp_path):
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    earlier = _make_stored_job(
+        source_key="waymo", company="Waymo", job_id="earlier",
+        title="AV Perception Engineer", posted_at=now - timedelta(days=5),
+    )
+    stats, html = _build_with_health(tmp_path, [_early_stop_row()], stored_jobs=[earlier])
+    assert "AV Perception Engineer" in html
+    assert "Collection stopped early today — showing 1 earlier job(s)" in html
+    assert stats["rate_limited_sources"] == [
+        {
+            "source_key": "waymo", "company": "Waymo", "status": "warning",
+            "failure_kind": None, "http_status": None,
+            "retry_after_seconds": None, "jobs_kept": 3,
+        }
+    ]
+
+
+def test_count_drop_warning_is_neither_merged_nor_listed(tmp_path):
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    stored = _make_stored_job(
+        source_key="waymo", company="Waymo", job_id="stored",
+        title="AV Perception Engineer", posted_at=now - timedelta(days=5),
+    )
+    row = {"source_key": "waymo", "company": "Waymo", "status": "warning", "message": "Job count dropped 80%."}
+    stats, html = _build_with_health(tmp_path, [row], stored_jobs=[stored])
+    assert "Collection stopped early" not in html
+    assert stats["rate_limited_sources"] == []
+    assert stats["stale_source_fallback"] == []
+
+
+def test_failed_row_with_error_type_only_is_not_listed_as_stopped_early(tmp_path):
+    row = {
+        "source_key": "waymo", "company": "Waymo", "status": "failed", "job_count": 0,
+        "error_type": "ValueError", "message": "ValueError: boom",
+    }
+    stats, _html = _build_with_health(tmp_path, [row])
+    assert stats["rate_limited_sources"] == []
+
+
+def test_early_stopped_warning_with_nothing_stored_uses_the_zero_wording(tmp_path):
+    _stats, html = _build_with_health(tmp_path, [_early_stop_row()])
+    assert "Collection stopped early today — no additional earlier jobs to show." in html
+    assert "showing 0 earlier" not in html

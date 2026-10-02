@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import math
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +21,27 @@ class AdapterError(RuntimeError):
 
 class SchemaError(AdapterError):
     pass
+
+
+class RateLimitError(AdapterError):
+    """A request was still rate-limited (HTTP 429, or a WAF challenge) after every retry."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        url: str = "",
+        retry_after_seconds: float | None = None,
+    ):
+        super().__init__(message)
+        self.http_status = http_status
+        self.url = url
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ListingTimeout(AdapterError):
+    """The listing phase exceeded `collection.source_timeout_seconds`."""
 
 
 class JobAdapter(ABC):
@@ -48,10 +71,39 @@ class JobAdapter(ABC):
         # adapter's behavior unchanged.
         self._request_lock = asyncio.Lock()
         self._last_request_at: float | None = None
+        # Listings registered via begin_listing()/keep(): what a failing fetch_summaries()
+        # had already collected, so the collector can salvage it (see `kept`).
+        self._listings: list[list[JobSummary]] = []
+        self._kept_extra: list[JobSummary] = []
 
     @property
     def source_key(self) -> str:
         return self.company.key
+
+    def begin_listing(self) -> list[JobSummary]:
+        """Returns a fresh accumulator the adapter fills in place (`.append`/`.extend`) and
+        eventually returns; the base registers it so a later exception still leaves its
+        contents readable via `kept`. One list per fetch_summaries() call."""
+        listing: list[JobSummary] = []
+        self._listings.append(listing)
+        return listing
+
+    def keep(self, batch: Iterable[JobSummary]) -> None:
+        """For adapters that can't hand out a live list: register a finished batch."""
+        self._kept_extra.extend(batch)
+
+    @property
+    def kept(self) -> list[JobSummary]:
+        """Everything registered so far, de-duplicated by job_id (first occurrence wins)."""
+        seen: set[str] = set()
+        result: list[JobSummary] = []
+        for listing in (*self._listings, self._kept_extra):
+            for job in listing:
+                if job.job_id in seen:
+                    continue
+                seen.add(job.job_id)
+                result.append(job)
+        return result
 
     async def _pace(self) -> None:
         import random
@@ -92,8 +144,19 @@ class JobAdapter(ABC):
                     return response
                 if attempt == max_retries:
                     if is_waf_challenge:
-                        raise AdapterError(
-                            f"WAF challenge not cleared after {attempt + 1} attempts: {url}"
+                        raise RateLimitError(
+                            f"WAF challenge not cleared after {attempt + 1} attempts: {url}",
+                            http_status=response.status_code,
+                            url=url,
+                        )
+                    if response.status_code == 429:
+                        raise RateLimitError(
+                            f"rate limited (HTTP 429) after {attempt + 1} attempts: {url}",
+                            http_status=429,
+                            url=url,
+                            retry_after_seconds=_parse_retry_after(
+                                response.headers.get("Retry-After")
+                            ),
                         )
                     response.raise_for_status()
                 if is_waf_challenge:
@@ -141,6 +204,24 @@ class JobAdapter(ABC):
             )
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """Retry-After in seconds for *reporting* (uncapped, unlike `_retry_delay`, which caps what
+    we sleep). Non-finite or unparseable values report None so they never reach the archive."""
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            target = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        seconds = (target - datetime.now(target.tzinfo)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
+
+
 def _retry_delay(value: str | None, attempt: int) -> float:
     if value:
         try:
@@ -155,10 +236,17 @@ def _retry_delay(value: str | None, attempt: int) -> float:
 
 
 def nested(data: Any, path: str, default: Any = None) -> Any:
+    """Walks a dotted path through dicts and lists; any step that is not there — a missing key,
+    a wrong type, or a list index past the end (an empty `departments` list for
+    `departments.0.name`) — returns `default`, never raises. Required structure is still
+    enforced by the callers (e.g. `items_path` must resolve to a list, else SchemaError)."""
     current = data
     for part in path.split(".") if path else []:
         if isinstance(current, list) and part.isdigit():
-            current = current[int(part)]
+            index = int(part)
+            if index >= len(current):
+                return default
+            current = current[index]
         elif isinstance(current, dict) and part in current:
             current = current[part]
         else:

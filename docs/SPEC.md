@@ -160,7 +160,9 @@ Assessment           — source_key, job_id, company, title, url, content_hash, 
                        recommended (bool), matches (2-4 strings), gaps (1-3 strings),
                        resume_path, assessed_at
 SourceHealth          — source_key, company, status (ok/warning/failed/unsupported), job_count,
-                       message, error_type, attempted_at
+                       message, error_type, attempted_at, plus optional failure_kind
+                       ("rate_limited"/"timeout"), http_status, retry_after_seconds
+                       (absent in older archives; they load unchanged)
 SearchSummary          — sources_attempted/succeeded/failed, jobs_observed, us_eligible,
                        prefilter_candidates, stale_excluded, partial_failure
 SearchResult            — run (RunInfo), summary, source_health[], candidates: list[Job]
@@ -244,7 +246,7 @@ that's a cost paid once per company, not per search.
 | hma | Hyundai Motor America | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | apple | Apple | apple | Yes (`postDateInGMT`) | httpx only — React Router SSR JSON (§5.9) |
 | google | Google | stealth_html | No | Scrapling stealth browser + selectolax — not bot-blocked, JS-only "boq-hiring" frontend with Closure-hashed CSS classes (fragile across a redesign) |
-| waymo | Waymo | html_paginated | Conditional — JobPosting JSON-LD when not WAF-challenged (§5.7) | httpx + selectolax, rate-sensitive |
+| waymo | Waymo | greenhouse | Yes — `content=true` inlines the full description, `first_published` is the posting date | Public Greenhouse job-board API (board token `waymo`), plain httpx; replaced the `stealth_html` card scrape on 2026-10-01 (see the Waymo bullet in §5.7) |
 | hatci | Hyundai America Technical Center | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | caterpillar | Caterpillar | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API (~982 jobs), same fix as GM (`careers.caterpillar.com` is only the marketing front end); a first-time full-catalog `--refresh-details` run has been observed to hit 429s from Workday's shared host under this project's default detail-fetch concurrency — same known caveat GM's entry already carries, see §5.7 |
 | nvidia | NVIDIA | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API, ~2,000 jobs visible (real catalog ~2,697 per facet counts; this tenant's search hard-caps at 2,000, see §5.7); rate-limits reproducibly even on a normal (non-`--refresh-details`) run, worse than GM/Caterpillar — see §5.7 |
@@ -361,8 +363,8 @@ Three independent mechanisms feed a posting date, in order of coverage:
    for a JobPosting JSON-LD block (`normalizer.extract_job_posting_ld`) regardless of adapter
    config, using its `datePosted`/`employmentType` without overriding a description a
    `description_selector` already found. This is what covers Astemo (no per-field config exists
-   for it), Toro, and conditionally Waymo (present only when its AWS WAF challenge isn't currently
-   blocking the fetch — §5.7). The regex matches `type="application/ld+json"` anywhere in the
+   for it) and Toro (Waymo used to be covered here too, until it moved to its public Greenhouse feed
+   — §5.7). The regex matches `type="application/ld+json"` anywhere in the
    `<script>` tag's attributes, not only immediately after `<script `, since Astemo's markup puts
    another attribute first.
 3. **Liferay DDM `JobOfferData` fallback (HRI only)** — HRI's Liferay-backed detail pages carry no
@@ -412,10 +414,19 @@ false-positive here.
   keep the more stable listing-level `postedDate`; a `--refresh-details` run would start picking up
   JSON-LD's drifting value instead. Prefer the listing's `postedDate` if this date is ever more
   actively relied upon (e.g. a tighter recency cutoff).
-- **Waymo is rate-sensitive.** An AWS WAF JS-execution challenge sits in front of the whole site
-  and escalates with request volume — confirmed to return an empty HTTP 202 to both curl and httpx
-  once triggered (listing and detail alike), while a JS-capable fetch (Scrapling) passes reliably.
-  Retest with `source-test` rather than assuming a failed run means the source is broken.
+- **Waymo: method in use is Greenhouse's public job-board API (since 2026-10-01).**
+  `careers.withwaymo.com` is a skin over Greenhouse (job links are `?gh_jid=<id>`); the feed at
+  `boards-api.greenhouse.io/v1/boards/waymo/jobs?content=true` is unauthenticated and returns the
+  whole catalog (~360 jobs) in one request with full descriptions, a department and a posting date
+  on every job. It never touches the careers site, so none of the points below about its WAF apply
+  to the current method. **Previous method (kept, commented out, in `config/companies.yaml`):**
+  `stealth_html` driving a real browser over the site's listing cards. An AWS WAF request-rate
+  challenge sits in front of the careers site and escalates with request volume — an empty HTTP 202
+  to curl/httpx once triggered, while a JS-capable fetch (Scrapling) passes until the rate trips it
+  (page 8 timed out on 2026-09-30, keeping 210 of ~360 jobs) — and it blocks nearly every detail
+  page, so that method only ever saw each card's ~250-char company blurb as the "description" and
+  no posting date. Switching changed job ids (hashes → Greenhouse numeric ids), so rows from the
+  old method age out through `mark_missing` and their cached assessments do not carry over.
 - **Tesla is unsupported, not merely rate-limited.** An Akamai edge-level "Access Denied"
   (`errors.edgesuite.net`) held even with `stealth_html`'s fingerprint spoofing (both
   `AsyncStealthySession` and `AsyncDynamicSession` tried) — this looks like an IP/ASN-reputation
@@ -514,6 +525,24 @@ uv run scrapling install
   anti-bot circumvention, independent of personal/non-commercial intent. `google` isn't defended
   by anything; using a browser there is a rendering necessity (its JS-only frontend), not
   circumvention.
+- **A blocked page never looks like the end of a listing.** `request()` raises on any fetch
+  failure (timeout-class errors as `ListingTimeout`, everything else as `AdapterError` naming the
+  cause) instead of returning an empty page, and the pagination loops are strict
+  (`strict_pagination`): a continuation page with zero cards, or running out of `max_pages` with
+  more pages promised, raises. The collector then keeps the pages already fetched, records a
+  `warning`, and skips `mark_missing`, so a partial run closes no job. Known limits: a page-number
+  source whose total is an exact multiple of its page size ends on a legitimately empty page and
+  will show a (harmless, all-jobs-kept) warning; a challenge page that returns *fewer* cards than
+  `page_size` still ends pagination quietly. The `skip_detail_fetch` loop supports `next_selector`,
+  `page_parameter` (row offset) and `page_number_parameter`, paced by
+  `min_request_interval_seconds`. A repeated URL (a "next" link back to a page already fetched)
+  raises as a pagination loop rather than ending quietly.
+- **A capped listing is a warning, not `ok`.** A source whose real catalog is larger than
+  `max_pages` x page size now reports "stopped at max_pages=N with more pages available" as a
+  `warning` (every fetched job is kept; `mark_missing` is skipped, so nothing closes). Before this
+  it was reported `ok` and the unreached jobs aged out. `google` is the live example: with no
+  `max_pages` it has always stopped at the default 20 pages (exactly 400 jobs), so it stays a
+  warning until its `max_pages` is raised above its real page count.
 - **Per-request cost:** each fetch is a real browser page load (~1-2s), not a lightweight HTTP
   call — detail fetches are concurrent within a source (bounded by `max_concurrent_details`) but a
   large source can still take a while end-to-end.
@@ -920,7 +949,68 @@ data, JSON-LD, Liferay DDM) and probing techniques.
    early-pagination-stop source from falsely marking jobs "closed" just because it stopped looking
    for them.
 8. `health.py`'s `detect_count_anomaly` flags (never fails) a source whose job count drops >70%
-   from its last known count.
+   from its last non-zero count (that baseline advances only on a clean `ok` run).
+
+### Partial collection and rate limits
+
+- A terminal 429 or WAF challenge (after retries) raises `RateLimitError` (`http_status`, `url`,
+  `retry_after_seconds`) instead of a generic `AdapterError`.
+- Adapters register what they have fetched so far: `begin_listing()` returns a list the base class
+  registers (per `fetch_summaries()` call), and `keep(batch)` extends `adapter.kept` page by page.
+  Not registering is valid and means "nothing to salvage".
+- On any listing failure (`RateLimitError`, timeout, other exception) the collector keeps
+  `adapter.kept`, deduplicated, and runs it through the normal detail/location/upsert path. The
+  source is recorded as `warning` with `failure_kind` (`rate_limited`/`timeout`; none for other
+  exceptions), never calls `mark_missing`, and does not advance the non-zero count baseline (only a
+  clean `ok` run does). `failed` is used only when nothing was kept; `failure_kind`/`http_status`/
+  `retry_after_seconds` are still filled when known.
+- `collection.source_timeout_seconds` (default 1200; `None` disables) bounds the listing phase of one
+  source only, not detail fetching.
+- `render_radar.py` shows "Rate limited"/"Timed out" badges in Collection Issues, extends the
+  stale-source fallback to `failed`, or a `warning` that stopped early (carries a `failure_kind` or an
+  `error_type`; count-drop warnings still get none), and lists such sources (those that stopped early
+  and kept partial results) as `rate_limited_sources` in its `--result-json`. The pipeline
+  manifest copies that list, and a pipeline that would be `complete` with any rate-limited source
+  ends `partial`. `source-status` is unchanged: `failure_kind` lives in the archive, not SQLite.
+
+### 6b. Background collector (`background.py`)
+
+`job-hunter collect start [--companies A,B] [--slow]` spawns a detached process
+(`python -m job_hunter.background`) running `Collector.search()` and returns immediately with JSON
+`{started, pid, state, log}`. It refuses to start while a live collector is recorded; a recorded
+run whose PID is dead (`abandoned`) does not block a new start.
+
+- **State file:** `data/collect/state.json` (`CollectState`), written atomically after every source
+  event; log at `data/collect/collector.log`. Fields: `run_id`, `pid`, `pid_start_time`, `status`
+  (`running`/`complete`/`stopped`/`failed`), `slow`, `companies_filter`, `started_at`,
+  `updated_at`, `completed_at`, `archive`, `error`, and `sources[]` (`source_key`, `company`,
+  `status` pending/running/ok/warning/failed/unsupported/skipped, `job_count`, `message`,
+  `error_type`, `failure_kind`, `http_status`, `retry_after_seconds`, `attempted_at`,
+  `finished_at`). A `running` state whose PID is dead is reported as the derived status `abandoned`.
+- **Locks:** the runner holds only `run_lock("collector")`, never the shared `"job-hunter"` lock, so
+  refilter, review and render stay available during a collection. `cleanup --apply` refuses
+  (`RunLockHeld`) while the collector lock is held; a dry run is unaffected.
+- **Archive:** the runner never writes an archive mid-run. On normal completion (not stopped) it
+  writes the final archive at the path a foreground `search --archive` run would use
+  (`archive_path(None, ...)`, i.e. `data/searches/default_<date>.json`, with the companies suffix
+  when `--companies` was given). The runner writes it under the shared `job-hunter` lock; if the
+  lock is busy it does not wait and writes a `collect-final` named archive instead.
+- **`collect status [--json]`:** prints `N/M sources finished`, lists sources that stopped early (rate-limited/timed-out/errored; reason, HTTP status, kept jobs) and failed sources; exit `2` with a message if no
+  collection was ever started.
+- **`collect stop`:** cooperative. SIGTERM goes to the live collector; in-flight sources finish,
+  not-yet-started sources are skipped, status ends `stopped`, and no archive is written.
+- **`snapshot`:** builds an archive on demand from what is stored so far. It writes a minimal
+  archive containing only FINISHED sources in `source_health` (including rate-limited/timed-out
+  reasons) to its own filename `data/searches/collect-snapshot_<date>.json` (with a `__companies-...` suffix when the run was `--companies`-scoped; deliberately not the
+  default archive's name, so it never clobbers a real same-day foreground archive), holding the
+  shared `job-hunter` lock only for that short write (exit `2` with an "in progress" message if a
+  pipeline/review/cleanup run holds it). It then runs `scripts/refilter_archive.py --no-report` on
+  it to rebuild candidates from SQLite and prints the path plus the next command:
+  `job-hunter pipeline --no-scrape --search <path>` (add `--review` to score new jobs). Exit `2` if
+  there is no state file or no source has finished yet.
+- **Slow mode:** `--slow` uses `settings.collection.background` (defaults: 1 source at a time, 30 s
+  delay between sources; see the comment in `config/settings.yaml`).
+- **Non-goal:** no scheduling. Collection is started by hand; nothing re-runs it.
 
 ---
 
@@ -1020,8 +1110,10 @@ of an index table.
 
 ### 8.3 `source_health` — one row per source, rolling status
 
-`last_attempt_at`, `last_success_at`, `last_job_count`, `consecutive_failures`, `last_status`,
-`last_error_type/message`.
+`last_attempt_at`, `last_success_at`, `last_job_count`, `last_nonzero_job_count`,
+`consecutive_failures`, `last_status`, `last_error_type/message`. `last_nonzero_job_count` (migration
+v5) is the baseline `detect_count_anomaly` compares against: a zero-job run never replaces it, so one
+empty run can't disarm the check for the next (Apple's 2026-09-30 incident).
 
 ### 8.4 `assessments` — one row per `(source_key, job_id)`, a fitness verdict
 
@@ -1132,6 +1224,10 @@ explicit, dry-run-by-default answer:
 | `resolve-search` | `--search`/`--keyword` (mutually exclusive) | prints which `data/searches/*.json` archive resolves for a given keyword (or the newest overall with neither flag) — the same resolution `review_with_lm_studio.py`/`render_radar.py` use internally; see §11 and `docs/skill-split-plan.md` §4 |
 | `cleanup` | `--apply` (default off — dry run), `--no-vacuum`, `--jobs-only`/`--reports-only` (mutually exclusive), `--no-export` | deletes closed jobs and old generated profile-diff/radar reports per `settings.retention.*` (§8.6, `docs/retention-cleanup-plan.md`); writes a pre-delete export before `--apply` actually removes anything |
 | `pipeline` | `--keyword`, `--companies`, `--limit`, `--new-only`, `--refresh-details`, `--max-candidates`, `--skip-review`, `--skip-radar`, `--no-scrape`, `--review` | search → review → radar end to end as one command, writing `data/runs/<run_id>/manifest.json` at every stage (`docs/pipeline-refilter-stale-source-plan.md`). `--no-scrape` skips the live search and instead refilters an already-resolved archive against SQLite + the current profile (rejected together with `--companies`); its own `--review` defaults **off** (opposite of normal mode's `--skip-review` opt-out) |
+| `collect start` | `--companies`, `--slow` | spawn the detached background collector (§6b); prints `{started, pid, state, log}`; refuses if a live collector is recorded |
+| `collect status` | `--json` | per-run progress, rate-limited/timed-out and failed sources; exit `2` if no collection was ever started |
+| `collect stop` | — | cooperative stop (SIGTERM to the live collector) |
+| `snapshot` | — | build `data/searches/collect-snapshot_<date>.json` from what the collector has stored so far, refilter it, print the next command (§6b); exit `2` if no state or no finished source |
 | `pipeline-status` | `--run <id>` (default: newest run overall) | prints a pipeline run's manifest as JSON; exit `2` if `status` is `failed`/`model_unavailable` |
 
 Exit codes: `0` success; `2` on config/validation error or (for `search`) zero sources succeeded;
@@ -1164,7 +1260,7 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | Script | Role |
 |---|---|
 | `review_with_lm_studio.py` | Sends each not-yet-cached U.S.-eligible candidate to a local model (LM Studio OpenAI-compatible API), **one at a time, strictly sequential**, persisting each verdict immediately (§8.4). `--input` (search JSON; if omitted, resolved via `--keyword`/newest-overall), `--keyword` (resolve `--input` by slug), `--config` (LM Studio connection), `--limit` (cap *new* reviews), `--force`, `--status` (print remaining/cached counts, no model calls, no changes). Strict JSON-schema validation of the model's verdict (`ModelVerdict`) — rejects malformed responses rather than coercing them. |
-| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score, with one disclosed exception: for a `failed` (never `warning`/`unsupported`) source, merges that source's current active/eligible/prefilter-passing/recency-passing jobs from SQLite (`active_pool.source_jobs()`) into the rendered candidate pool, extending its Collection Issues note with how many jobs came from the fallback and when it last actually succeeded — never rewrites the archive file, only the rendered HTML (§4.3 of `docs/pipeline-refilter-stale-source-plan.md`). `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10), `--no-collection-fallback` (disable the merge, default on). |
+| `render_radar.py` | Pure presentation: joins a search archive + `data/assessments.json` into a single-page HTML report — Strong (≥75)/For-review (50-74) groups, a five-step score-color gradient across the whole 50-100 range plus a `[New]` tag, sponsorship tags, plus a leading "Collection issues" section listing every source that run's `source_health` marked non-`ok` (failed/warning/unsupported, with its message), sorted failed-first. Never re-derives a score, with one disclosed exception: for a `failed` source or a `warning` that carries a `failure_kind` (rate-limited/timed-out; never `unsupported`, never a count-drop `warning`), merges that source's current active/eligible/prefilter-passing/recency-passing jobs from SQLite (`active_pool.source_jobs()`) into the rendered candidate pool, extending its Collection Issues note with how many jobs came from the fallback and when it last actually succeeded — never rewrites the archive file, only the rendered HTML (§4.3 of `docs/pipeline-refilter-stale-source-plan.md`). `--search` (optional — if omitted, resolved via `--keyword`/newest-overall), `--assessments`, `--output` (defaults from the search filename's stem), `--title`, `--keyword`, `--new-days` (default 10), `--no-collection-fallback` (disable the merge, default on). |
 | `assessments_to_csv.py` | Human-readable `data/assessments.csv` from the assessments store. |
 | `search_to_csv.py` | Human-readable CSV from a search JSON archive. |
 | `endpoint_probe.py` | Manual tool for inspecting a candidate scraping endpoint before wiring up a new adapter config. |

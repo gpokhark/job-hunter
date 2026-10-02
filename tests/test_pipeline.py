@@ -852,3 +852,52 @@ def test_stage_timeout_kills_the_whole_process_group_including_grandchildren(tmp
             break
         time.sleep(0.1)
     assert not alive, f"grandchild pid {grandchild_pid} was still alive after the stage timeout killed its group"
+
+
+async def _run_with_radar_payload(tmp_path, monkeypatch, radar_payload):
+    archive = tmp_path / "data" / "searches" / "default_2026-09-17.json"
+    _write_archive(archive, prefilter_candidates=5)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("job_hunter.pipeline.load_profile", lambda: CandidateProfile())
+    monkeypatch.setattr(
+        "job_hunter.pipeline.resolve_search_path", lambda *, search=None, keyword=None: archive
+    )
+
+    def fake_run(cmd, **kwargs):
+        if "scripts/refilter_archive.py" in cmd:
+            _write_result_json_for(
+                cmd, {"gained": 0, "lost": 0, "diff_report": None, "refiltered_at": "2026-09-17T12:00:00+00:00"}
+            )
+        elif "scripts/review_with_lm_studio.py" in cmd:
+            _write_result_json_for(cmd, {"reviewed": 3, "skipped_cached": 0, "failed": 0})
+        elif "scripts/render_radar.py" in cmd:
+            _write_result_json_for(cmd, radar_payload)
+        else:
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+        return _fake_proc()
+
+    monkeypatch.setattr("job_hunter.pipeline._popen", _fake_popen(fake_run))
+    return await run_pipeline(Settings(), tmp_path, no_scrape=True, review=True)
+
+
+async def test_rate_limited_sources_are_recorded_and_downgrade_complete_to_partial(tmp_path, monkeypatch):
+    limited = [
+        {"source_key": "acme", "company": "Acme", "status": "warning",
+         "failure_kind": "rate_limited", "http_status": 429,
+         "retry_after_seconds": None, "jobs_kept": 12}
+    ]
+    manifest = await _run_with_radar_payload(
+        tmp_path, monkeypatch,
+        {"report_path": "data/radar/default_2026-09-17.html", "rate_limited_sources": limited},
+    )
+    assert manifest.rate_limited_sources == limited
+    assert manifest.status == PipelineStatus.PARTIAL
+
+
+async def test_no_rate_limited_sources_leaves_a_clean_run_complete(tmp_path, monkeypatch):
+    manifest = await _run_with_radar_payload(
+        tmp_path, monkeypatch,
+        {"report_path": "data/radar/default_2026-09-17.html", "rate_limited_sources": []},
+    )
+    assert manifest.rate_limited_sources is None
+    assert manifest.status == PipelineStatus.COMPLETE

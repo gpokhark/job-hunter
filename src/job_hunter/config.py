@@ -7,6 +7,13 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 
+class BackgroundConfig(BaseModel):
+    """`job-hunter collect start --slow`: a gentler pace for long background collections."""
+
+    max_concurrent_sources: int = Field(1, ge=1, le=20)
+    source_delay_seconds: float = Field(30.0, ge=0)
+
+
 class CollectionConfig(BaseModel):
     max_concurrent_sources: int = Field(3, ge=1, le=20)
     max_concurrent_details: int = Field(8, ge=1, le=50)
@@ -15,6 +22,11 @@ class CollectionConfig(BaseModel):
     timeout_seconds: float = Field(30, gt=0)
     max_retries: int = Field(3, ge=0, le=10)
     user_agent: str = "JobHunter/0.1 (+manual career search)"
+    # Wall-clock bound on one source's *listing* phase (fetch_summaries); on expiry the jobs
+    # the adapter had already registered are kept. None disables. Detail fetches are already
+    # per-job fail-soft and are not bounded by this.
+    source_timeout_seconds: float | None = Field(1200, gt=0)
+    background: BackgroundConfig = BackgroundConfig()
 
 
 class SearchConfig(BaseModel):

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from .base import AdapterError
+from .base import AdapterError, ListingTimeout
 from .html_paginated import HtmlPaginatedAdapter, _page_url
-
-logger = logging.getLogger(__name__)
 
 
 class _StealthResponse:
@@ -27,7 +24,14 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
     defeating a site's own anti-automation controls, with the ToS and resource-cost
     implications that carries. Requires the optional `stealth` dependency group
     (`uv sync --extra stealth` followed by `uv run scrapling install`).
+
+    A blocked or challenged page must never look like the end of the listing: `request()`
+    raises on any fetch failure, and `strict_pagination` makes an empty continuation page (or
+    running out of `max_pages`) raise too. Either way the collector keeps the pages already
+    fetched, records a `warning`, and skips `mark_missing`, so a partial run closes no job.
     """
+
+    strict_pagination = True
 
     def __init__(self, company, client, collection, max_posting_age_days=None):
         super().__init__(company, client, collection, max_posting_age_days)
@@ -70,21 +74,33 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
             raise SchemaError("list_url is not configured")
 
         url = start_url
-        jobs = []
+        jobs = self.begin_listing()
         max_results = self.collection.max_results if hasattr(self.collection, 'max_results') else 1000
+        max_pages = int(cfg.get("max_pages", 20))
+        page_size = int(cfg.get("page_size", 25))
+        seen_urls: set[str] = set()
 
-        while url and len(jobs) < max_results:
+        for page in range(max_pages):
+            if not url or len(jobs) >= max_results:
+                break
+            if url in seen_urls:
+                raise AdapterError(f"pagination loop: {url} was already fetched")
+            seen_urls.add(url)
             await self._pace()
             response = await self.request("GET", url)
-
-            if response is None:
-                break
 
             tree = HTMLParser(response.text)
             cards = tree.css(cfg.get("card_selector", "[data-job-id]"))
 
-            if not cards and not jobs:
-                raise SchemaError("no job cards matched configured selector")
+            if not cards:
+                if not jobs:
+                    raise SchemaError("no job cards matched configured selector")
+                # The loop asked for this page because the previous one promised more, so a
+                # blank/challenge page is a blocked fetch, not the end of the listing.
+                raise AdapterError(
+                    f"page returned no job cards after {len(jobs)} job(s) were already "
+                    f"collected; not treating it as the end of the listing: {url}"
+                )
 
             for card in cards:
                 if len(jobs) >= max_results:
@@ -153,15 +169,21 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
             next_href = next_node.attributes.get("href") if next_node else None
             if next_href:
                 url = urljoin(url, next_href)
-            elif cfg.get("page_parameter") and len(cards) >= int(cfg.get("page_size", 25)):
-                url = _page_url(
-                    url,
-                    cfg.get("page_parameter", "page"),
-                    cfg.get("page_size", 25),
-                    len(jobs) + 1,
-                )
+            elif cfg.get("page_parameter") and len(cards) >= page_size:
+                # Row-offset style, same as HtmlPaginatedAdapter.
+                url = _page_url(start_url, cfg["page_parameter"], (page + 1) * page_size)
+            elif cfg.get("page_number_parameter") and len(cards) >= page_size:
+                # 1-indexed page number, same as HtmlPaginatedAdapter.
+                url = _page_url(start_url, cfg["page_number_parameter"], page + 2)
             else:
-                break
+                url = None
+
+        if url:
+            raise AdapterError(
+                f"stopped after {len(jobs)} job(s) at max_pages={max_pages}/"
+                f"max_results={max_results} with more pages available; raise the limit "
+                "rather than truncate the listing"
+            )
 
         if not jobs:
             raise SchemaError("no jobs fetched")
@@ -194,25 +216,16 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
                 wait_selector=cfg.get("wait_selector"),
             )
         except Exception as exc:
-            # On timeout/WAF challenge, return empty HTML so the parent
-            # adapter can gracefully stop pagination rather than failing
-            # the entire run.  The parent's fetch_summaries checks
-            # "if not cards and not jobs" — if we already have jobs
-            # from earlier pages, an empty page just returns what we have.
-            # The exception itself is still logged rather than silently
-            # discarded — this except is broad by necessity (Scrapling
-            # raises different exception types for a timeout vs. a WAF
-            # challenge vs. a browser-launch failure), so a genuine bug here
-            # (not just an expected timeout/WAF block) would otherwise be
-            # invisible, surfacing only as a confusing "0 jobs, no error".
-            logger.warning(
-                "%s: stealth fetch of %s failed, treating as empty page (%s: %s)",
-                self.source_key,
-                url,
-                type(exc).__name__,
-                exc,
-            )
-            return _StealthResponse("")
+            # Scrapling raises different types for a timeout vs. a WAF challenge vs. a
+            # browser-launch failure, so this is broad by necessity — but every one of them
+            # means "this page was NOT fetched". Returning an empty page here used to make a
+            # blocked page 2 look like the end of the listing (reported `ok`, then
+            # `mark_missing` closed everything unreached). Raise instead: the collector keeps
+            # the pages already fetched and records a warning naming the cause.
+            reason = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TimeoutError) or type(exc).__name__.endswith("TimeoutError"):
+                raise ListingTimeout(f"stealth fetch of {url} timed out ({reason})") from exc
+            raise AdapterError(f"stealth fetch of {url} failed ({reason})") from exc
         return _StealthResponse(response.html_content)
 
     async def aclose(self) -> None:

@@ -48,7 +48,7 @@ class AdpRecruitingAdapter(JobAdapter):
             raise SchemaError("ADP career-site response missing myJobsToken")
         headers = {"myjobstoken": token, "accept": "application/json"}
         page_size = int(cfg.get("page_size", 100))
-        jobs: list[JobSummary] = []
+        jobs = self.begin_listing()
         skip = 0
         for _ in range(int(cfg.get("max_pages", 30))):
             params = {
