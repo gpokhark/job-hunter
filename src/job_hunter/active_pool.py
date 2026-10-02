@@ -35,9 +35,12 @@ actually needed from it:
 
 from __future__ import annotations
 
+import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .config import CandidateProfile
 from .models import Job
@@ -145,3 +148,61 @@ def source_jobs(
             continue
         kept.append(job)
     return kept
+
+
+@dataclass(frozen=True)
+class StoredJob:
+    """A stored job plus the two storage columns the `Job` model does not carry."""
+
+    job: Job
+    status: str
+    missing_count: int
+
+
+_SOURCE_AND_ID = re.compile(r"^([A-Za-z0-9_]+):([^/\s].*)$")
+
+
+def _lookups(conn: sqlite3.Connection, ref: str, limit: int):
+    """Successive attempts to resolve `ref`; `find_jobs` returns the first non-empty one."""
+    if "://" not in ref:
+        match = _SOURCE_AND_ID.match(ref)
+        if match:
+            yield conn.execute(
+                "SELECT * FROM jobs WHERE source_key=? AND job_id=?", (match[1], match[2])
+            ).fetchall()
+    if ref.lower().startswith(("http://", "https://")):
+        yield conn.execute("SELECT * FROM jobs WHERE canonical_url=?", (ref,)).fetchall()
+        tokens = sorted(set(re.findall(r"\d{4,}", urlsplit(ref).path)), key=len, reverse=True)
+        for token in tokens:
+            yield conn.execute(
+                "SELECT * FROM jobs WHERE job_id=? OR instr(canonical_url, ?) > 0 LIMIT ?",
+                (token, token, limit),
+            ).fetchall()
+        return
+    if " " not in ref:
+        yield conn.execute("SELECT * FROM jobs WHERE job_id=? LIMIT ?", (ref, limit)).fetchall()
+    yield conn.execute(
+        "SELECT * FROM jobs WHERE instr(lower(title), ?) > 0 ORDER BY last_seen_at DESC LIMIT ?",
+        (ref.lower(), limit),
+    ).fetchall()
+
+
+def find_jobs(database_path: Path, ref: str, *, limit: int = 50) -> list[StoredJob]:
+    """Resolve a user's reference to stored jobs (any status, any eligibility), read-only.
+
+    Order, first non-empty wins: `source_key:job_id`; for URLs, the exact `canonical_url` then
+    digit tokens from the URL path matched against `job_id`/`canonical_url`; a bare `job_id`;
+    finally a case-insensitive title substring (`instr`, so `%`/`_` are literal). A careers-site
+    URL whose ids were never stored legitimately resolves to nothing."""
+    ref = ref.strip()
+    if not ref:
+        return []
+    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        for rows in _lookups(conn, ref, limit):
+            if rows:
+                return [StoredJob(_row_to_job(r), r["status"], r["missing_count"]) for r in rows]
+        return []
+    finally:
+        conn.close()

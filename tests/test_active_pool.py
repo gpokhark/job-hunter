@@ -7,7 +7,7 @@ docs/pipeline-refilter-stale-source-plan.md section 4.4."""
 
 from datetime import UTC, datetime
 
-from job_hunter.active_pool import raw_active_jobs, source_jobs
+from job_hunter.active_pool import StoredJob, find_jobs, raw_active_jobs, source_jobs
 from job_hunter.config import CandidateProfile
 from job_hunter.models import Assessment, Job, LocationConfidence
 from job_hunter.storage import Storage
@@ -129,3 +129,85 @@ def test_source_jobs_returns_empty_for_a_source_with_no_active_jobs(tmp_path):
 
     profile = CandidateProfile(target_domains=["engineer"])
     assert source_jobs(db_path, "waymo", profile, 30) == []
+
+
+def _seed_lookup(tmp_path):
+    db = tmp_path / "jobs.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(
+                source_key="ford", job_id="71202", title="Vehicle Calibration & Test Supervisor",
+                url="https://efds.example/hcmUI/job/71202",
+            )
+        )
+        storage.upsert_job(
+            make_job(
+                source_key="ford", job_id="71203", title="Calibration Engineer",
+                url="https://efds.example/hcmUI/job/71203",
+            )
+        )
+        storage.upsert_job(
+            make_job(source_key="abb", job_id="71202", title="Test Supervisor", url="https://abb.example/j/71202")
+        )
+    return db
+
+
+def test_find_jobs_by_source_and_id(tmp_path):
+    found = find_jobs(_seed_lookup(tmp_path), "ford:71202")
+    assert [(s.job.source_key, s.job.job_id) for s in found] == [("ford", "71202")]
+    assert isinstance(found[0], StoredJob)
+    assert (found[0].status, found[0].missing_count) == ("active", 0)
+
+
+def test_find_jobs_by_exact_canonical_url(tmp_path):
+    found = find_jobs(_seed_lookup(tmp_path), "https://efds.example/hcmUI/job/71203")
+    assert [s.job.job_id for s in found] == ["71203"]
+
+
+def test_find_jobs_by_an_id_token_inside_a_different_url_shape(tmp_path):
+    found = find_jobs(_seed_lookup(tmp_path), "https://careers.example.com/job/-/-/48560/71203")
+    assert [(s.job.source_key, s.job.job_id) for s in found] == [("ford", "71203")]
+
+
+def test_find_jobs_url_with_no_matching_id_returns_nothing(tmp_path):
+    """The real Ford careers link carries ids that are not the stored job id (71202)."""
+    ref = "https://www.careers.ford.com/job/-/-/48560/101370456832"
+    assert find_jobs(_seed_lookup(tmp_path), ref) == []
+
+
+def test_find_jobs_bare_id_can_match_several_sources(tmp_path):
+    found = find_jobs(_seed_lookup(tmp_path), "71202")
+    assert sorted(s.job.source_key for s in found) == ["abb", "ford"]
+
+
+def test_find_jobs_by_title_substring_is_case_insensitive(tmp_path):
+    db = _seed_lookup(tmp_path)
+    assert sorted(s.job.source_key for s in find_jobs(db, "test supervisor")) == ["abb", "ford"]
+    assert [s.job.job_id for s in find_jobs(db, "VEHICLE CALIBRATION & TEST")] == ["71202"]
+
+
+def test_find_jobs_includes_closed_and_ineligible_jobs(tmp_path):
+    db = _seed_lookup(tmp_path)
+    with Storage(db) as storage:
+        storage.connection.execute(
+            "UPDATE jobs SET status='closed', missing_count=3, us_eligible=0 "
+            "WHERE source_key='ford' AND job_id='71203'"
+        )
+        storage.connection.commit()
+    (found,) = find_jobs(db, "ford:71203")
+    assert (found.status, found.missing_count, found.job.us_eligible) == ("closed", 3, False)
+
+
+def test_find_jobs_blank_unknown_and_wildcard_refs_return_nothing(tmp_path):
+    db = _seed_lookup(tmp_path)
+    assert find_jobs(db, "") == []
+    assert find_jobs(db, "   ") == []
+    assert find_jobs(db, "nothing like this anywhere") == []
+    assert find_jobs(db, "%") == []  # a literal percent sign, not a SQL wildcard
+
+
+def test_find_jobs_title_with_a_colon_and_space_is_not_read_as_source_id(tmp_path):
+    db = tmp_path / "jobs.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(make_job(job_id="9", title="Engineer: Perception Systems"))
+    assert [s.job.job_id for s in find_jobs(db, "Engineer: Perception")] == ["9"]
