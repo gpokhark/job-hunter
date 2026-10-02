@@ -1090,6 +1090,32 @@ outage.
 
 ---
 
+### 7.5 Missed-job diagnostics and near-miss discovery
+
+**Finding.** A Ford posting (id 71202) was collected, U.S.-eligible and recent, yet rejected `no_positive_match`. The
+positive gate matches exact phrases as substrings of title + department; the department was empty; and description
+matching was removed from the gate on purpose (7.3). Title terms such as `vehicle test` do not match "Vehicle
+Calibration & Test".
+
+**Measurements.** Pool of 13,948 eligible/recent jobs: 733 pass, 12,160 are rejected; 61% have an empty department,
+and 42 sources are 100% empty. Ford's feed fills no department-like field (verified dead end), so the title is often
+the only signal.
+
+**`job-hunter why-missed <ref>`** (`why_missed.py`, `vocabulary.py`, `active_pool.find_jobs`; read-only). `ref` resolves
+in order: job id, `source_key:job_id`, URL (exact URL or ids in its path), then part of the title; not-found or
+ambiguous exits 2. It walks the stages (collected, location, recency, prefilter, archive membership) and names the
+first failing one. For a `no_positive_match` rejection it suggests title terms; each gain is computed by the real
+`evaluate_prefilter` over the rejected pool using a widened profile copy, ranked by gain, with a "broad" flag on terms
+that would admit many jobs. The profile is never edited.
+
+**`job-hunter near-misses`** (`near_miss.py`). Scans `no_positive_match` rejects, strips boilerplate from the
+description, and scores by distinct strong terms (>= 3 to report). Output: `data/near-miss/<timestamp>.html`/`.csv`
+with vocabulary hints and a department-coverage table. State in `data/near-miss/state.json` records first-seen jobs, so
+later scans list only new ones (`--all` for everything; the first run is capped). `--output-dir` and `--no-state`
+make a run side-effect free.
+
+**Non-goals.** No change to the gate, no LLM, no profile writes; near-misses are never scored or added to the radar.
+
 ## 8. Persistence (`storage.py`) — SQLite, WAL mode
 
 ### 8.1 `jobs` — one row per `(source_key, job_id)`

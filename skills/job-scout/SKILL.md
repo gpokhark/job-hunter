@@ -1,6 +1,6 @@
 ---
 name: job-scout
-version: 1.2.0
+version: 1.3.0
 description: Search configured employer career sites for current U.S.-eligible jobs matching a keyword/title or the candidate profile, and archive the results for review.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — this stage only searches and archives, it never scores anything.
 metadata:
@@ -95,3 +95,9 @@ For a long or rate-limited sweep, collect in the background instead of waiting o
   `job-hunter pipeline --no-scrape --search <path> [--review]`.
 - A completed run writes the normal archive itself.
 - Do not run `cleanup --apply` while a collector is running; it refuses.
+
+## Spotting vocabulary gaps
+
+Optional, after a scrape: `uv run job-hunter near-misses --project "$CLAUDE_PROJECT_DIR"` lists
+rejected-but-relevant-looking jobs new since the last scan. It is a human scouting aid (not scored, not in the
+radar); its vocabulary hints feed the job-feedback flow.

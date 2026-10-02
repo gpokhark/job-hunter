@@ -69,6 +69,8 @@ uv run job-hunter snapshot                      # archive from what's stored so 
 uv run job-hunter source-status         # per-source health from SQLite
 uv run job-hunter source-test honda     # healthcheck one adapter live
 uv run job-hunter db-stats
+uv run job-hunter why-missed ford:71202     # why wasn't this job in the radar? stage-by-stage, plus title terms that would admit it
+uv run job-hunter near-misses               # report rejected jobs that look relevant from their description + vocabulary hints
 uv run job-hunter export --format json
 uv run python scripts/check_lm_studio.py  # is the configured LM Studio server actually reachable right now?
 
@@ -216,6 +218,16 @@ ranked `SearchResult` JSON.
   PrefilterRule`, `term`, `rescued_by`), mirroring `location.py`/`sponsorship.py`'s structured-
   verdict pattern. `passes_prefilter` is a thin `.passes` wrapper for existing callers.
   Short-circuit evaluation: `rule`/`term` name the *decisive* check only, not every failing check.
+
+- **`src/job_hunter/why_missed.py`** (+ `vocabulary.py`, `active_pool.find_jobs`) — deterministic, read-only
+  explanation of a stored job's journey (collected, eligible, recent, prefilter, archive), with title-term suggestions
+  whose gain is computed by the real `evaluate_prefilter` on a widened profile copy; never edits the profile. Lesson:
+  positive matching is a substring test on title+department, so `vehicle test` does not match "Vehicle Calibration &
+  Test", and 61% of eligible jobs have no department, so the title is often the only signal.
+
+- **`src/job_hunter/near_miss.py`** — periodic human-only report of `no_positive_match` rejects whose
+  boilerplate-stripped descriptions carry >= 3 distinct strong terms, with vocabulary hints and a department-coverage
+  table; state in `data/near-miss/state.json`; never scored, merged or added to `candidates`.
 
 - **`scripts/diff_profile.py`** — compares two `CandidateProfile`s (two saved YAMLs, or the
   on-disk profile + an in-memory `--add`/`--remove` patch never written back) against every stored

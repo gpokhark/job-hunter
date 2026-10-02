@@ -85,6 +85,8 @@ uv run job-hunter search --companies tri,toyota --new-only
 uv run job-hunter source-status
 uv run job-hunter source-test honda
 uv run job-hunter db-stats
+uv run job-hunter why-missed ford:71202     # why wasn't this job in the radar? stage-by-stage, plus title terms that would admit it
+uv run job-hunter near-misses               # report rejected jobs that look relevant from their description + vocabulary hints
 uv run job-hunter export --format json
 uv run job-hunter collect start [--companies a,b] [--slow]   # background collection; returns immediately
 uv run job-hunter collect status [--json]                     # progress, rate-limited/failed sources
@@ -105,6 +107,9 @@ uv run python scripts/diff_profile.py --add soft_exclude_terms:"some term"
 uv run python scripts/diff_profile.py --remove target_domains:"some term"
 uv run python scripts/refilter_archive.py [--keyword "..."] [--search <path>] [--output <path>]
 ```
+
+`why-missed` takes a job id, `source_key:job_id`, a URL (matched by exact URL or ids in its path) or part of the title and changes nothing.
+`near-misses` writes `data/near-miss/<timestamp>.html`/`.csv` listing only jobs first seen since the last scan (`--all` for everything) and is a scouting aid, never scored or added to the radar.
 
 Every command above (and every *operational* `scripts/*.py` entry point — not the diagnostic/
 prototype/converter utilities or the hook/installer scripts, which take the project root
