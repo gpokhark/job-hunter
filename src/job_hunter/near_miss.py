@@ -127,12 +127,15 @@ def _vocabulary_hints(
     frequency: Counter[str] = Counter()
     for row in rows:
         frequency.update(set(title_phrases(row.title)))
-    existing = [t.lower() for t in (*profile.target_title_terms, *profile.target_domains)]
     hints: list[VocabularyHint] = []
     for phrase, count in frequency.items():
-        if count < min_jobs or any(e in phrase or phrase in e for e in existing):
+        if count < min_jobs:
             continue
+        # shown only when adding it would admit at least one currently-rejected job (a phrase the
+        # profile already covers, or a soft-exclude still rejects, has gain 0)
         gain = phrase_gain(profile, phrase, pool)
+        if gain.count == 0:
+            continue
         hints.append(VocabularyHint(phrase, count, gain.count, gain.samples))
     hints.sort(key=lambda h: (-h.near_miss_jobs, h.gain, -len(h.term), h.term))
     return hints[:top]

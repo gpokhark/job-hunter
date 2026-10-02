@@ -140,5 +140,32 @@ def test_scan_vocabulary_hints_rank_new_title_terms_by_near_miss_frequency(tmp_p
     # in two near-misses; it would also admit the non-near-miss 'Pastry Chef Assistant'
     assert by_term["pastry chef"].near_miss_jobs == 2 and by_term["pastry chef"].gain == 3
     assert "camera calibration" not in by_term       # only one near-miss: below the frequency floor
-    assert "robotics" not in by_term                 # already a profile term
     assert hints[0].near_miss_jobs >= hints[-1].near_miss_jobs
+
+
+def test_hints_no_longer_hide_a_word_that_is_only_part_of_a_longer_profile_term(tmp_path):
+    profile = CandidateProfile(target_title_terms=["vehicle test"], strong_relevance_terms=PROFILE.strong_relevance_terms)
+    desc = "perception lidar ADAS sensor fusion"
+    db = seed(tmp_path, [
+        make_job(job_id="1", title="Test Lead", description=desc),
+        make_job(job_id="2", title="Test Analyst II", description=desc),
+    ])
+    by_term = {h.term: h for h in scan(db, profile, 30, now=NOW).hints}
+    assert by_term["test"].near_miss_jobs == 2 and by_term["test"].gain >= 2
+
+
+def test_hints_skip_phrases_that_would_admit_nothing_new(tmp_path):
+    profile = CandidateProfile(
+        target_title_terms=["robotics"], strong_relevance_terms=PROFILE.strong_relevance_terms,
+        soft_exclude_terms=["supervisor"],
+    )
+    desc = "perception lidar ADAS sensor fusion"
+    db = seed(tmp_path, [
+        make_job(job_id="1", title="Pastry Supervisor", description=desc),
+        make_job(job_id="2", title="Pastry Supervisor", description=desc),
+        make_job(job_id="3", title="Pastry Chef", description=desc),
+        make_job(job_id="4", title="Pastry Chef", description=desc),
+    ])
+    by_term = {h.term: h for h in scan(db, profile, 30, now=NOW).hints}
+    assert "pastry chef" in by_term
+    assert "supervisor" not in by_term and "pastry supervisor" not in by_term
