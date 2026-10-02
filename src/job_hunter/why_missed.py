@@ -8,15 +8,20 @@ which previews with `scripts/diff_profile.py` and stops for the user's confirmat
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 
-from .active_pool import StoredJob
-from .config import CandidateProfile
+from .active_pool import StoredJob, find_jobs
+from .config import CandidateProfile, load_profile
 from .models import Job, PrefilterRule
 from .prefilter import evaluate_prefilter, passes_recency
-from .vocabulary import phrase_gain, title_phrases
+from .search_archive import resolve_search_path
+from .vocabulary import phrase_gain, rejected_pool, title_phrases
 
 
 @dataclass(frozen=True)
@@ -219,3 +224,83 @@ def render_text(result: WhyMissed) -> str:
         "jobs gained/lost and stops for your confirmation before writing the profile."
     )
     return "\n".join(lines)
+
+
+def _query_one(database_path: Path, sql: str, params: tuple) -> dict | None:
+    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _archive_info(search: Path | None, keyword: str | None, job: Job) -> ArchiveInfo | None:
+    try:
+        path = resolve_search_path(search=search, keyword=keyword)
+    except FileNotFoundError:
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    in_candidates = any(
+        c.get("source_key") == job.source_key and c.get("job_id") == job.job_id
+        for c in data.get("candidates", [])
+    )
+    status = next(
+        (h.get("status") for h in data.get("source_health", []) if h.get("source_key") == job.source_key),
+        None,
+    )
+    return ArchiveInfo(str(path), in_candidates, status)
+
+
+def cli_why_missed(args, settings) -> int:
+    ref = args.ref
+    matches = find_jobs(settings.database_path, ref)
+    if not matches:
+        print(f"job-hunter: no stored job matches {ref!r}.", file=sys.stderr)
+        print(
+            "  Try the job id (e.g. 71202), source_key:job_id (e.g. ford:71202) or part of the title. "
+            "A careers-site URL only matches when its path carries an id this project stored. If the "
+            "job was never collected, check its source with `job-hunter source-test <key>`.",
+            file=sys.stderr,
+        )
+        return 2
+    if len(matches) > 1:
+        print(
+            f"job-hunter: {len(matches)} stored jobs match {ref!r}; re-run with source_key:job_id:",
+            file=sys.stderr,
+        )
+        for number, match in enumerate(matches[:20], 1):
+            print(
+                f"  {number:>2}. {match.job.source_key}:{match.job.job_id}  {match.job.title}  [{match.status}]",
+                file=sys.stderr,
+            )
+        return 2
+    stored = matches[0]
+    job = stored.job
+    profile = load_profile()
+    keywords = [t.strip() for t in args.keyword.split(",") if t.strip()] if args.keyword else None
+    health = _query_one(
+        settings.database_path,
+        "SELECT last_status, last_job_count FROM source_health WHERE source_key=?", (job.source_key,),
+    )
+    assessment = _query_one(
+        settings.database_path,
+        "SELECT score, content_hash FROM assessments WHERE source_key=? AND job_id=?",
+        (job.source_key, job.job_id),
+    )
+    result = explain(
+        stored,
+        profile=profile,
+        max_age_days=settings.search.max_posting_age_days,
+        source_health=health,
+        archive=_archive_info(args.search, args.keyword, job),
+        assessment=assessment,
+        pool=lambda: rejected_pool(settings.database_path, profile, settings.search.max_posting_age_days),
+        keywords=keywords,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(render_text(result))
+    return 0
