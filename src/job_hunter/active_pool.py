@@ -172,7 +172,9 @@ def _lookups(conn: sqlite3.Connection, ref: str, limit: int):
             ).fetchall()
     if ref.lower().startswith(("http://", "https://")):
         yield conn.execute("SELECT * FROM jobs WHERE canonical_url=?", (ref,)).fetchall()
-        tokens = sorted(set(re.findall(r"\d{4,}", urlsplit(ref).path)), key=len, reverse=True)
+        # Job ids come last in career-site URLs; earlier digit runs are location/category ids
+        # shared by many jobs, so only the last run is a usable id token.
+        tokens = re.findall(r"\d{4,}", urlsplit(ref).path)[-1:]
         for token in tokens:
             # SQL narrows by substring; the regex then demands a whole token (no adjacent
             # alphanumerics), so "48560" never matches inside a hex hash or a longer number.

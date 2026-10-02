@@ -243,7 +243,7 @@ def test_find_jobs_url_token_does_not_match_inside_a_hex_job_id(tmp_path):
 
 def test_find_jobs_url_token_matches_job_id_exactly(tmp_path):
     db = _seed_tokens(tmp_path)
-    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832")
+    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/101370/48560")
     assert "idco" in {s.job.source_key for s in found}
 
 
@@ -273,3 +273,28 @@ def test_find_jobs_url_token_alone_does_not_match_hex_hash_in_job_id_or_url(tmp_
                      url="https://hexco.example/j/b48560c")
         )
     assert find_jobs(db, "https://x.example/job/-/-/48560/101370456832") == []
+
+
+def test_find_jobs_url_uses_only_the_last_digit_run(tmp_path):
+    db = tmp_path / "last.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(source_key="ford", job_id="h1", title="Shared Segment Job",
+                     url="https://www.careers.ford.com/job/city/title/48560/99653551168")
+        )
+    assert find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832") == []
+
+
+def test_find_jobs_url_last_token_matches_even_when_earlier_token_is_shared(tmp_path):
+    db = tmp_path / "shared.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(source_key="ford", job_id="h1", title="Other",
+                     url="https://www.careers.ford.com/job/city/title/48560/99653551168")
+        )
+        storage.upsert_job(
+            make_job(source_key="ford", job_id="101370456832", title="Target",
+                     url="https://elsewhere.example/x")
+        )
+    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832")
+    assert [s.job.job_id for s in found] == ["101370456832"]
