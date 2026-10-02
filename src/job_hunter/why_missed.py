@@ -239,9 +239,13 @@ def _query_one(database_path: Path, sql: str, params: tuple) -> dict | None:
 def _archive_info(search: Path | None, keyword: str | None, job: Job) -> ArchiveInfo | None:
     try:
         path = resolve_search_path(search=search, keyword=keyword)
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        # No archive to check is fine when none was asked for; an explicit --search that is
+        # missing is the caller's mistake and propagates (main() reports it, exit 2).
+        if search is not None:
+            raise
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
     in_candidates = any(
         c.get("source_key") == job.source_key and c.get("job_id") == job.job_id
         for c in data.get("candidates", [])
@@ -254,6 +258,17 @@ def _archive_info(search: Path | None, keyword: str | None, job: Job) -> Archive
 
 
 def cli_why_missed(args, settings) -> int:
+    if not Path(settings.database_path).exists():
+        print(f"job-hunter: no database at {settings.database_path}; run a search first", file=sys.stderr)
+        return 2
+    try:
+        return _why_missed(args, settings)
+    except sqlite3.OperationalError as exc:
+        print(f"job-hunter: could not read the database ({exc})", file=sys.stderr)
+        return 2
+
+
+def _why_missed(args, settings) -> int:
     ref = args.ref
     matches = find_jobs(settings.database_path, ref)
     if not matches:

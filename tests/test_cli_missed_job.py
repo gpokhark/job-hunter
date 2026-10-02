@@ -99,3 +99,23 @@ def test_missing_archive_is_reported_not_fatal(project, capsys):
 def test_project_flag_works_after_the_new_subcommands():
     assert parser().parse_args(["why-missed", "ford:1", "--project", "/x"]).project == Path("/x")
     assert parser().parse_args(["--project", "/y", "why-missed", "ford:1"]).project == Path("/y")
+
+
+def test_missing_database_exits_2_with_a_hint(project, capsys):
+    for path in (project / "data").glob("jobs.sqlite3*"):
+        path.unlink()
+    assert main(["why-missed", "ford:71202"]) == 2
+    assert "no database at" in capsys.readouterr().err
+
+
+def test_database_missing_a_table_exits_2_not_a_traceback(project, capsys):
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        storage.connection.execute("DROP TABLE source_health")
+        storage.connection.commit()
+    assert main(["why-missed", "ford:71202"]) == 2
+    assert "could not read the database" in capsys.readouterr().err
+
+
+def test_explicit_missing_search_path_exits_2(project, capsys):
+    assert main(["why-missed", "ford:71202", "--search", "data/searches/nope.json"]) == 2
+    assert "nope.json" in capsys.readouterr().err
