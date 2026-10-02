@@ -174,10 +174,17 @@ def _lookups(conn: sqlite3.Connection, ref: str, limit: int):
         yield conn.execute("SELECT * FROM jobs WHERE canonical_url=?", (ref,)).fetchall()
         tokens = sorted(set(re.findall(r"\d{4,}", urlsplit(ref).path)), key=len, reverse=True)
         for token in tokens:
-            yield conn.execute(
-                "SELECT * FROM jobs WHERE job_id=? OR instr(canonical_url, ?) > 0 LIMIT ?",
-                (token, token, limit),
+            # SQL narrows by substring; the regex then demands a whole token (no adjacent
+            # alphanumerics), so "48560" never matches inside a hex hash or a longer number.
+            bounded = re.compile(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])")
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE job_id=? OR instr(canonical_url, ?) > 0",
+                (token, token),
             ).fetchall()
+            yield [
+                r for r in rows
+                if r["job_id"] == token or bounded.search(r["canonical_url"] or "")
+            ][:limit]
         return
     if " " not in ref:
         yield conn.execute("SELECT * FROM jobs WHERE job_id=? LIMIT ?", (ref, limit)).fetchall()

@@ -211,3 +211,65 @@ def test_find_jobs_title_with_a_colon_and_space_is_not_read_as_source_id(tmp_pat
     with Storage(db) as storage:
         storage.upsert_job(make_job(job_id="9", title="Engineer: Perception Systems"))
     assert [s.job.job_id for s in find_jobs(db, "Engineer: Perception")] == ["9"]
+
+
+def _seed_tokens(tmp_path):
+    db = tmp_path / "tok.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(source_key="hexco", job_id="a148560f9c2", title="Hash Id Job",
+                     url="https://hexco.example/j/zzz")
+        )
+        storage.upsert_job(
+            make_job(source_key="idco", job_id="48560", title="Exact Id Job",
+                     url="https://idco.example/j/other")
+        )
+        storage.upsert_job(
+            make_job(source_key="segco", job_id="s1", title="Segment Job",
+                     url="https://segco.example/careers/48560/apply")
+        )
+        storage.upsert_job(
+            make_job(source_key="longco", job_id="l1", title="Longer Run Job",
+                     url="https://longco.example/careers/9485601/apply")
+        )
+    return db
+
+
+def test_find_jobs_url_token_does_not_match_inside_a_hex_job_id(tmp_path):
+    db = _seed_tokens(tmp_path)
+    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832")
+    assert "hexco" not in {s.job.source_key for s in found}
+
+
+def test_find_jobs_url_token_matches_job_id_exactly(tmp_path):
+    db = _seed_tokens(tmp_path)
+    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/48560/101370456832")
+    assert "idco" in {s.job.source_key for s in found}
+
+
+def test_find_jobs_url_token_matches_bounded_canonical_url_segment_only(tmp_path):
+    db = _seed_tokens(tmp_path)
+    found = {s.job.source_key for s in find_jobs(db, "https://x.example/job/48560")}
+    assert "segco" in found
+    assert "longco" not in found
+    assert "hexco" not in found
+
+
+def test_find_jobs_url_token_inside_longer_digit_run_alone_matches_nothing(tmp_path):
+    db = tmp_path / "only.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(source_key="longco", job_id="l1", title="Longer Run Job",
+                     url="https://longco.example/careers/9485601/apply")
+        )
+    assert find_jobs(db, "https://x.example/job/48560") == []
+
+
+def test_find_jobs_url_token_alone_does_not_match_hex_hash_in_job_id_or_url(tmp_path):
+    db = tmp_path / "hex.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(
+            make_job(source_key="hexco", job_id="a148560f9c2", title="Hash Id Job",
+                     url="https://hexco.example/j/b48560c")
+        )
+    assert find_jobs(db, "https://x.example/job/-/-/48560/101370456832") == []
