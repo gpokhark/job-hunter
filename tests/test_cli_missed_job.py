@@ -191,7 +191,24 @@ def test_truncation_note_without_state_says_the_rows_will_reappear(project, tmp_
             storage.upsert_job(make_job(job_id=f"n{i}", title=f"Pastry Chef {i}", description=NEAR_DESC))
     assert main(["near-misses", "--output-dir", str(tmp_path / "r"), "--no-state", "--limit", "1"]) == 0
     printed = capsys.readouterr().out
-    assert "2 more near-miss(es) were not shown (--no-state: they will be listed again); re-run with --limit 3" in printed
+    assert "2 more near-miss(es) were not shown; re-run with --no-state --limit 3 to list them" in printed
+
+
+def test_truncation_note_after_an_earlier_scan_does_not_promise_an_exact_limit(project, tmp_path, capsys):
+    out = tmp_path / "r"
+    out.mkdir()
+    (out / "state.json").write_text('{"last_scan_at": "2020-01-01T00:00:00+00:00"}')
+    with Storage(project / "data" / "jobs.sqlite3") as storage:
+        for i in range(3):
+            storage.upsert_job(make_job(job_id=f"n{i}", title=f"Pastry Chef {i}", description=NEAR_DESC))
+    assert main(["near-misses", "--output-dir", str(out), "--no-state", "--limit", "1"]) == 0
+    # state unchanged, so the same new-since scan with a larger limit is exact
+    assert "re-run with --no-state --limit 3 to list them" in capsys.readouterr().out
+    assert main(["near-misses", "--output-dir", str(out), "--limit", "1"]) == 0
+    printed = capsys.readouterr().out
+    assert "will not reappear in later new-since scans" in printed
+    assert "--all --limit 3" not in printed  # --all re-ranks every near-miss, so 3 is not exact
+    assert "--all" in printed and "re-ranks every near-miss" in printed
 
 
 def test_near_misses_project_flag_and_options_parse():

@@ -1107,7 +1107,9 @@ or writes the database). `ref` resolves in order: `source_key:job_id`; then, for
 after normalizing (scheme/host case, `www.`, trailing `/`, fragment, `utm_*`-style tracking parameters; query-less
 only when that is unique), then an id token from its query values or last digit-bearing path segment (a Workday
 `_R…`/`_JR…` tail, a UUID, Apple's whole `digits-digits` id) equal to a stored `job_id`, then equal to an id token of a
-stored canonical URL (a token shared by several jobs of one source is ignored); then a bare job id; then part of the
+stored canonical URL (a token shared by several jobs of one source is ignored). The query-less compare applies only
+to a ref with no non-tracking query (`/jobs?gh_jid=9` never resolves to a stored `/jobs?gh_jid=1`), and on a host no
+stored job uses only distinctive id shapes (UUID, Workday tail, `digits-digits`) may match, never a plain number; then a bare job id; then part of the
 title. A URL never falls through to a title match. Not-found or ambiguous exits 2; a not-found URL names its likely
 source (same stored host, else a source key in the host) with its last `source_health` row and the `source-test`
 command. It walks the stages (collected, location, recency, prefilter, archive membership) and names the
@@ -1121,9 +1123,11 @@ description, and scores by distinct strong terms (>= 3 to report). Output: `data
 with vocabulary hints (same literal-title-substring rule and "broad" flag as `why-missed`) and a department-coverage
 table; it reads the database read-only. State in `data/near-miss/state.json` records `last_scan_at`, so later scans list
 only jobs first seen after it (`--all` for everything). With no state and no `--limit`, a run is capped at 100 rows.
-When `--limit` or that cap drops rows, the report and stdout say how many and how to see them (`--all --limit N`);
-state still advances past them, since rows are ranked by score rather than age and holding the marker back would
-re-list the same top rows forever. `--output-dir` and `--no-state` make a run side-effect free.
+When `--limit` or that cap drops rows, the report and stdout say how many and how to see them: `--no-state --limit N`
+under `--no-state` (state unchanged, so exact); `--all --limit N` after a first run (exact: same ranking); after a
+new-since run, `--all` with a larger limit (inexact: `--all` re-ranks every near-miss). State still advances past
+dropped rows, since rows are ranked by score rather than age and holding the marker back would re-list the same top
+rows forever. `--output-dir` and `--no-state` make a run side-effect free.
 
 **Non-goals.** No change to the gate, no LLM, no profile writes; near-misses are never scored or added to the radar.
 

@@ -293,23 +293,33 @@ def write_last_scan(state_path: Path, moment: datetime) -> None:
     atomic_write_text(state_path, json.dumps({"last_scan_at": moment.isoformat()}) + "\n")
 
 
-def truncation_note(truncated: int, shown: int, *, advances_state: bool) -> str | None:
-    """What the user must know when `--limit` (or the first-run cap) dropped near-misses.
+def truncation_note(
+    truncated: int, shown: int, *, advances_state: bool, since: datetime | None
+) -> str | None:
+    """What the user must know when `--limit` (or the first-run cap) dropped near-misses, with
+    re-run advice that is exact for the case at hand.
 
     State still advances past dropped rows: rows are ranked by score, not age, so holding the
-    marker back would re-list the same top rows on every scan and never progress. The note says
-    so, and how to see everything."""
+    marker back would re-list the same top rows on every scan and never progress.
+    - `--no-state`: state is unchanged, so the same scan with `--no-state --limit N` is exact.
+    - state advanced, no previous marker (first run or `--all`): `--all --limit N` repeats this
+      exact ranking.
+    - state advanced past an earlier marker: `--all` re-ranks every near-miss, not just these new
+      ones, so no exact `--limit` exists to quote."""
     if not truncated:
         return None
     total = shown + truncated
-    if advances_state:
+    if not advances_state:
         return (
-            f"{truncated} more near-miss(es) were not shown and will not reappear in later new-since "
-            f"scans; re-run with --all --limit {total} to see them."
+            f"{truncated} more near-miss(es) were not shown; re-run with --no-state --limit {total} "
+            "to list them without changing state."
         )
+    lost = f"{truncated} more near-miss(es) were not shown and will not reappear in later new-since scans"
+    if since is None:
+        return f"{lost}; re-run with --all --limit {total} to see them."
     return (
-        f"{truncated} more near-miss(es) were not shown (--no-state: they will be listed again); "
-        f"re-run with --limit {total} to see them."
+        f"{lost}; re-run with --all and a larger --limit to see them (--all re-ranks every "
+        f"near-miss, not only the {total} new since {_fmt_day(since)})."
     )
 
 
@@ -340,7 +350,9 @@ def _near_misses(args, settings) -> int:
         limit=limit,
         now=now,
     )
-    note = truncation_note(result.truncated, len(result.rows), advances_state=not args.no_state)
+    note = truncation_note(
+        result.truncated, len(result.rows), advances_state=not args.no_state, since=since
+    )
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d-T-%H-%M-%S")
     html_path, csv_path = out_dir / f"{stamp}.html", out_dir / f"{stamp}.csv"
     try:

@@ -165,8 +165,11 @@ def test_find_jobs_by_exact_canonical_url(tmp_path):
 
 
 def test_find_jobs_by_an_id_token_inside_a_different_url_shape(tmp_path):
-    found = find_jobs(_seed_lookup(tmp_path), "https://careers.example.com/job/-/-/48560/71203")
+    db = _seed_lookup(tmp_path)
+    found = find_jobs(db, "https://efds.example/careers/job/-/-/48560/71203")
     assert [(s.job.source_key, s.job.job_id) for s in found] == [("ford", "71203")]
+    # a plain number on a host no stored job uses could be any source's id
+    assert find_jobs(db, "https://careers.example.com/job/-/-/48560/71203") == []
 
 
 def test_find_jobs_url_with_no_matching_id_returns_nothing(tmp_path):
@@ -243,18 +246,18 @@ def test_find_jobs_url_token_does_not_match_inside_a_hex_job_id(tmp_path):
 
 def test_find_jobs_url_token_matches_job_id_exactly(tmp_path):
     db = _seed_tokens(tmp_path)
-    found = find_jobs(db, "https://www.careers.ford.com/job/-/-/101370/48560")
+    found = find_jobs(db, "https://idco.example/job/-/-/101370/48560")
     assert "idco" in {s.job.source_key for s in found}
 
 
 def test_find_jobs_url_token_matches_bounded_canonical_url_segment_only(tmp_path):
     db = _seed_tokens(tmp_path)
     # an exact job_id beats canonical-url token matches
-    assert {s.job.source_key for s in find_jobs(db, "https://x.example/job/48560")} == {"idco"}
+    assert {s.job.source_key for s in find_jobs(db, "https://idco.example/job/48560")} == {"idco"}
     with Storage(db) as storage:
         storage.connection.execute("DELETE FROM jobs WHERE source_key='idco'")
         storage.connection.commit()
-    found = {s.job.source_key for s in find_jobs(db, "https://x.example/job/48560")}
+    found = {s.job.source_key for s in find_jobs(db, "https://segco.example/job/48560")}
     assert found == {"segco"}  # not longco (9485601) nor hexco (a148560f9c2)
 
 
@@ -428,3 +431,38 @@ def test_raw_active_jobs_readonly_never_writes_or_migrates_the_database(tmp_path
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     conn.close()
+
+
+def _one_job(tmp_path, source, job_id, url):
+    db = tmp_path / f"{source}.sqlite3"
+    with Storage(db) as storage:
+        storage.upsert_job(make_job(source_key=source, job_id=job_id, title=f"{source} job", url=url))
+    return db
+
+
+def test_find_jobs_query_less_form_is_used_only_for_a_ref_without_an_id_query(tmp_path):
+    db = _one_job(tmp_path, "waymo", "6499165", "https://careers.withwaymo.com/jobs?gh_jid=6499165")
+    assert find_jobs(db, "https://careers.withwaymo.com/jobs?gh_jid=9999999") == []
+    assert _keys(find_jobs(db, "https://careers.withwaymo.com/jobs?gh_jid=6499165&utm_source=x")) == [
+        ("waymo", "6499165")
+    ]
+    apple = _one_job(tmp_path, "apple", "200462446-0836", APPLE)
+    # only tracking params: genuinely the bare form, so the query-less compare applies
+    assert _keys(find_jobs(apple, APPLE + "?utm_source=share&gclid=1234")) == [("apple", "200462446-0836")]
+
+
+def test_find_jobs_plain_ids_on_an_unknown_host_never_pick_another_sources_job(tmp_path):
+    db = _one_job(tmp_path, "zz", "12345", "https://zz.example/jobs/12345")
+    assert find_jobs(db, "https://other.example/job?page=12345") == []
+    assert find_jobs(db, "https://other.example/careers/job/12345") == []
+    # the same plain id on the job's own host still resolves
+    assert _keys(find_jobs(db, "https://zz.example/careers/job/12345")) == [("zz", "12345")]
+
+
+def test_find_jobs_unambiguous_id_shapes_still_resolve_from_an_unknown_host(tmp_path):
+    db = _seed_shapes(tmp_path)
+    assert _keys(find_jobs(db, "https://mirror.example/x/000cf0f2-090d-40c6-b9f8-1699db9a4c68")) == [
+        ("openai", "000cf0f2-090d-40c6-b9f8-1699db9a4c68")
+    ]
+    assert _keys(find_jobs(db, "https://mirror.example/x/Some-Title_JR102607")) == [("stoneridge", "hash-sr-1")]
+    assert _keys(find_jobs(db, "https://mirror.example/x/200462446-0836")) == [("apple", "200462446-0836")]

@@ -208,6 +208,30 @@ def _has_digit(token: str) -> bool:
     return any(c.isdigit() for c in token)
 
 
+_WORKDAY_TAIL = re.compile(r"[A-Za-z]{1,4}-?\d[\d-]*")
+_DIGITS_DASH_DIGITS = re.compile(r"\d{4,}-\d+")
+
+
+def distinctive_id_tokens(url: str) -> set[str]:
+    """The id tokens of `url` whose shape alone identifies one posting: a UUID, a Workday tail
+    (`_R0000391568`, `_JR102607`, `_R-097854-1`) or an Apple-style `digits-digits` id. Only these
+    are trusted when no stored job shares the URL's host; a plain number (`12345`, `?page=12345`)
+    could be any source's id."""
+    segment = next((s for s in reversed(urlsplit(url.strip()).path.split("/")) if s and _has_digit(s)), None)
+    if not segment:
+        return set()
+    segment = re.sub(r"\.(?:html?|aspx?|php)$", "", segment, flags=re.IGNORECASE)
+    found = set(_UUID.findall(segment))
+    if "_" in segment:
+        tail = segment.rsplit("_", 1)[1]
+        if _WORKDAY_TAIL.fullmatch(tail) or _DIGITS_DASH_DIGITS.fullmatch(tail):
+            found.add(tail)
+    leading = _DIGITS_DASH_DIGITS.match(segment)
+    if leading:
+        found.add(leading.group())
+    return found
+
+
 def url_id_tokens(url: str) -> tuple[list[str], list[str]]:
     """Id candidates carried by a job URL, as `(strong, weak)`, each in priority order.
 
@@ -262,10 +286,11 @@ def _url_lookups(conn: sqlite3.Connection, ref: str, limit: int):
         "SELECT rowid, source_key, job_id, canonical_url FROM jobs WHERE instr(lower(canonical_url), ?) > 0",
         (host,),
     ).fetchall() if host else []
-    # (a) the same URL once normalized: with its non-tracking query, then without any query
-    # (accepted only when that identifies a single job: `/jobs?gh_jid=1` and `/jobs?gh_jid=2`
-    # share a query-less form).
-    for with_query in (True, False):
+    # (a) the same URL once normalized, with its non-tracking query. Then the query-less form,
+    # but only for a ref that is genuinely bare (no non-tracking query left: `/jobs?gh_jid=9` must
+    # never resolve to a stored `/jobs?gh_jid=1`) and only when that identifies a single job.
+    bare_ref = _normalized_url(ref, with_query=True) == _normalized_url(ref, with_query=False)
+    for with_query in (True, False) if bare_ref else (True,):
         wanted = _normalized_url(ref, with_query=with_query)
         hits = [r["rowid"] for r in same_host_rows if _normalized_url(r["canonical_url"], with_query=with_query) == wanted]
         if hits and (with_query or len(hits) == 1):
@@ -274,6 +299,13 @@ def _url_lookups(conn: sqlite3.Connection, ref: str, limit: int):
 
     def on_same_host(row) -> bool:
         return url_host(urlsplit(row["canonical_url"] or "")) == host
+
+    # On a host no stored job uses, a plain number or query value could be any source's id, so
+    # only distinctive shapes (UUID, Workday tail, digits-digits) may match there.
+    if not any(on_same_host(r) for r in same_host_rows):
+        distinctive = distinctive_id_tokens(ref)
+        strong = [t for t in strong if t in distinctive]
+        weak = []
 
     # (b) an exact stored job_id. A weak token counts only on the same host; when a strong token
     # is a job_id on several sources, the ones on the URL's own host win.
