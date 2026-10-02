@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from datetime import UTC, datetime, timedelta
 
 from job_hunter.config import CandidateProfile
@@ -201,4 +202,21 @@ def test_state_round_trip_and_missing_or_corrupt_state_means_no_since(tmp_path):
     write_last_scan(state, NOW)
     assert read_last_scan(state) == NOW
     state.write_text("not json")
+    assert read_last_scan(state) is None
+
+
+def test_render_csv_neutralizes_spreadsheet_formulas(tmp_path):
+    db = seed(tmp_path, [
+        make_job(job_id="a", title='=HYPERLINK("http://x","y")', description="perception lidar ADAS sensor fusion"),
+        make_job(job_id="b", title="-2+3 Role", description="perception lidar ADAS sensor fusion"),
+        make_job(job_id="c", title="Plain Title", description="perception lidar ADAS sensor fusion"),
+    ])
+    rows = list(csv.reader(io.StringIO(render_csv(scan(db, PROFILE, 30, now=NOW).rows))))
+    titles = {r[2] for r in rows[1:]}
+    assert titles == {"'=HYPERLINK(\"http://x\",\"y\")", "'-2+3 Role", "Plain Title"}
+
+
+def test_naive_state_timestamp_reads_as_none(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"last_scan_at": "2026-10-01T00:00:00"}))
     assert read_last_scan(state) is None

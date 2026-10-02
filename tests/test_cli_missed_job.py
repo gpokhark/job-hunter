@@ -178,3 +178,44 @@ def test_first_run_is_capped_at_100_rows_without_a_limit(project, tmp_path, caps
 def test_near_misses_project_flag_and_options_parse():
     args = parser().parse_args(["near-misses", "--project", "/z", "--min-terms", "2", "--ignore-term", "lidar", "--all"])
     assert args.project == Path("/z") and args.min_terms == 2 and args.ignore_term == ["lidar"] and args.all
+
+
+def test_second_file_write_failure_exits_2_and_leaves_state_byte_identical(project, tmp_path, capsys, monkeypatch):
+    from job_hunter import near_miss
+
+    _near_miss_project(project)
+    out = tmp_path / "reports"
+    out.mkdir()
+    state = out / "state.json"
+    state.write_text('{"last_scan_at": "2026-01-01T00:00:00+00:00"}\n')
+    before = state.read_bytes()
+    real, calls = near_miss.atomic_write_text, []
+
+    def flaky(path, text):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real(path, text)
+
+    monkeypatch.setattr(near_miss, "atomic_write_text", flaky)
+    assert main(["near-misses", "--output-dir", str(out)]) == 2
+    assert "could not write the near-miss report" in capsys.readouterr().err
+    assert state.read_bytes() == before
+
+
+def test_naive_state_timestamp_does_not_crash_the_command(project, tmp_path, capsys):
+    _near_miss_project(project)
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "state.json").write_text('{"last_scan_at": "2026-10-01T00:00:00"}')
+    assert main(["near-misses", "--output-dir", str(out)]) == 0
+    assert "Near-misses: 1 new job(s)" in capsys.readouterr().out
+
+
+def test_near_misses_with_a_missing_database_exits_2(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("{}\n")
+    (tmp_path / "config" / "candidate_profile.yaml").write_text(PROFILE_YAML)
+    assert main(["near-misses", "--output-dir", str(tmp_path / "r")]) == 2
+    assert "no database at" in capsys.readouterr().err

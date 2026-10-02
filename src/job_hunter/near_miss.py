@@ -14,6 +14,7 @@ import html
 import io
 import json
 import re
+import sqlite3
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .active_pool import raw_active_jobs
+from .applications_export import csv_safe
 from .atomic import atomic_write_text
 from .config import CandidateProfile, load_profile
 from .models import Job, PrefilterRule
@@ -209,8 +211,9 @@ def render_csv(rows: list[NearMiss]) -> str:
     writer.writerow(["rank", "source", "title", "score", "terms", "posted", "first_seen", "url"])
     for rank, row in enumerate(rows, 1):
         writer.writerow(
-            [rank, row.source_key, row.title, row.score, "; ".join(row.terms),
-             _fmt_day(row.posted_at), _fmt_day(row.first_seen_at), row.url]
+            [rank, csv_safe(row.source_key), csv_safe(row.title), row.score,
+             csv_safe("; ".join(row.terms)), _fmt_day(row.posted_at), _fmt_day(row.first_seen_at),
+             csv_safe(row.url)]
         )
     return buffer.getvalue()
 
@@ -263,9 +266,11 @@ def render_html(result: ScanResult, *, generated_at: datetime, since: datetime |
 
 def read_last_scan(state_path: Path) -> datetime | None:
     try:
-        return datetime.fromisoformat(json.loads(state_path.read_text(encoding="utf-8"))["last_scan_at"])
+        moment = datetime.fromisoformat(json.loads(state_path.read_text(encoding="utf-8"))["last_scan_at"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    # A naive timestamp can't be compared with aware first_seen values; treat it as corrupt.
+    return moment if moment.tzinfo is not None else None
 
 
 def write_last_scan(state_path: Path, moment: datetime) -> None:
@@ -273,6 +278,17 @@ def write_last_scan(state_path: Path, moment: datetime) -> None:
 
 
 def cli_near_misses(args, settings) -> int:
+    if not Path(settings.database_path).exists():
+        print(f"job-hunter: no database at {settings.database_path}; run a search first", file=sys.stderr)
+        return 2
+    try:
+        return _near_misses(args, settings)
+    except sqlite3.OperationalError as exc:
+        print(f"job-hunter: could not read the database ({exc})", file=sys.stderr)
+        return 2
+
+
+def _near_misses(args, settings) -> int:
     out_dir = Path(args.output_dir) if args.output_dir else settings.database_path.parent / "near-miss"
     state_path = out_dir / "state.json"
     since = None if args.all else read_last_scan(state_path)
