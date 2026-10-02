@@ -1,6 +1,6 @@
 ---
 name: job-feedback
-version: 1.3.0
+version: 1.3.1
 description: Turn radar feedback clicks and any candidate_profile.yaml change — a manual edit or a previously-suggested one — into a reviewed, confirmed profile update, showing exactly which jobs it gains/loses. Nothing is ever written to candidate_profile.yaml, or accepted as the new baseline, without your explicit yes.
 compatibility: Requires uv and Python 3.11+. No LM Studio dependency — every step is a deterministic script over already-collected data; the only "review" involved is the human confirming what to apply.
 metadata:
@@ -159,7 +159,9 @@ Output:
 
 ## When the user reports a missed job
 
-Run `uv run job-hunter why-missed "<id | source:id | title>" --project "$CLAUDE_PROJECT_DIR"` and relay the
-failing stage. If it is a gate rejection, present the suggested terms with their gains and continue with this
-skill's existing steps (preview, confirm, write, confirm baseline). Never write the profile from the suggestions
-without those confirmations.
+Prefer the job id or `source_key:job_id` (from the radar, the posting URL, or the user) over a title. Run
+`uv run job-hunter why-missed '<source_key:job_id | id | URL | title>' --project "$CLAUDE_PROJECT_DIR"`, putting
+the reference in single quotes (double quotes would let `$(...)` or backticks in a pasted title run in the shell;
+a single quote inside a title becomes `'\''`), and relay the failing stage. If it is a gate rejection, present
+the suggested terms with their gains and continue with this skill's existing steps (preview, confirm, write,
+confirm baseline). Never write the profile from the suggestions without those confirmations.

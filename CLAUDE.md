@@ -227,7 +227,9 @@ ranked `SearchResult` JSON.
 
 - **`src/job_hunter/near_miss.py`** — periodic human-only report of `no_positive_match` rejects whose
   boilerplate-stripped descriptions carry >= 3 distinct strong terms, with vocabulary hints and a department-coverage
-  table; state in `data/near-miss/state.json`; never scored, merged or added to `candidates`.
+  table; reads SQLite read-only (`raw_active_jobs(..., readonly=True)`); state (`last_scan_at`) in
+  `data/near-miss/state.json`, and rows dropped by the 100-row first-run cap or `--limit` are counted in the report;
+  never scored, merged or added to `candidates`.
 
 - **`scripts/diff_profile.py`** — compares two `CandidateProfile`s (two saved YAMLs, or the
   on-disk profile + an in-memory `--add`/`--remove` patch never written back) against every stored

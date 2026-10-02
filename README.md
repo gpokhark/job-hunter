@@ -108,8 +108,8 @@ uv run python scripts/diff_profile.py --remove target_domains:"some term"
 uv run python scripts/refilter_archive.py [--keyword "..."] [--search <path>] [--output <path>]
 ```
 
-`why-missed` takes a job id, `source_key:job_id`, a URL (matched by exact URL or ids in its path) or part of the title and changes nothing.
-`near-misses` writes `data/near-miss/<timestamp>.html`/`.csv` listing only jobs first seen since the last scan (`--all` for everything) and is a scouting aid, never scored or added to the radar.
+`why-missed` takes a job id, `source_key:job_id`, a URL (matched by its normalized canonical URL, then an id in its query or last id-bearing path segment) or part of the title and changes nothing.
+`near-misses` writes `data/near-miss/<timestamp>.html`/`.csv` listing only jobs first seen since the last scan (`--all` for everything; a first run is capped at 100 rows and any rows a cap or `--limit` drops are counted in the report) and is a scouting aid, never scored or added to the radar.
 
 Every command above (and every *operational* `scripts/*.py` entry point — not the diagnostic/
 prototype/converter utilities or the hook/installer scripts, which take the project root
