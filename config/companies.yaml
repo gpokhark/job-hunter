@@ -341,38 +341,79 @@ companies:
       description_selector: .DkhPwc
   - key: waymo
     company: Waymo
-    adapter: stealth_html
-    platform: html
+    adapter: greenhouse
+    platform: greenhouse
     config:
-      # careers.withwaymo.com is behind a CloudFront WAF (request-rate challenge) that
-      # blocks plain httpx with HTTP 202 challenge. stealth_html uses Scrapling's
-      # AsyncStealthySession (headless browser) which bypasses the WAF — confirmed live:
-      # a real browser renders all 30+ job cards per page across 12 pages.
-      # Selectors verified via browser inspection (Sep 2026):
-      # card: div.job-search-results-card (also matches <article> tags)
-      # title/link: h3.card-title.job-search-results-card-title > a
-      # location: span[id^="location_icon_text_"]
-      # department: span[id^="department_icon_text_"]
-      # employment_type: span[id^="employment_type_icon_text_"]
-      # summary: p.card-text.job-search-results-summary
-      # WAF throttles rapid requests — pace them to avoid sticky challenge.
-      # stealth_html adapter returns partial results on timeout (graceful degradation).
-      # DETAIL PAGES ARE BLOCKED: Waymo's WAF blocks almost every detail page.
-      # Extract everything from listing cards and skip detail-page fetching.
-      list_url: https://careers.withwaymo.com/jobs/search
-      card_selector: div.job-search-results-card
-      link_selector: h3.card-title.job-search-results-card-title a
-      title_selector: h3.card-title.job-search-results-card-title a
-      location_selector: span[id^="location_icon_text_"]
-      department_selector: span[id^="department_icon_text_"]
-      employment_type_selector: span[id^="employment_type_icon_text_"]
-      description_selector: p.card-text.job-search-results-summary
-      page_number_parameter: page
-      page_size: 30
-      wait_selector: div.job-search-results-card
-      min_request_interval_seconds: 5.0
-      max_retries: 3
-      skip_detail_fetch: true
+      # ===== METHOD IN USE (since 2026-10-01): Greenhouse public job-board API, plain httpx =====
+      # careers.withwaymo.com is a skin over Greenhouse (its job links are ?gh_jid=<id>), and the
+      # board token is plain "waymo": boards-api.greenhouse.io/v1/boards/waymo/jobs is a public,
+      # unauthenticated feed (same family as the anthropic/zipline entries). Confirmed live
+      # 2026-10-01: ONE request returns ~360 jobs with full descriptions (content=true, median
+      # ~4.7k chars), a department and first_published (posting date) on every job, and
+      # absolute_url = the real candidate-facing page. It never touches careers.withwaymo.com
+      # (whose robots.txt asks for Crawl-delay: 5 and disallows /api/ and ?gh_jid=), so there is
+      # no WAF to defeat, no stealth browser, and no per-job detail fetch. `content` arrives
+      # HTML-entity-double-encoded; GreenhouseAdapter unescapes it once.
+      # Switching changed job ids (card-scrape ids were hashes of title/location/url; these are
+      # Greenhouse's numeric ids), so rows collected by the old method are a separate set that
+      # ages out via mark_missing (3 missed runs) — and their cached assessments don't carry over.
+      list_url: https://boards-api.greenhouse.io/v1/boards/waymo/jobs?content=true
+      items_path: jobs
+      listing_description_path: content
+      fields:
+        id: id
+        title: title
+        url: absolute_url
+        location: location.name
+        department: departments.0.name
+        posted_at: first_published
+      #
+      # ===== PREVIOUS METHOD (used until 2026-10-01; kept for reference / rollback) =====
+      # stealth_html: a real headless browser (Scrapling) paging through the careers site's
+      # listing cards behind an AWS WAF request-rate challenge. Why it was replaced: it only ever
+      # saw the cards (WAF blocks nearly every detail page), so every job's "description" was the
+      # same ~250-char company blurb (useless for LLM review) and it had no posting date; the
+      # challenge also tripped partway through (a page-8 navigation timeout on 2026-09-30 kept
+      # only 210 of ~360 jobs, and before page-number pagination was restored it saw just page 1);
+      # and it needs the optional `stealth` extra + a browser binary, with real ToS exposure.
+      # To roll back: replace this entry's `adapter`/`platform`/`config` with the block below
+      # (remove the "# | " prefix) — the stealth extra must be installed
+      # (`uv sync --extra stealth && uv run scrapling install`).
+      #
+      # |   - key: waymo
+      # |     company: Waymo
+      # |     adapter: stealth_html
+      # |     platform: html
+      # |     config:
+      # |       # careers.withwaymo.com is behind a CloudFront WAF (request-rate challenge) that
+      # |       # blocks plain httpx with HTTP 202 challenge. stealth_html uses Scrapling's
+      # |       # AsyncStealthySession (headless browser) which bypasses the WAF — confirmed live:
+      # |       # a real browser renders all 30+ job cards per page across 12 pages.
+      # |       # Selectors verified via browser inspection (Sep 2026):
+      # |       # card: div.job-search-results-card (also matches <article> tags)
+      # |       # title/link: h3.card-title.job-search-results-card-title > a
+      # |       # location: span[id^="location_icon_text_"]
+      # |       # department: span[id^="department_icon_text_"]
+      # |       # employment_type: span[id^="employment_type_icon_text_"]
+      # |       # summary: p.card-text.job-search-results-summary
+      # |       # WAF throttles rapid requests — pace them to avoid sticky challenge.
+      # |       # stealth_html adapter returns partial results on timeout (graceful degradation).
+      # |       # DETAIL PAGES ARE BLOCKED: Waymo's WAF blocks almost every detail page.
+      # |       # Extract everything from listing cards and skip detail-page fetching.
+      # |       list_url: https://careers.withwaymo.com/jobs/search
+      # |       card_selector: div.job-search-results-card
+      # |       link_selector: h3.card-title.job-search-results-card-title a
+      # |       title_selector: h3.card-title.job-search-results-card-title a
+      # |       location_selector: span[id^="location_icon_text_"]
+      # |       department_selector: span[id^="department_icon_text_"]
+      # |       employment_type_selector: span[id^="employment_type_icon_text_"]
+      # |       description_selector: p.card-text.job-search-results-summary
+      # |       page_number_parameter: page
+      # |       page_size: 30
+      # |       wait_selector: div.job-search-results-card
+      # |       min_request_interval_seconds: 5.0
+      # |       max_retries: 3
+      # |       skip_detail_fetch: true
   - key: hatci
     company: Hyundai America Technical Center, Inc.
     adapter: successfactors_rmk

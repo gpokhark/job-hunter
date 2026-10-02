@@ -246,7 +246,7 @@ that's a cost paid once per company, not per search.
 | hma | Hyundai Motor America | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | apple | Apple | apple | Yes (`postDateInGMT`) | httpx only — React Router SSR JSON (§5.9) |
 | google | Google | stealth_html | No | Scrapling stealth browser + selectolax — not bot-blocked, JS-only "boq-hiring" frontend with Closure-hashed CSS classes (fragile across a redesign) |
-| waymo | Waymo | html_paginated | Conditional — JobPosting JSON-LD when not WAF-challenged (§5.7) | httpx + selectolax, rate-sensitive |
+| waymo | Waymo | greenhouse | Yes — `content=true` inlines the full description, `first_published` is the posting date | Public Greenhouse job-board API (board token `waymo`), plain httpx; replaced the `stealth_html` card scrape on 2026-10-01 (see the Waymo bullet in §5.7) |
 | hatci | Hyundai America Technical Center | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | caterpillar | Caterpillar | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API (~982 jobs), same fix as GM (`careers.caterpillar.com` is only the marketing front end); a first-time full-catalog `--refresh-details` run has been observed to hit 429s from Workday's shared host under this project's default detail-fetch concurrency — same known caveat GM's entry already carries, see §5.7 |
 | nvidia | NVIDIA | workday | Yes (`startDate`) | httpx only — public unauthenticated Workday CXS API, ~2,000 jobs visible (real catalog ~2,697 per facet counts; this tenant's search hard-caps at 2,000, see §5.7); rate-limits reproducibly even on a normal (non-`--refresh-details`) run, worse than GM/Caterpillar — see §5.7 |
@@ -363,8 +363,8 @@ Three independent mechanisms feed a posting date, in order of coverage:
    for a JobPosting JSON-LD block (`normalizer.extract_job_posting_ld`) regardless of adapter
    config, using its `datePosted`/`employmentType` without overriding a description a
    `description_selector` already found. This is what covers Astemo (no per-field config exists
-   for it), Toro, and conditionally Waymo (present only when its AWS WAF challenge isn't currently
-   blocking the fetch — §5.7). The regex matches `type="application/ld+json"` anywhere in the
+   for it) and Toro (Waymo used to be covered here too, until it moved to its public Greenhouse feed
+   — §5.7). The regex matches `type="application/ld+json"` anywhere in the
    `<script>` tag's attributes, not only immediately after `<script `, since Astemo's markup puts
    another attribute first.
 3. **Liferay DDM `JobOfferData` fallback (HRI only)** — HRI's Liferay-backed detail pages carry no
@@ -414,10 +414,19 @@ false-positive here.
   keep the more stable listing-level `postedDate`; a `--refresh-details` run would start picking up
   JSON-LD's drifting value instead. Prefer the listing's `postedDate` if this date is ever more
   actively relied upon (e.g. a tighter recency cutoff).
-- **Waymo is rate-sensitive.** An AWS WAF JS-execution challenge sits in front of the whole site
-  and escalates with request volume — confirmed to return an empty HTTP 202 to both curl and httpx
-  once triggered (listing and detail alike), while a JS-capable fetch (Scrapling) passes reliably.
-  Retest with `source-test` rather than assuming a failed run means the source is broken.
+- **Waymo: method in use is Greenhouse's public job-board API (since 2026-10-01).**
+  `careers.withwaymo.com` is a skin over Greenhouse (job links are `?gh_jid=<id>`); the feed at
+  `boards-api.greenhouse.io/v1/boards/waymo/jobs?content=true` is unauthenticated and returns the
+  whole catalog (~360 jobs) in one request with full descriptions, a department and a posting date
+  on every job. It never touches the careers site, so none of the points below about its WAF apply
+  to the current method. **Previous method (kept, commented out, in `config/companies.yaml`):**
+  `stealth_html` driving a real browser over the site's listing cards. An AWS WAF request-rate
+  challenge sits in front of the careers site and escalates with request volume — an empty HTTP 202
+  to curl/httpx once triggered, while a JS-capable fetch (Scrapling) passes until the rate trips it
+  (page 8 timed out on 2026-09-30, keeping 210 of ~360 jobs) — and it blocks nearly every detail
+  page, so that method only ever saw each card's ~250-char company blurb as the "description" and
+  no posting date. Switching changed job ids (hashes → Greenhouse numeric ids), so rows from the
+  old method age out through `mark_missing` and their cached assessments do not carry over.
 - **Tesla is unsupported, not merely rate-limited.** An Akamai edge-level "Access Denied"
   (`errors.edgesuite.net`) held even with `stealth_html`'s fingerprint spoofing (both
   `AsyncStealthySession` and `AsyncDynamicSession` tried) — this looks like an IP/ASN-reputation
