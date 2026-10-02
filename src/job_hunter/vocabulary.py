@@ -35,7 +35,8 @@ _TOKEN = re.compile(r"[a-z0-9][a-z0-9+#./-]*")
 def title_phrases(title: str, max_words: int = 3) -> list[str]:
     """Contiguous 1..max_words-word windows of the lower-cased title (ampersands dropped), skipping
     windows made only of generic/short tokens, unique, ordered by window size then position."""
-    tokens = _TOKEN.findall(title.lower().replace("&", " "))
+    # trailing "."/"-"/"/" is dropped so "Sr." is the generic "sr", not a distinct 3-char token
+    tokens = [t for t in (t.rstrip(".-/") for t in _TOKEN.findall(title.lower().replace("&", " "))) if t]
     seen: set[str] = set()
     phrases: list[str] = []
     for size in range(1, max_words + 1):
@@ -81,8 +82,11 @@ def phrase_gain(
     profile: CandidateProfile, phrase: str, pool: list[Job], *, sample_size: int = 3
 ) -> PhraseGain:
     """How many jobs in `pool` pass the real gate once `phrase` is added to `target_title_terms`.
-    Jobs whose title+department lack the phrase cannot change outcome, so only the others are
-    evaluated (the result is identical, just faster)."""
+    `pool` must be `rejected_pool` output (jobs rejected with `no_positive_match`). Widening only
+    adds a positive term, so such a job lacking the phrase in title+department cannot flip to
+    admitted and is skipped without evaluating (identical result, just faster). That shortcut is
+    exact only for a rejected pool: a job that already passes via an existing term but lacks the
+    phrase would be skipped here though a full evaluation would count it."""
     widened = profile.model_copy(
         update={"target_title_terms": [*profile.target_title_terms, phrase]}
     )

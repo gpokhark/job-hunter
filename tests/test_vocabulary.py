@@ -92,3 +92,25 @@ def test_phrase_gain_samples_are_capped():
     pool = [make_job(job_id=str(i), title=f"Calibration Role {i}") for i in range(10)]
     gain = phrase_gain(CandidateProfile(target_title_terms=["robotics"]), "calibration", pool, sample_size=3)
     assert gain.count == 10 and len(gain.samples) == 3
+
+
+def test_title_phrases_strip_trailing_punctuation_so_abbreviations_stay_generic():
+    for title, kept in (("Sr. Perception Engineer", "perception"), ("Jr. Calibration Lead", "calibration")):
+        phrases = title_phrases(title)
+        assert kept in phrases
+        assert not any(p in ("sr", "sr.", "jr", "jr.") for p in phrases)
+        assert all(
+            any(len(t) >= 3 and t not in GENERIC_TITLE_TOKENS for t in p.split()) for p in phrases
+        )
+    assert "perception engineer" in title_phrases("Sr. Perception Engineer")
+
+
+def test_title_phrases_keep_internal_symbol_characters():
+    assert "c++" in title_phrases("C++ Developer II")
+    assert "v2x" in title_phrases("V2X Test Lead")
+
+
+def test_phrase_gain_does_not_mutate_the_profile():
+    profile = CandidateProfile(target_title_terms=["robotics"])
+    phrase_gain(profile, "calibration", _pool())
+    assert profile.target_title_terms == ["robotics"]
