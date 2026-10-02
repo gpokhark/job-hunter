@@ -138,6 +138,21 @@ companies:
     adapter: successfactors_rmk
     platform: successfactors_rmk
     config:
+      # This one entry already covers every U.S. posting on the whole Volkswagen Group site, which
+      # is shared by all brands — the brand/legal entity is only the URL path segment
+      # (/Volkswagen/job/…, /Audi/job/…, /Lamborghini/…, /Electrify_America/…, /cariad/…).
+      # Verified 2026-10-02 (when vwiecc.com and an Audi job were proposed as separate sources):
+      #  - vwiecc.com/careers (VW Innovation and Engineering Center California, Belmont CA) is a
+      #    Squarespace page with no job list of its own; its "Current Openings" link goes to
+      #    jobs.volkswagen-group.com. Its Belmont CA roles are already rows here (/Volkswagen/ path).
+      #  - The sample Audi job (…/Audi/job/San-Jose-Development-Engineer-Sr-Software-CA-95134/
+      #    1426701533/) was already stored under this source; the live US query returned 16 results
+      #    against 15 active rows here. A separate vwiecc/audi entry would only duplicate rows.
+      #  - The search form's "Company" facet (optionsFacetsDD_facility) cannot split them: its
+      #    <select> is empty in the static HTML, and five different plausible values (Audi,
+      #    Volkswagen, Elli, CARIAD, "Audi AG") all returned the identical result set, i.e. the
+      #    parameter is silently ignored. The real facet values would need a one-time browser
+      #    drive to observe (as was done for Molex) before a per-brand source could exist.
       list_url: https://jobs.volkswagen-group.com/search/?locale=en_US&optionsFacetsDD_country=US
       card_selector: tr.data-row
       link_selector: a.jobTitle-link
@@ -2053,3 +2068,32 @@ companies:
         location: location.name
         department: departments.0.name
         posted_at: first_published
+  - key: zoox
+    company: Zoox
+    adapter: lever
+    platform: lever
+    config:
+      # zoox.com/careers links its openings to jobs.lever.co/zoox/<uuid>, so this is Lever's
+      # public postings API, same family as tri/mbrdna/woven — plain httpx, no cookies. Confirmed
+      # live 2026-10-02: GET api.lever.co/v0/postings/zoox?mode=json returns ~236 postings and
+      # the sample job (f7f84c5c-acda-4c2c-8da6-6d59bce8da25, "Manager, Sensor Integration &
+      # Cleaning Hardware", Foster City CA) is present with matching title/location/hostedUrl.
+      # Lever splits a posting across "description" (opening paragraph), "lists"
+      # (responsibilities/qualifications) and "additional" (salary + legal boilerplate), so all
+      # three are read for the description (see the tri entry). `createdAt` (epoch ms) is on
+      # every posting and is Lever's original creation time. The top-level `country` ("US"/"GB")
+      # is picked up by json_api's default `country` field, so location eligibility has a
+      # structured country rather than relying on text alone. `workplaceType` (onsite/hybrid) is
+      # opt-in via fields.work_arrangement. Zoox postings carry no `commitment`, so no
+      # employment_type is mapped. Partial caveat: ~24 postings have an empty `descriptionPlain`
+      # in the listing payload, but the three fields above still carry their content.
+      list_url: https://api.lever.co/v0/postings/zoox?mode=json
+      listing_description_path: [description, lists, additional]
+      fields:
+        id: id
+        title: text
+        url: hostedUrl
+        location: categories.location
+        department: categories.department
+        work_arrangement: workplaceType
+        posted_at: createdAt

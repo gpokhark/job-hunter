@@ -359,7 +359,9 @@ class Collector:
                             ),
                             description=description,
                             arrangement=(
-                                detail.work_arrangement if detail else summary.work_arrangement
+                                detail.work_arrangement
+                                if detail and detail.work_arrangement
+                                else summary.work_arrangement
                             ),
                         )
                         if detail

@@ -7,7 +7,7 @@ import pytest
 from job_hunter.adapters.base import RateLimitError
 from job_hunter.collector import Collector
 from job_hunter.config import CandidateProfile, CollectionConfig, CompanyConfig, Settings
-from job_hunter.models import Assessment, JobDetail, JobSummary
+from job_hunter.models import Assessment, JobDetail, JobSummary, WorkArrangement
 from job_hunter.normalizer import description_hash
 from job_hunter.storage import Storage
 
@@ -476,3 +476,41 @@ async def test_search_without_hooks_is_unchanged(tmp_path):
     with patch("job_hunter.collector.adapter_class", return_value=_OkAdapter):
         result = await Collector(settings, [_named_company("a")], CandidateProfile()).search()
     assert [h.source_key for h in result.source_health] == ["a"]
+
+
+class _ArrangementAdapter:
+    """The listing carries a work arrangement (Lever's `workplaceType`); the detail record
+    (built from the same listing payload) carries only a description."""
+
+    def __init__(self, company, client, collection, max_posting_age_days=None):
+        self.company = company
+        self.kept: list[JobSummary] = []
+
+    async def fetch_summaries(self) -> list[JobSummary]:
+        return [
+            JobSummary(
+                source_key="fake", source_platform="fake", company="Acme", job_id="j1",
+                title="Role", url="https://example.com/j1", country="US", city="Austin",
+                state="TX", work_arrangement=WorkArrangement.HYBRID,
+                posted_at=datetime.now(UTC) - timedelta(days=1),
+            )
+        ]
+
+    async def fetch_detail(self, summary: JobSummary) -> JobDetail:
+        return JobDetail(description="A description")  # no work_arrangement of its own
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_listing_work_arrangement_survives_a_detail_record_that_has_none(tmp_path):
+    """Regression (Zoox/Lever, 2026-10-02): the collector used `detail.work_arrangement` whenever
+    a detail existed, so a detail built only from a description discarded the listing's
+    `workplaceType` and every job was stored as `unknown`. City/state/country already fall back
+    to the summary; the arrangement must too."""
+    settings = Settings(database_path=tmp_path / "jobs.sqlite3", collection=CollectionConfig())
+    with patch("job_hunter.collector.adapter_class", return_value=_ArrangementAdapter):
+        await Collector(settings, [_fake_company()], CandidateProfile()).search(include_seen=True)
+    with Storage(settings.database_path) as storage:
+        assert storage.get_job("fake", "j1")["work_arrangement"] == "hybrid"

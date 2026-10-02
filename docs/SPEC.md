@@ -233,7 +233,7 @@ that's a cost paid once per company, not per search.
 | ford | Ford Motor Company | oracle_hcm | Yes (`PostedDate`) | httpx only — Oracle HCM public REST, offset-paginated, ~824 jobs |
 | stellantis | Stellantis | adp_recruiting | Yes (`postingDate`) | httpx only — ADP Recruiting Management public two-call handshake, ~1,006 requisitions (§5.10) |
 | nissan | Nissan | workday | Yes (`startDate`) | httpx only (Workday) |
-| volkswagen | Volkswagen Group of America | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
+| volkswagen | Volkswagen Group of America | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax — the US-facet query already covers every brand on the shared Group site incl. the Belmont CA IECC (vwiecc.com is a Squarespace page linking here) and Audi San Jose roles; the "Company" facet (`optionsFacetsDD_facility`) is silently ignored, so no per-brand split |
 | tesla | Tesla | **unsupported** | n/a | Akamai edge "Access Denied" — see §5.7 |
 | paccar | PACCAR | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | valeo | Valeo | workday | Yes (`startDate`) | httpx only |
@@ -243,6 +243,7 @@ that's a cost paid once per company, not per search.
 | tri | Toyota Research Institute | lever | Yes (`createdAt`) | httpx only (Lever public API) |
 | mbrdna | Mercedes-Benz R&D North America | lever | Yes (`createdAt`) | httpx only |
 | woven | Woven by Toyota | lever | Yes (`createdAt`) | httpx only — Next.js front end over the same public Lever API (§5.7) |
+| zoox | Zoox | lever | Yes (`createdAt`) | httpx only — public Lever postings API (`api.lever.co/v0/postings/zoox`), structured `country` + `workplaceType` |
 | hma | Hyundai Motor America | successfactors_rmk | Yes (`td.colDate span.jobDate`) | httpx + selectolax |
 | apple | Apple | apple | Yes (`postDateInGMT`) | httpx only — React Router SSR JSON (§5.9) |
 | google | Google | stealth_html | No | Scrapling stealth browser + selectolax — not bot-blocked, JS-only "boq-hiring" frontend with Closure-hashed CSS classes (fragile across a redesign) |
