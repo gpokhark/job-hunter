@@ -351,16 +351,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "playwright" },
     { name = "pydantic" },
+    { name = "pypdf" },
     { name = "pyyaml" },
     { name = "selectolax" },
 ]
 
 [package.optional-dependencies]
-resume = [
-    { name = "playwright" },
-    { name = "pypdf" },
-]
 stealth = [
     { name = "scrapling", extra = ["fetchers"] },
 ]
@@ -376,14 +374,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "playwright", marker = "extra == 'resume'", specifier = ">=1.45,<2" },
+    { name = "playwright", specifier = ">=1.45,<2" },
     { name = "pydantic", specifier = ">=2.7,<3" },
-    { name = "pypdf", marker = "extra == 'resume'", specifier = ">=5,<7" },
+    { name = "pypdf", specifier = ">=5,<7" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "scrapling", extras = ["fetchers"], marker = "extra == 'stealth'", specifier = ">=0.4,<1" },
     { name = "selectolax", specifier = ">=0.3.21,<1" },
 ]
-provides-extras = ["stealth", "resume"]
+provides-extras = ["stealth"]
 
 [package.metadata.requires-dev]
 dev = [

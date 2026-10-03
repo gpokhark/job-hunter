@@ -13,7 +13,7 @@ independently-invocable job-scout/job-reviewer/job-radar stages (see docs/skill-
 job-feedback for turning radar feedback/profile edits into a confirmed profile update, and
 onboard-source (a repo-maintenance skill for extending job-hunter itself, installed for every
 target exactly like the others, Hermes included). `resume-generator` and `outreach-writer` write
-tailored resumes and outreach copy (PDF output needs `uv sync --extra resume`). `salary-compare`
+tailored resumes and outreach copy (PDF output needs `uv run playwright install chromium` once). `salary-compare`
 turns a job offer into a total-compensation comparison and negotiation plan (stdlib only, no
 extra installs).
 

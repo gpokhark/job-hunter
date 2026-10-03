@@ -57,7 +57,9 @@ scoring into Python or retrieval into the skill.
 ## Commands
 
 ```bash
-uv sync --dev                          # install runtime + dev deps
+uv sync --all-extras                   # runtime + dev + `stealth` extra, in ONE command
+uv run playwright install chromium     # once: resume/cover-letter PDFs
+uv run scrapling install               # once: only for stealth_html sources
 uv run job-hunter doctor               # environment/config sanity check
 uv run job-hunter search                # run all enabled sources
 uv run job-hunter search --json --output data/latest_search.json
@@ -80,7 +82,10 @@ uv run pytest -m "not live"             # skip tests marked live (network-depend
 uv run ruff check .
 ```
 
-Tests use saved response fixtures in `tests/fixtures/` and never hit the network unless marked
+`playwright`/`pypdf` are base dependencies; `stealth` is the only extra (opt-in, ToS exposure). `uv sync`
+makes the venv match exactly what's requested, so a bare `uv sync` or a single `--extra X` **removes**
+the other extras — always sync with `--all-extras`. Browser binaries live in a shared cache and survive
+syncs. Tests use saved response fixtures in `tests/fixtures/` and never hit the network unless marked
 `live`. Setup requires `cp config/candidate_profile.example.yaml config/candidate_profile.yaml`
 before most commands will find a profile (falls back to the example file otherwise).
 
@@ -354,34 +359,28 @@ ranked `SearchResult` JSON.
   between `O_CREAT|O_EXCL` and its write — a reader landing there used to misread this as abandoned
   and wrongly reclaim a live lock).
 
-  Because `pipeline.py` holds this lock for the whole run before spawning
-  `review_with_lm_studio.py`/`refilter_archive.py`, which each also try to acquire the identically-
-  named lock, they'd deadlock against their own parent. Fixed via `run_lock_or_inherited()`:
-  `pipeline.py` generates a per-acquisition token (`secrets.token_hex(16)`, written into the lock
-  file) and passes it via `JOB_HUNTER_LOCK_INHERITED`; the function only treats the lock as
-  inherited when that env var matches `current_lock_token()`'s live read, falling back to a real
-  acquire on any mismatch/missing file/unset var (fails closed) — a bare boolean flag was rejected
-  since any standalone caller could set the env var and skip the lock with no verification.
+  Because `pipeline.py` holds this lock for the whole run before spawning `review_with_lm_studio.py`/
+  `refilter_archive.py` (which take the same-named lock), they'd deadlock against their parent.
+  `run_lock_or_inherited()` fixes that: `pipeline.py` writes a per-acquisition token
+  (`secrets.token_hex(16)`) into the lock file and passes it via `JOB_HUNTER_LOCK_INHERITED`; a child
+  treats the lock as inherited only if that matches `current_lock_token()`'s live read, otherwise it
+  really acquires (fails closed). A bare boolean flag was rejected: any standalone caller could set it
+  and skip the lock unverified.
 
 - **`src/job_hunter/hook_adapter.py`** — shared logic behind the Claude Code
-  (`scripts/claude_profile_hook.py`) and Hermes (`scripts/hermes_profile_hook.py`) profile-diff
-  hooks: `should_run_diff()` (does an edited path resolve to this project's
-  `candidate_profile.yaml`) and `run_diff()` (runs `diff_profile.py` check mode). Each runtime
-  script owns only its stdin wire shape (Claude's `PostToolUse`: `tool_input.file_path`; Hermes's
-  `post_tool_call`: `tool_input.path`) and calls these — directly unit-testable, no subprocess/
-  stdin faking needed. `run_diff()` discovers `uv` via `shutil.which` and logs every failure mode
-  to `logs/profile-hook.log` (vs. the previous Hermes-only hook's silent
-  `contextlib.suppress`) — a silently-failing hook is worse than an advisory one. Guards against
-  overlapping runs: a non-blocking `run_lock("profile-hook", ...)` skips if another hook invocation
-  for the project is mid-run, plus a 5s debounce marker file (`logs/.profile-hook-last-run`) — both
-  logged, never silent. `HOOK_LOCK_NAME` (`"profile-hook"`) is its own lock, separate from
-  `runlock.py`'s `"job-hunter"` pipeline lock, since this hook only reads SQLite and rewrites the
-  profile-diff snapshot/report. `.claude/settings.json`'s `PostToolUse` invokes
-  `scripts/run_profile_hook.sh` (portable POSIX-`sh`) rather than a bare `uv run python ...` — the
-  direct form failed at the shell level if `uv` wasn't on the *invoking* process's `PATH`, before
-  `hook_adapter.py`'s own `shutil.which("uv")` check (which diagnoses the *inner* call) ever ran;
-  the launcher locates `uv` itself, falls back to `python3` with a stderr note, and always exits 0
-  (advisory by design).
+  (`scripts/claude_profile_hook.py`) and Hermes (`scripts/hermes_profile_hook.py`) profile-diff hooks:
+  `should_run_diff()` (does an edited path resolve to this project's `candidate_profile.yaml`) and
+  `run_diff()` (runs `diff_profile.py` check mode). Each runtime script owns only its stdin wire shape
+  (Claude's `PostToolUse`: `tool_input.file_path`; Hermes's `post_tool_call`: `tool_input.path`), so the
+  logic is unit-testable without subprocess/stdin faking. `run_diff()` finds `uv` via `shutil.which`,
+  logs every failure to `logs/profile-hook.log` (a silently-failing hook is worse than an advisory one),
+  and guards overlap with a non-blocking `run_lock("profile-hook", ...)` plus a 5s debounce marker
+  (`logs/.profile-hook-last-run`), both logged. `HOOK_LOCK_NAME` is separate from the `"job-hunter"`
+  pipeline lock: the hook only reads SQLite and rewrites the profile-diff snapshot/report.
+  `.claude/settings.json`'s `PostToolUse` runs `scripts/run_profile_hook.sh` (portable POSIX `sh`), not a
+  bare `uv run python ...` — the direct form failed at the shell level when `uv` wasn't on the invoking
+  process's `PATH`, before `hook_adapter.py`'s own check could run. The launcher locates `uv`, falls back
+  to `python3` with a stderr note, and always exits 0 (advisory by design).
 
 - **`storage.py`** — SQLite (WAL). Five core tables (plus `feedback_tombstones`, `applications`, `application_tombstones`): `jobs` (one row per `(source_key, job_id)`,
   upserted with `is_new`/`is_changed` from content hash), `runs` (per search invocation),
@@ -441,8 +440,8 @@ ranked `SearchResult` JSON.
   changed description -> numbered `_2` file). `POST /api/jd` in `serve_radar.py` (source_key/job_id only;
   200/404/409; project-relative path only) backs the live radar's per-row Resume button, which copies
   `Use the resume-generator skill on <path>`. `scripts/measure_resume.py`/`log_resume.py` measure page fill
-  and append `data/output/resume_log.csv`; they need the optional `resume` extra (`uv sync --extra resume` +
-  `uv run playwright install chromium`), never the base install or default tests. `skills/resume-generator`
+  and append `data/output/resume_log.csv`; they need Chromium (`uv run playwright install chromium`, one time);
+  default tests skip the browser test without it. `skills/resume-generator`
   and `skills/outreach-writer` (symlinked in `.claude/skills/`) take free-text personalization per request plus
   `config/resume/personalization.md`; integrity rules are non-overridable, format rules are defaults.
   The skills hold no personal data or employer-specific rules (portable to any user): everything

@@ -14,7 +14,7 @@ don't assume a pattern applies without confirming it live.
 - Scrapling, for one-time rendering only, via
   `uv run --with "scrapling[fetchers]" python3 -c "..."` (doesn't touch the project's own
   dependency list) — or the project's own `stealth_html` adapter if the `stealth` extra is
-  already installed (`uv sync --extra stealth`).
+  already installed (`uv sync --all-extras`).
 - A short Playwright script when you need to see the *real XHR/fetch calls* a JS-heavy page makes,
   not just its rendered HTML — register a `page.on("request"/"response", ...)` handler, `goto` the
   page, and print every request whose `resource_type` is `xhr`/`fetch`. This is exactly how

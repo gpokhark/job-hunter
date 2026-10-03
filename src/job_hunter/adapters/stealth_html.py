@@ -22,8 +22,8 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
     Only use this for a source that has no other viable path (mark it `unsupported`
     instead if a real anonymous endpoint exists) — this crosses into deliberately
     defeating a site's own anti-automation controls, with the ToS and resource-cost
-    implications that carries. Requires the optional `stealth` dependency group
-    (`uv sync --extra stealth` followed by `uv run scrapling install`).
+    implications that carries. Requires the optional `stealth` extra
+    (`uv sync --all-extras` followed by `uv run scrapling install`).
 
     A blocked or challenged page must never look like the end of the listing: `request()`
     raises on any fetch failure, and `strict_pagination` makes an empty continuation page (or
@@ -43,8 +43,8 @@ class StealthHtmlAdapter(HtmlPaginatedAdapter):
                 from scrapling.fetchers import AsyncStealthySession
             except ImportError as exc:
                 raise AdapterError(
-                    "the 'stealth' dependency group is not installed "
-                    "(uv sync --extra stealth && uv run scrapling install)"
+                    "the 'stealth' extra is not installed "
+                    "(uv sync --all-extras && uv run scrapling install)"
                 ) from exc
             self._session = AsyncStealthySession(headless=True)
             await self._session.__aenter__()
