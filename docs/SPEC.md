@@ -311,10 +311,10 @@ that's a cost paid once per company, not per search.
 | torc_robotics | Torc Robotics | greenhouse | Yes (`first_published`) | httpx only — job-boards.greenhouse.io/torcrobotics is already Greenhouse's own public host, no front end to see through; same shape as anthropic/scout_motors/may_mobility (52 jobs) |
 | hyundai_mobis | Hyundai MOBIS | paylocity | Yes (`PublishedDate`, JSON-LD `datePosted` confirmed a stable but wrong +5h and not used) | httpx + selectolax — a new platform family, Paylocity Recruiting (§5.20); the entire job list, with structured per-job location, is embedded in the listing's own plain HTML as `window.pageData`, no separate API; detail-page JSON-LD is confirmed absent on some jobs, so description comes from label-matched `Description`/`Requirements` divs instead (12 jobs, Mobis Technical Center of North America, Plymouth MI) |
 
-Adapter mix: workday ×16, greenhouse ×12, successfactors_rmk ×8, oracle_hcm ×5, ashby ×5, lever ×3,
-eightfold ×4, html_paginated ×4, stealth_html ×3, unsupported ×4, successfactors_rmk_v2 ×2, zf ×2, 1 each of
-smartrecruiters/paycom/paylocity/ultipro/brose/phenom/html_multi_index/apple/adp_recruiting/bosch/csod/
-icims_attract/dayforce.
+Adapter mix (84 entries): workday ×16, greenhouse ×13, successfactors_rmk ×8, ashby ×6, oracle_hcm ×5,
+lever ×4, eightfold ×4, unsupported ×4, html_paginated ×3, phenom ×2, adp_recruiting ×2, stealth_html ×2,
+successfactors_rmk_v2 ×2, zf ×2, 1 each of smartrecruiters/paycom/paylocity/ultipro/brose/
+html_multi_index/apple/bosch/csod/icims_attract/dayforce.
 Every `unsupported` entry carries a specific `unsupported_reason` in `config/companies.yaml`.
 Active/closed detection is presence-only for every source, including ones with a posted date —
 see §5.6.
