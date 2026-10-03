@@ -122,8 +122,26 @@
     });
   });
 
+  // ---- the sky follows your progress (forest-dawn only; applications.css reads --mf-rise) ----
+  var DAWN = root.getAttribute('data-theme') === 'forest-dawn';
+  var STAGE = { saved: 1, applied: 2, interviewing: 3, offer: 4 }; // rejected/withdrawn do not count
+  if (DAWN) {
+    root.classList.add('mf-dawn');
+    var bg = document.getElementById('mf-bg');
+    if (bg) bg.insertBefore(el('div', 'mf-dusk'), bg.firstChild);
+  }
+  function updateRise() {
+    if (!DAWN) return;
+    var best = 0;
+    Array.prototype.forEach.call(container.querySelectorAll('.app-row'), function (row) {
+      best = Math.max(best, STAGE[row.getAttribute('data-status')] || 0);
+    });
+    root.style.setProperty('--mf-rise', String(best === 0 ? 0.1 : best / 4));
+  }
+
   // ---- keep rows in step with the page's own script (it rewrites data-status live) ----
   Array.prototype.forEach.call(container.querySelectorAll('.app-row'), decorate);
+  updateRise();
   new MutationObserver(function (records) {
     records.forEach(function (rec) {
       if (rec.type === 'attributes') {
@@ -134,6 +152,7 @@
         if (n.nodeType === 1 && n.classList.contains('app-row')) decorate(n);
       });
     });
+    updateRise();
   }).observe(container, { attributes: true, attributeFilter: ['data-status'], subtree: true, childList: true });
 
   applySwaps(!isOff());

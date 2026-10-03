@@ -23,3 +23,15 @@ html.mf-apps:not(.mf-off) .app-row[data-status="rejected"] { border-left-color: 
   border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer;
 }
 html.mf-off .mf-badge, html.mf-off .mf-ribbon, html.mf-off .mf-compare { display: none; }
+
+/* ---- progress sky (forest-dawn only): --mf-rise is 0..1, set by applications.js ---- */
+html.mf-apps.mf-dawn .mf-sun, html.mf-apps.mf-dawn .mf-rays { bottom: calc(-4% + 37% * var(--mf-rise, 1)); }
+html.mf-apps.mf-dawn .mf-skyglow { opacity: calc(.15 + .85 * var(--mf-rise, 1)); }
+.mf-dusk {
+  inset: 0; opacity: calc(.8 * (1 - var(--mf-rise, 1)));
+  background: linear-gradient(180deg, #0b0a22 0%, #1b1445 55%, #2a1c52 100%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  html.mf-apps.mf-dawn .mf-sun, html.mf-apps.mf-dawn .mf-rays { transition: bottom 1.6s ease; }
+  html.mf-apps.mf-dawn .mf-skyglow, html.mf-apps.mf-dawn .mf-dusk { transition: opacity 1.6s ease; }
+}

@@ -1723,5 +1723,5 @@ builds nodes with `textContent`. It adds `html.mf-apps`, `p.mf-tag` after the h1
 inside each `.app-main` (before `.app-sub`), `span.mf-ribbon` as an offer row's first child and
 `button.mf-compare` in its `.app-controls` (copies a `salary-compare` prompt; falls back to showing it in
 `#live-notice` when the clipboard is blocked). A MutationObserver on `#app-rows` keeps rows in step with the
-page's own `data-status` updates. Heading, count-chip labels and the empty state are swapped for themed text
+page's own `data-status` updates. Under `forest-dawn` only, it also adds `html.mf-dawn` and a `div.mf-dusk` as the first child of `#mf-bg`, and sets `--mf-rise` on `<html>` (0.1 when no row is saved/applied/interviewing/offer, else the furthest stage 1-4 divided by 4; rejected/withdrawn do not count) so the sun rises and the dusk overlay fades as the pipeline advances. Heading, count-chip labels and the empty state are swapped for themed text
 and restored when `offer.js` dispatches `window` event `jobhunter:offer-mode` (`detail.off`) on its toggle.

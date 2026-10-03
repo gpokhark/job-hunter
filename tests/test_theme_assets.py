@@ -79,6 +79,7 @@ def test_applications_assets_exist_and_are_safe():
     assert "jobhunter:offer-mode" in js and "salary-compare" in js and "MutationObserver" in js
     for selector in (".mf-badge", ".mf-ribbon", ".mf-compare"):
         assert selector in css
+    assert "--mf-rise" in js and "--mf-rise" in css and ".mf-dusk" in css
     assert "jobhunter:offer-mode" in JS.read_text(encoding="utf-8")
 
 

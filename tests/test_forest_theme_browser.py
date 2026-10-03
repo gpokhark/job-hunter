@@ -390,3 +390,44 @@ def test_the_empty_inbox_is_witty_and_restorable(browser, tmp_path):
         assert page.locator("#app-empty b").inner_text() == "Track"
     finally:
         context.close()
+
+
+def _rise(page):
+    return float(page.evaluate("document.documentElement.style.getPropertyValue('--mf-rise')"))
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [([], 0.1), (["rejected", "withdrawn"], 0.1), (["saved"], 0.25), (["saved", "applied"], 0.5),
+     (["applied", "interviewing"], 0.75), (["interviewing", "offer", "rejected"], 1.0)],
+)
+def test_the_sky_rises_with_the_furthest_stage(browser, tmp_path, statuses, expected):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", statuses))
+    try:
+        assert _rise(page) == expected
+    finally:
+        context.close()
+
+
+def test_the_sun_is_higher_after_an_offer_and_the_sky_follows_live_changes(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _apps_file(tmp_path, "forest-dawn", ["applied", "applied"]), reduced_motion="reduce",
+    )
+    try:
+        sun_bottom = "parseFloat(getComputedStyle(document.querySelector('.mf-sun')).bottom)"
+        before = page.evaluate(sun_bottom)
+        assert _rise(page) == 0.5
+        page.locator(".app-row").first.locator(".app-status").select_option("offer")
+        page.wait_for_function("document.documentElement.style.getPropertyValue('--mf-rise') === '1'")
+        assert page.evaluate(sun_bottom) > before
+    finally:
+        context.close()
+
+
+def test_the_night_theme_has_no_progress_sky(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer"]))
+    try:
+        assert page.evaluate("document.querySelector('.mf-dusk')") is None
+        assert page.evaluate("document.documentElement.classList.contains('mf-dawn')") is False
+    finally:
+        context.close()
