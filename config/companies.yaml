@@ -5,7 +5,7 @@ version: 1
 # to get past a Cloudflare/Akamai-style bot-management challenge — a deliberate choice for
 # this project, made with the understanding that it can conflict with a site's Terms of
 # Service. Prefer every other adapter first; only reach for it when no plain anonymous
-# endpoint exists at all. Requires `uv sync --extra stealth && uv run scrapling install`.
+# endpoint exists at all. Requires `uv sync --all-extras && uv run scrapling install`.
 companies:
   - key: honda
     company: American Honda Motor Co.
@@ -393,7 +393,7 @@ companies:
       # and it needs the optional `stealth` extra + a browser binary, with real ToS exposure.
       # To roll back: replace this entry's `adapter`/`platform`/`config` with the block below
       # (remove the "# | " prefix) — the stealth extra must be installed
-      # (`uv sync --extra stealth && uv run scrapling install`).
+      # (`uv sync --all-extras && uv run scrapling install`).
       #
       # |   - key: waymo
       # |     company: Waymo

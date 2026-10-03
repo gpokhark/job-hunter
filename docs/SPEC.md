@@ -328,7 +328,7 @@ Every other adapter is plain `httpx`. `stealth_html` drives a real headless stea
 real ToS exposure, not "just reading public data." Before reaching for it, the established
 practice (proven repeatedly — GM, Stellantis, Apple all looked like they needed it and didn't) is
 to check for an unprotected backend API first. Requires the optional `stealth` extra (`uv sync
---extra stealth && uv run scrapling install`), not installed by default.
+--all-extras && uv run scrapling install`), not installed by a bare `uv sync`.
 
 ### 5.4 The "scraping endpoint ≠ human-openable URL" trap
 
@@ -516,10 +516,10 @@ false-positive here.
 
 ### 5.8 `stealth_html` tradeoffs
 
-Setup (opt-in, not installed by default):
+Setup (opt-in; `uv sync` prunes extras, so request them together with everything else):
 ```bash
-uv sync --extra stealth
-uv run scrapling install
+uv sync --all-extras      # base + dev + stealth
+uv run scrapling install  # one-time browser binary
 ```
 
 - **ToS exposure** applies only to `astemo` (actually bot-blocked by Cloudflare Turnstile) — real
@@ -560,7 +560,7 @@ uv run scrapling install
   job-hunter calls Scrapling's Python API directly (`AsyncStealthySession`/`AsyncDynamicSession`),
   never through MCP. If an `mcp__ScraplingServer__*` tool call appears elsewhere in a session,
   that's the same underlying package reached through its own separate MCP interface, not something
-  this repo's commands invoke. `uv sync --extra stealth` already installs everything job-hunter
+  this repo's commands invoke. `uv sync --all-extras` already installs everything job-hunter
   itself needs; running Scrapling's MCP server standalone is a separate, unrelated action.
 
 ### 5.9 The `apple` adapter's SSR-JSON parsing
@@ -1310,7 +1310,7 @@ add_project_argument scripts/*.py` before trusting it, since new scripts get add
 | `claude_profile_hook.py` | Claude Code `PostToolUse` adapter for the candidate-profile diff hook — reads `tool_input.file_path` from stdin JSON, delegates to `job_hunter.hook_adapter`. Always exits 0 (`PostToolUse` is advisory-only, fires after the tool already ran). Invoked by `.claude/settings.json` via `scripts/run_profile_hook.sh "${CLAUDE_PROJECT_DIR}"` — a portable POSIX-`sh` launcher (docs/agent-runtime-audit.md's "Claude hook coverage" finding) that finds `uv` itself and falls back to a clear stderr diagnostic (then, best-effort, bare `python3`) instead of the shell failing outright with "command not found" when `uv` isn't on the invoking process's `PATH` — before this script (or `hook_adapter.run_diff`'s own `shutil.which("uv")` check, which only covers the *second*, inner `uv run` call that runs `diff_profile.py`) ever gets a chance to run at all. |
 | `hermes_profile_hook.py` | Hermes `post_tool_call` adapter for the same hook — reads `tool_input.path`, same `job_hunter.hook_adapter` delegation, same `extra.status in {"error","blocked"}` skip-on-failed-edit check and final `print("{}")` as before this round, just no longer duplicating the path-matching/subprocess logic inline. |
 | `serve_radar.py` | Opt-in localhost live radar (GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`, `/api/shutdown`); loopback by default; unauthenticated. Never writes `data/radar/`. Application saves refresh `data/applications.json`/`.csv` (failure reported as `export_warning`); handler socket timeout 15 s. |
-| `measure_resume.py` | Renders an HTML resume/cover letter in headless Chromium at US Letter with 0.5" margins and prints JSON (`status` `ok`/`underflow`/`overflow`, `pages`, `last_page_fill_pct`, `fill_pct`, `content_height_px`, `delta_lines`, `guidance`); `--target-pages` (1, 1.5, 2), `--save-pdf OUT.pdf`, `--project`. Needs the optional `resume` extra (§11.2). |
+| `measure_resume.py` | Renders an HTML resume/cover letter in headless Chromium at US Letter with 0.5" margins and prints JSON (`status` `ok`/`underflow`/`overflow`, `pages`, `last_page_fill_pct`, `fill_pct`, `content_height_px`, `delta_lines`, `guidance`); `--target-pages` (1, 1.5, 2), `--save-pdf OUT.pdf`, `--project`. Needs `playwright`/`pypdf` (base dependencies) plus a one-time Chromium download (§11.2). |
 | `log_resume.py` | Appends one row to `data/output/resume_log.csv` (`--file --company --date` required; `--role --url --fill --pages --iterations` optional; `--project`). Formula-looking cells are prefixed with `'`. |
 | `render_applications.py` | Renders the live Applications page (`/applications`) from `Storage.export_applications()` plus each posting's current state (open/closed/removed); imported by `serve_radar.py`, not a standalone deliverable. Client script: `templates/applications_ui.js`; shared outbox engine: `templates/radar_live_sync.js`. |
 | `apply_radar_feedback.py` | Ingests a radar report's exported feedback JSON into `job_feedback` (§8.5), upserting by `(source_key, job_id)`. `--file <path>` is optional (omitted: auto-resolves the newest `radar-feedback-*.json` in `~/Downloads`). Applies each entry at the export file's mtime and skips entries older than a live change/tombstone (reported as `stale-skipped` only when nonzero). Refreshes `data/job_feedback.csv` afterward. See `docs/feedback-exclusion-plan.md`. |
@@ -1588,10 +1588,10 @@ static report) confirms, POSTs it outside the outbox, then shows a `Stopped` sta
 retry timers, and leaves unsent edits in the localStorage outbox.
 
 **`measure_resume.py` / `log_resume.py`**: see the scripts table (§10) for flags and JSON fields. Both
-take `--project`. `measure_resume.py` needs the optional `resume` extra (`playwright`, `pypdf`):
-`uv sync --extra resume` then `uv run playwright install chromium` (`--with-deps` on a bare Linux host).
-Without them it prints those commands and exits 2 (a missing input file exits 1). The base install and
-default test suite never need the extra. Page fill is measured on the machine that renders the PDF;
+take `--project`. `measure_resume.py` needs `playwright` and `pypdf` (base dependencies) plus a one-time
+`uv run playwright install chromium` (`--with-deps` on a bare Linux host). If either is missing it
+prints the install commands and exits 2 (a missing input file exits 1). The default test suite skips
+the browser test when Chromium isn't installed. Page fill is measured on the machine that renders the PDF;
 fonts differ between operating systems, so re-measure per machine.
 
 **Personalization model.** The owner steers every run two ways: free text in the request itself (page

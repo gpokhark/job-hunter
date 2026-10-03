@@ -384,7 +384,7 @@ async def _source_test(key: str) -> int:
 
 def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
     """Only actually a check when a configured, enabled company needs it — the stealth
-    headless browser is an opt-in dependency (`--extra stealth`), not a default one, so
+    headless browser is an opt-in dependency (`--all-extras`), not a default one, so
     its absence is only a real failure for a source that would actually invoke it.
     A pure function of (companies, whether scrapling is importable) so `doctor()`'s
     control flow around config-loading failures stays simple and this stays unit-testable
@@ -405,7 +405,7 @@ def _stealth_browser_check(companies: list | None) -> tuple[str, bool, str]:
         f"required by: {', '.join(stealth_companies)}"
         if installed
         else f"required by: {', '.join(stealth_companies)}, but the 'stealth' dependency "
-        "group is not installed (uv sync --extra stealth && uv run scrapling install)"
+        "extra is not installed (uv sync --all-extras && uv run scrapling install)"
     )
     return "stealth browser", installed, detail
 

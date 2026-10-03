@@ -7,8 +7,8 @@ Usage:
 
 Prints one JSON object (status ok|underflow|overflow, pages, last_page_fill_pct, guidance, ...) that
 the resume-generator / outreach-writer skills read to decide whether to trim, expand or accept.
-Needs the optional `resume` extra plus a one-time Chromium download:
-    uv sync --extra resume && uv run playwright install chromium
+Needs the base dependencies (`playwright`, `pypdf`) plus a one-time Chromium download:
+    uv sync --all-extras && uv run playwright install chromium
 Fill percentages are measured on the machine that renders the PDF — fonts differ between
 operating systems, so re-measure per machine rather than assuming a result is portable.
 """
@@ -32,8 +32,8 @@ GOOD_FILL_MIN = 88    # % — below this a full-page target shows visible white 
 HALF_PAGE_FILL_BAND = (35, 70)
 
 INSTALL_HELP = (
-    "PDF rendering needs the optional resume dependencies. Install them with:\n"
-    "    uv sync --extra resume\n"
+    "PDF rendering needs the project dependencies and a Chromium browser. Install them with:\n"
+    "    uv sync --all-extras\n"
     "    uv run playwright install chromium\n"
     "(on a bare Linux host add system libraries with: uv run playwright install --with-deps chromium)"
 )

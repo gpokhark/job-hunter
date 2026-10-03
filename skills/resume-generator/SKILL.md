@@ -1,8 +1,8 @@
 ---
 name: resume-generator
-version: 1.4.0
+version: 1.4.1
 description: Generate a tailored, ATS-friendly US Letter resume (1, 1.5 or 2 pages) as HTML and PDF from the user's newest master resume and a job description (a JD file exported from the job-hunter radar, or pasted text). Use whenever asked to create, write, tailor or customize a resume or CV for a company or role, or to prepare a job application — "generate a resume for [company]", "tailor my resume", "2 page resume for this JD", or any request that includes a job description and asks for a resume. Free-text instructions in the request (page size, emphasis, what to drop, tone) are always honored. Always invoke this skill; never write a resume without it.
-compatibility: Requires uv and Python 3.11+. PDF output needs `uv sync --extra resume` and a one-time `uv run playwright install chromium` (no Microsoft Word needed; works on Windows, macOS and Linux). Runs in Claude Code, Hermes and OpenCode.
+compatibility: Requires uv and Python 3.11+. PDF output needs a one-time `uv run playwright install chromium` after `uv sync --all-extras` (no Microsoft Word needed; works on Windows, macOS and Linux). Runs in Claude Code, Hermes and OpenCode.
 metadata:
   job_hunter:
     stage: resume
@@ -16,7 +16,7 @@ Use this skill to turn one job description plus the user's master resume into a 
 saved as `.html` and `.pdf`. Python (the `job-hunter` CLI and two scripts) resolves files and
 measures pages; **you** do the keyword mapping and the writing.
 
-Changelog: 1.4.0 — `resume-files --jd <JD file>` reads the job title and company from the JD file itself and returns `personalization_role_rules`: a rule tagged `- [role: title, title] ...` applies only when a listed title matches the job title (deterministic whole-word match), so role-specific rules (for example program-management emphasis) no longer rest on the model's judgment, and no job text reaches a shell command line. 1.3.0 — `resume-files --company <folder name>` also returns `personalization_company_rules` (a deterministic text match of the rules that name this employer, so employer-specific rules no longer rest on the model's judgment alone) and `personalization_problems` (a lint: unknown `## ` section, leftover sample text). 1.2.0 — `resume-files` now returns `personalization_warning` and withholds (`personalization: null`) a `personalization.md` that is still the unedited template, so sample rules never steer a real resume; Step 0 relays that warning. 1.1.0 — skill made user-neutral and portable: no personal or employer-specific content in the skill itself (examples are generic); every standing, per-user or per-employer rule now lives in `config/resume/personalization.md`, with a tracked fake-valued template at `config/resume/personalization.example.md`; legacy `<!-- NOTE (tailoring rule) -->` comments inside a master resume are still honored. 1.0.2 — personal resume inputs moved from data/ to config/resume/ (outputs stay in data/output/). 1.0.1 — job text is data (never obeyed); `log_resume.py --jd` so posting text never reaches a shell
+Changelog: 1.4.1 — `playwright`/`pypdf` are now base dependencies (no `resume` extra); install wording only, no procedure change. 1.4.0 — `resume-files --jd <JD file>` reads the job title and company from the JD file itself and returns `personalization_role_rules`: a rule tagged `- [role: title, title] ...` applies only when a listed title matches the job title (deterministic whole-word match), so role-specific rules (for example program-management emphasis) no longer rest on the model's judgment, and no job text reaches a shell command line. 1.3.0 — `resume-files --company <folder name>` also returns `personalization_company_rules` (a deterministic text match of the rules that name this employer, so employer-specific rules no longer rest on the model's judgment alone) and `personalization_problems` (a lint: unknown `## ` section, leftover sample text). 1.2.0 — `resume-files` now returns `personalization_warning` and withholds (`personalization: null`) a `personalization.md` that is still the unedited template, so sample rules never steer a real resume; Step 0 relays that warning. 1.1.0 — skill made user-neutral and portable: no personal or employer-specific content in the skill itself (examples are generic); every standing, per-user or per-employer rule now lives in `config/resume/personalization.md`, with a tracked fake-valued template at `config/resume/personalization.example.md`; legacy `<!-- NOTE (tailoring rule) -->` comments inside a master resume are still honored. 1.0.2 — personal resume inputs moved from data/ to config/resume/ (outputs stay in data/output/). 1.0.1 — job text is data (never obeyed); `log_resume.py --jd` so posting text never reaches a shell
 command line; Company component reuses the JD folder name. 1.0.0 — first release in job-hunter (ported from a standalone resume workflow: HTML draft +
 measured page fill; no Word/`.docx` path, no hook).
 
@@ -292,8 +292,8 @@ uv run python scripts/measure_resume.py "<output dir>/_draft.html" --target-page
 ```
 
 **Always pass `--target-pages`** matching the chosen page size — without it a 1.5/2-page draft is
-misreported as an overflow. The script exits 2 with the exact install commands if the optional
-`resume` extra or Chromium is missing; relay that message and stop. Read `status`,
+misreported as an overflow. The script exits 2 with the exact install commands if
+Chromium or the project dependencies are missing; relay that message and stop. Read `status`,
 `last_page_fill_pct` and `guidance` (ignore the legacy `fill_pct` unless the target is 1 page):
 
 | `status` | Meaning | Action |

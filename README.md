@@ -48,10 +48,19 @@ There is no fixed company limit. Searches run on demand; Job Hunter does not sub
 ## Setup
 
 ```bash
-uv sync
+uv sync --all-extras                  # runtime + dev + the optional `stealth` extra, in one command
+uv run playwright install chromium    # once: PDF rendering for the resume/cover-letter skills
+uv run scrapling install              # once: browser for `stealth_html` sources (astemo, google)
 cp config/candidate_profile.example.yaml config/candidate_profile.yaml
 uv run job-hunter doctor
 ```
+
+`playwright` and `pypdf` (resume PDFs) are base dependencies. Only `stealth` is an extra, because
+it drives a real browser against bot-protection (see `docs/SPEC.md` §5.8). **`uv sync` makes the
+environment match exactly what you ask for**, so a bare `uv sync` (or `--extra stealth` alone)
+removes whatever you left out, so keep using `--all-extras` (drop it, and the `scrapling install`
+line, only if you don't need the `stealth_html` sources). Browser binaries live in a shared cache
+(`~/Library/Caches/ms-playwright` on macOS) and survive syncs.
 
 Edit `config/candidate_profile.yaml` with your title/domain terms and exclusions.
 
@@ -160,23 +169,10 @@ button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py`
 auto-applied), and `diff_profile.py` previews any filter-field edit's real effect against every
 stored posting before you save it. See `docs/feedback-exclusion-plan.md`/`docs/profile-diff-plan.md`.
 
-After editing `candidate_profile.yaml` (e.g. approving a `suggest_exclusions.py` suggestion),
-`refilter_archive.py` rebuilds an existing archive's candidates **with no network/scraper call**
-— re-running `render_radar.py` afterward updates the same report in place to reflect the edit.
-Use this instead of re-running `search` when you just want an existing report to catch up with a
-filter change, not to fetch anything new. It rebuilds from SQLite's current active/eligible job
-pool (scoped to that archive's own sources) rather than narrowing whatever's already in the
-archive file — this matters for a *loosening* edit (a new `strong_relevance_terms` override, a
-removed `exclude_terms`/`soft_exclude_terms` entry): a prior narrowing edit may have already
-dropped the job from the archive file entirely, and only a rebuild from SQLite can bring it back.
-Every job any run has ever observed stays in SQLite regardless of prefilter outcome, so this is
-always possible offline. Prints both directions — `N removed, M gained` — since a single profile
-edit can do both at once.
-
 ### Regenerating the radar without scraping
 
-To refresh the HTML report from what's already in `data/searches/`/SQLite — e.g. after editing
-`candidate_profile.yaml` — without hitting any employer site:
+After editing `candidate_profile.yaml` (e.g. approving a `suggest_exclusions.py` suggestion), refresh
+the HTML report from what's already in `data/searches/`/SQLite — no employer site is contacted:
 
 ```bash
 uv run job-hunter pipeline --no-scrape                 # refilter + re-render, review stays cached
@@ -185,24 +181,22 @@ uv run job-hunter pipeline --no-scrape --search data/searches/default_2026-09-15
                                                          # ...this exact archive, skip resolution entirely
 ```
 
-This resolves the same archive-selection rule as everything else (`--keyword`, or the newest
-archive overall if omitted), rebuilds its candidates from SQLite against the current profile,
-writes both the updated radar report and a gained/lost diff report, and — unlike plain
-`pipeline` mode — leaves review **off** by default, since a profile edit alone doesn't necessarily
-warrant spending local-model time; pass `--review` when it does.
+The archive is chosen like everywhere else (`--keyword`, or the newest overall if omitted). Its
+candidates are rebuilt from SQLite's current active/eligible pool (scoped to that archive's own
+sources) rather than narrowed in place, so a *loosening* edit (a new `strong_relevance_terms`
+override, a removed `exclude_terms`/`soft_exclude_terms` entry) can bring back jobs an earlier
+narrowing edit dropped. Both directions are printed (`N removed, M gained`), and the updated radar
+plus a gained/lost diff report are written. Unlike plain `pipeline`, review is **off** by default,
+since a profile edit alone doesn't warrant spending local-model time; pass `--review` when it does.
 
-"Newest archive overall" is resolved by file modification time, not collection date — and every
-refilter touches (re-stamps) whatever archive it targets, so a small archive you've been
-iterating on can end up looking "newer" than a much larger one collected more recently. If you
-already know exactly which archive you want, skip resolution with `--search <path>` instead of
-relying on `--keyword`/no-args resolution. If you're not sure what a resolution will pick,
-`job-hunter resolve-search [--keyword "..."]` prints the resolved path on stdout and a one-line
-scope summary on stderr (`scope: N sources attempted (...)`) so you can sanity-check it — e.g. a
-"default" (profile-driven) archive that only ever queried one company is a sign something's off —
-before committing to it.
+"Newest archive" means the run date in the filename (mtime only breaks a same-date tie), so a
+refilter re-stamping its target can't make a small archive look newer than a large one. Two
+same-date archives with different keywords still fall back to mtime. To skip resolution, pass
+`--search <path>`; to sanity-check what a resolution will pick, `job-hunter resolve-search
+[--keyword "..."]` prints the path on stdout and a scope summary on stderr (`scope: N sources
+attempted (...)`) — a "default" archive that only queried one company is a sign something's off.
 
-The equivalent manual three-step version (what `pipeline --no-scrape` runs under the hood, useful
-if you want to inspect or skip a step individually) still works the same way it always has:
+The manual three-step equivalent (what `pipeline --no-scrape` runs; useful to inspect or skip a step):
 
 ```bash
 # 1. (optional) rebuild the archive's candidates from SQLite against the current profile — no network call
@@ -215,10 +209,9 @@ uv run python scripts/review_with_lm_studio.py [--keyword "..."] [--status]
 uv run python scripts/render_radar.py [--keyword "..."]
 ```
 
-Step 1 only matters if the profile changed since this archive was collected; step 2 only matters
-if `--status` shows candidates remaining. Both are safe no-ops otherwise. All three resolve to the
-same archive by `--keyword` (or the newest archive overall if omitted) — pass the same keyword
-through all of them. Step 3 alone is enough for "just re-render what's already there."
+Step 1 matters only if the profile changed since collection; step 2 only if `--status` shows
+candidates remaining; both are otherwise safe no-ops. Pass the same `--keyword` to all three. Step 3
+alone re-renders what's already there.
 
 ## Skills
 
@@ -287,40 +280,25 @@ matches neither (someone else's directory sitting at the same path) is refused w
 message instead of being silently deleted; pass `--force` if you're sure and want to remove/replace
 it anyway.
 
-For Hermes, `sh scripts/install_skill.sh --hermes` also installs the candidate-profile
-diff hook under `~/.hermes/agent-hooks/` and registers it in `~/.hermes/config.yaml`
-(`HERMES_HOME` overrides this location for both hooks and skills). Installation needs
-`uv` and the project's dependencies. The installer preserves existing config values
-and hooks, saves the original config as `config.yaml.job-hunter.bak` before rewriting
-YAML (comments/formatting may change), and skips an identical registration on reruns;
-`--uninstall --hermes` unregisters exactly the entry it added, nothing else.
-`--copy` copies the hook too; the command still points to this checkout for the profile,
-database, and diff script, so keep the checkout available.
+For Hermes, `sh scripts/install_skill.sh --hermes` also installs the candidate-profile diff hook under
+`~/.hermes/agent-hooks/` and registers it in `~/.hermes/config.yaml` (`HERMES_HOME` overrides the
+location for hooks and skills). The installer needs `uv` and the project's dependencies, preserves
+existing config and hooks, saves the original as `config.yaml.job-hunter.bak` before rewriting (comments/
+formatting may change), and skips an identical registration on re-runs. The entry is identified by the
+hook script's repo-independent path, so re-running after moving the repo replaces the old registration
+instead of adding a second; `--uninstall --hermes` removes exactly the entry it added. `--copy` copies
+the hook too, but it still points to this checkout for the profile, database and diff script. Restart
+Hermes afterwards (its first-use hook approval still applies); `hermes hooks list` shows the
+registration, and `job-hunter doctor` flags one whose script no longer exists.
 
-Following the [Hermes shell hook format](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks#shell-hooks),
-the hook uses `post_tool_call` with `write_file|patch` and reads `tool_input.path`. Both this hook
-and Claude Code's (`.claude/settings.json`) now delegate to the same shared adapter
-(`src/job_hunter/hook_adapter.py`) — each runtime script only parses its own stdin JSON shape and
-calls it. Edits to this checkout's `config/candidate_profile.yaml` run the same best-effort
-`diff_profile.py` check either way, generating reports in `data/profile-diff/`. `uv` is located
-via `shutil.which` rather than assumed on `PATH`, and every failure (uv missing, a non-zero exit,
-a timeout, or a skip — see below) is logged to `logs/profile-hook.log` instead of failing
-silently. Relative paths are resolved against the event's `cwd`; other profiles are ignored.
-Terminal-based edits are not covered. Restart Hermes after installing; its normal first-use hook
-approval still applies. Inspect registration with `hermes hooks list`.
-
-A burst of rapid edits touching `candidate_profile.yaml` won't start several overlapping diff
-runs — a short lock plus a 5-second debounce window collapse them into one report reflecting the
-final state, logged (never silent) whenever a run is skipped for this reason. Claude Code's own
-`PostToolUse` command now runs through `scripts/run_profile_hook.sh`, a small portable launcher
-that locates `uv` itself (falling back to a bare `python3` with a clear message if that's all
-that's available) instead of failing outright if `uv` isn't on the invoking process's `PATH`.
-Hermes's own registration in `~/.hermes/config.yaml` is now identified by the hook script's
-stable, repo-independent path rather than the full command string (which used to embed this
-checkout's absolute path) — re-running the installer after moving/re-cloning the repo replaces
-the existing registration instead of appending a second, stale one alongside it, and
-`--uninstall --hermes` can find and remove it from the new location too. `job-hunter doctor`
-reports if a Hermes registration exists but points at a hook script that no longer exists.
+The hook uses the [Hermes shell hook format](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks#shell-hooks)
+(`post_tool_call`, `write_file|patch`, `tool_input.path`). Claude Code's `PostToolUse` hook
+(`.claude/settings.json` → `scripts/run_profile_hook.sh`, a portable launcher that finds `uv` itself and
+falls back to `python3`) shares the same adapter (`src/job_hunter/hook_adapter.py`). An edit to this
+checkout's `config/candidate_profile.yaml` runs a best-effort `diff_profile.py` check and writes reports
+to `data/profile-diff/`; other profiles are ignored, relative paths resolve against the event's `cwd`,
+and terminal-based edits aren't covered. A burst of edits collapses into one run (short lock plus a 5 s
+debounce). Every skip or failure (uv missing, non-zero exit, timeout) is logged to `logs/profile-hook.log`.
 
 ## Resume and outreach
 
@@ -330,7 +308,7 @@ under the git-ignored `config/resume/` (and `config/candidate_profile.yaml`).
 
 **Setup**
 
-1. `uv sync --extra resume` and `uv run playwright install chromium` (only PDF output needs these).
+1. Complete **Setup** above (`uv sync --all-extras`, then `uv run playwright install chromium`; only PDF output needs the browser).
 2. Fill the `contact:` block in `config/candidate_profile.yaml` (`name` and `email` required; `job-hunter contact` checks it).
 3. Save your master resume as `config/resume/main_resume_<YYYY-MM-DD>.md`. The newest filename date wins; `job-hunter resume-files` shows what will be used.
 4. Optional: `cp config/resume/personalization.example.md config/resume/personalization.md`, then replace the sample rules with your own. It has `## all`, `## resume-generator` and `## outreach-writer` sections for standing preferences (tone, phrases, emphasis, page-size defaults) and employer-specific rules such as naming a client only for one employer. The skills themselves contain no personal data.
@@ -347,7 +325,7 @@ recipient names or contact details, nothing that contradicts your master resume.
 
 **Portability.** No Microsoft Word is involved; the same steps work on Windows, macOS and Linux. Page
 fill is measured by the machine that renders the PDF, and fonts differ between operating systems, so
-results can vary slightly per machine. Without the `resume` extra the skills print the install commands
+results can vary slightly per machine. Without Chromium the skills print the install commands
 instead of a PDF. See `docs/SPEC.md` §11.2.
 
 ## Salary negotiation
@@ -381,16 +359,15 @@ Like your resume and offer files, everything with real compensation numbers stay
 ## Development
 
 ```bash
-uv sync --dev
-uv run pytest
+uv sync --all-extras
+uv run pytest -m "not live"
 uv run ruff check .
 ```
 
-Tests use saved response fixtures and do not require internet. Standard runtime dependencies are
-`httpx`, `selectolax`, `pydantic`, and `PyYAML` — no browser is installed by default. The optional
-`stealth` extra (`uv sync --extra stealth && uv run scrapling install`) adds
-[Scrapling](https://github.com/D4Vinci/Scrapling) and a real headless browser, used only by the
-`stealth_html` adapter (see `docs/SPEC.md` §5.8).
+Tests use saved response fixtures and need no internet (the browser test skips without Chromium).
+Runtime dependencies are `httpx`, `selectolax`, `pydantic`, `PyYAML`, plus `playwright`/`pypdf` for
+resume PDFs. The optional `stealth` extra adds [Scrapling](https://github.com/D4Vinci/Scrapling) and a
+real headless browser, used only by the `stealth_html` adapter (`docs/SPEC.md` §5.8).
 
 ## Adding a new source
 
@@ -406,7 +383,7 @@ and updates this README and `docs/SPEC.md`. See `docs/SPEC.md` §5.20 for the ma
 Your collected data stays in `data/`, including `jobs.sqlite3`, search archives, cached
 assessments, feedback, and reports. Your personal profile and resume live in `config/`.
 To move to another machine, stop running collection/review processes and copy both complete
-folders into the new checkout. Recreate dependencies with `uv sync` and reinstall agent skills
+folders into the new checkout. Recreate dependencies with `uv sync --all-extras` (plus the two one-time browser installs) and reinstall agent skills
 from the new location. Git alone does not transfer these ignored personal and generated files.
 
 ## Explore the design

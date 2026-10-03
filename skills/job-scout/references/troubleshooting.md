@@ -17,5 +17,5 @@ in, using this adapter crosses into deliberately defeating a site's own anti-aut
 exposure independent of intent, plus a real per-request cost (a browser launch/page load, not a
 lightweight HTTP call). Reach for it only when no plain anonymous endpoint exists; prefer every
 other adapter first. It requires the optional `stealth` extra
-(`uv sync --extra stealth && uv run scrapling install`), which is not installed by default.
+(`uv sync --all-extras && uv run scrapling install`), which is not installed by a bare `uv sync`.
 
