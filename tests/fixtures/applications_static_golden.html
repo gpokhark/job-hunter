@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Applications</title>
+<style>
+  :root {
+    --paper: #F3F6F7; --ink: #14191F; --ink-soft: #4B5560; --surface: #FFFFFF; --line: #DCE3E7;
+    --accent: #0C7F91; --accent-soft: #E4F1F3; --muted: #6B7480; --danger: #C1443A;
+    --status-good: #1D9A66; --status-warning: #B4790F; --shadow: 0 1px 2px rgba(20, 25, 31, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #10151A; --ink: #E9EDEF; --ink-soft: #A6B0B8; --surface: #171E24; --line: #2A333A;
+      --accent: #3FC1D4; --accent-soft: #17323A; --muted: #8A95A0; --danger: #E2695E;
+      --status-good: #3FCC8C; --status-warning: #E3AA45; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 "IBM Plex Sans", system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 16px 96px; }
+  h1 { margin: 0 0 4px; font-size: 28px; }
+  .app-nav a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .subhead { color: var(--ink-soft); margin: 0 0 20px; }
+  #app-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px; }
+  #app-counts [data-count-status] { padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 13px; }
+  #app-counts b { font-variant-numeric: tabular-nums; }
+  .app-row { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 14px 16px; margin-bottom: 10px; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 10px; box-shadow: var(--shadow); }
+  .app-row[data-status="offer"] { border-left-color: var(--status-good); }
+  .app-row[data-status="interviewing"], .app-row[data-status="applied"] { border-left-color: var(--accent); }
+  .app-row[data-status="rejected"] { border-left-color: var(--danger); }
+  .app-title { font-weight: 600; color: var(--ink); text-decoration: none; }
+  .app-title:hover { color: var(--accent); }
+  .app-sub { color: var(--ink-soft); font-size: 13px; }
+  .posting-open { color: var(--status-good); }
+  .posting-closed, .posting-removed { color: var(--status-warning); }
+  .app-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
+  .app-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
+  .app-controls select, .app-controls input, .app-controls textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: inherit; }
+  .app-notes-label { flex: 1 1 260px; }
+  .app-days { color: var(--ink-soft); font-size: 13px; align-self: center; }
+  .app-delete { font: inherit; font-size: 13px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--danger); cursor: pointer; }
+  .app-empty { color: var(--muted); padding: 24px 0; }
+  .live-bar { position: fixed; bottom: 24px; right: 24px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .live-pill, .live-notice, .live-reload, .live-archive { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
+  .live-pill[data-state="live"] { color: var(--accent); }
+  .live-pill[data-state="offline"] { background: var(--accent); color: var(--surface); }
+  .live-notice:empty { display: none; }
+  .live-archive { color: var(--muted); }
+</style>
+<main>
+  <p class="app-nav"><a href="/">&larr; Radar</a></p>
+  <h1>Applications</h1>
+  <p class="subhead">2 tracked applications. Changes save immediately.</p>
+  <div id="app-counts"><span data-count-status="all">Total <b>2</b></span><span data-count-status="offer">Offer <b>1</b></span><span data-count-status="interviewing">Interviewing <b>0</b></span><span data-count-status="applied">Applied <b>1</b></span><span data-count-status="saved">Saved <b>0</b></span><span data-count-status="rejected">Rejected <b>0</b></span><span data-count-status="withdrawn">Withdrawn <b>0</b></span></div>
+  <p id="app-empty" class="app-empty" hidden>No tracked applications yet &mdash; open the radar and press <b>Track</b> on a job.</p>
+  <div id="app-rows"><article class="app-row" data-source-key="acme" data-job-id="1" data-status="offer" data-applied-at="2026-09-10" data-posting="open"><div class="app-main"><a class="app-title" href="https://example.com/1" target="_blank" rel="noopener">Perception Engineer</a><div class="app-sub">Acme &middot; Detroit, MI &middot; Score 82 &middot; <span class="posting-open">Posting open</span></div></div><div class="app-controls"><label>Status <select class="app-status"><option value="saved">Saved</option><option value="applied">Applied</option><option value="interviewing">Interviewing</option><option value="offer" selected>Offer</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option></select></label><label>Applied <input type="date" class="app-date" value="2026-09-10"></label><span class="app-days">Applied 16 days ago</span><label class="app-notes-label">Notes <textarea class="app-notes" rows="2" maxlength="4000">
+</textarea></label><button type="button" class="app-delete">Delete</button></div></article><article class="app-row" data-source-key="acme" data-job-id="2" data-status="applied" data-applied-at="2026-09-20" data-posting="closed"><div class="app-main"><a class="app-title" href="https://example.com/1" target="_blank" rel="noopener">ADAS Engineer</a><div class="app-sub">Acme &middot; Detroit, MI &middot; Score 82 &middot; <span class="posting-closed">Posting closed</span></div></div><div class="app-controls"><label>Status <select class="app-status"><option value="saved">Saved</option><option value="applied" selected>Applied</option><option value="interviewing">Interviewing</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option></select></label><label>Applied <input type="date" class="app-date" value="2026-09-20"></label><span class="app-days">Applied 6 days ago</span><label class="app-notes-label">Notes <textarea class="app-notes" rows="2" maxlength="4000">
+Sent a note</textarea></label><button type="button" class="app-delete">Delete</button></div></article></div>
+</main>
+<div class="live-bar">
+  <span id="live-status" class="live-pill" role="status" data-state="live">Live</span>
+  <span id="live-notice" class="live-notice" role="alert"></span>
+  <span id="live-reload" class="live-reload" hidden>Changed elsewhere &mdash; <a href="#" id="live-reload-link">Reload</a></span>
+  <span class="live-archive">default_2026-09-26.json</span>
+</div>
+<script>window.__APPS_LIVE__ = {"versions": {"applications": "v1"}};</script>
+<script>
+// Pure, DOM-free logic for the live radar page (docs/live-radar-dashboard-plan.md section 4).
+// Inlined into the page by scripts/render_radar.py (live mode only) and unit-tested with
+// `node --test` (tests/js/radar_live_core.test.js). Nothing here touches the DOM, the network,
+// or storage — radar_live_ui.js owns all of that.
+(function (root) {
+  'use strict';
+
+  var MAX_OUTBOX = 200;
+  var SORT_MODES = ['default', 'score', 'newest', 'company'];
+  var FEEDBACK_FILTERS = ['untagged', 'relevant', 'okay', 'irrelevant'];
+  var APP_STATUSES = ['saved', 'applied', 'interviewing', 'offer', 'rejected', 'withdrawn'];
+
+  function emptyFilters() {
+    return {
+      query: '', tags: [], arrangement: [], sponsorship: [], minScore: null, postedDays: null,
+      company: '', location: '', hasSalary: false, feedback: '', sort: 'default',
+      app: '', hideApplied: false, hideNoSponsorship: false
+    };
+  }
+
+  // Sorting is a view choice, not a filter, so it doesn't make the "Clear filters" button appear.
+  function filtersActive(f) {
+    return !!(f.query.trim() || f.tags.length || f.arrangement.length || f.sponsorship.length ||
+      f.minScore !== null || f.postedDays !== null || f.company || f.location.trim() ||
+      f.hasSalary || f.feedback || f.app || f.hideApplied || f.hideNoSponsorship);
+  }
+
+  function dayDiff(todayIso, dayIso) {
+    return Math.round((Date.parse(todayIso + 'T00:00:00Z') - Date.parse(dayIso + 'T00:00:00Z')) / 86400000);
+  }
+
+  function rowPasses(facts, f, label, todayIso, appStatus) {
+    var q = f.query.trim().toLowerCase();
+    if (q && (facts.company + ' ' + facts.title).toLowerCase().indexOf(q) === -1) return false;
+    if (f.tags.length && !f.tags.some(function (t) {
+      return (t === 'new' && facts.isNew) || (t === 'long-standing' && facts.longStanding);
+    })) return false;
+    if (f.arrangement.length && f.arrangement.indexOf(facts.arrangement) === -1) return false;
+    if (f.sponsorship.length && f.sponsorship.indexOf(facts.sponsorship) === -1) return false;
+    // Exclusion, not inclusion: keeps 'available' and 'unmentioned' (the large majority) rows.
+    if (f.hideNoSponsorship && facts.sponsorship === 'not_available') return false;
+    if (f.minScore !== null && (facts.score === null || facts.score < f.minScore)) return false;
+    if (f.postedDays !== null) {
+      if (!facts.posted) return false;
+      if (dayDiff(todayIso, facts.posted) > f.postedDays) return false;
+    }
+    if (f.company && facts.company.toLowerCase() !== f.company.toLowerCase()) return false;
+    var loc = f.location.trim().toLowerCase();
+    if (loc && (facts.location + ' ' + facts.state + ' ' + facts.country).toLowerCase().indexOf(loc) === -1) {
+      return false;
+    }
+    if (f.hasSalary && !facts.hasSalary) return false;
+    if (f.feedback === 'untagged' && label) return false;
+    if (f.feedback && f.feedback !== 'untagged' && label !== f.feedback) return false;
+    var app = appStatus || null;
+    if (f.hideApplied && app && app !== 'saved') return false;
+    if (f.app === 'untracked' && app) return false;
+    if (f.app && f.app !== 'untracked' && app !== f.app) return false;
+    return true;
+  }
+
+  // Indices of `factsList` in display order. Stable: ties keep original (server) order.
+  function sortOrder(factsList, mode) {
+    var idx = factsList.map(function (_, i) { return i; });
+    if (mode === 'default') return idx;
+    function cmp(a, b) {
+      var x = factsList[a], y = factsList[b], d = 0;
+      if (mode === 'score') {
+        d = (y.score === null ? -1 : y.score) - (x.score === null ? -1 : x.score);
+      } else if (mode === 'newest') {
+        d = (y.posted || '').localeCompare(x.posted || '');
+      } else if (mode === 'company') {
+        d = x.company.toLowerCase().localeCompare(y.company.toLowerCase());
+      }
+      return d || a - b;
+    }
+    return idx.sort(cmp);
+  }
+
+  function encodeHash(f) {
+    var parts = [];
+    function add(k, v) { parts.push(k + '=' + encodeURIComponent(v)); }
+    if (f.query) add('q', f.query);
+    if (f.tags.length) add('tag', f.tags.join(','));
+    if (f.arrangement.length) add('arr', f.arrangement.join(','));
+    if (f.sponsorship.length) add('spon', f.sponsorship.join(','));
+    if (f.minScore !== null) add('min', String(f.minScore));
+    if (f.postedDays !== null) add('days', String(f.postedDays));
+    if (f.company) add('co', f.company);
+    if (f.location) add('loc', f.location);
+    if (f.hasSalary) add('sal', '1');
+    if (f.feedback) add('fb', f.feedback);
+    if (f.app) add('app', f.app);
+    if (f.hideApplied) add('hideapp', '1');
+    if (f.hideNoSponsorship) add('hidenospon', '1');
+    if (f.sort !== 'default') add('sort', f.sort);
+    return parts.join('&');
+  }
+
+  function decodeHash(text) {
+    var f = emptyFilters();
+    String(text || '').replace(/^#/, '').split('&').forEach(function (pair) {
+      var i = pair.indexOf('=');
+      if (i < 1) return;
+      var key = pair.slice(0, i), value;
+      try { value = decodeURIComponent(pair.slice(i + 1)); } catch (e) { return; }
+      var list = value ? value.split(',') : [];
+      var n = parseInt(value, 10);
+      if (key === 'q') f.query = value;
+      else if (key === 'tag') f.tags = list;
+      else if (key === 'arr') f.arrangement = list;
+      else if (key === 'spon') f.sponsorship = list;
+      else if (key === 'min') { if (!isNaN(n) && n >= 0 && n <= 100) f.minScore = n; }
+      else if (key === 'days') { if (!isNaN(n) && n > 0) f.postedDays = n; }
+      else if (key === 'co') f.company = value;
+      else if (key === 'loc') f.location = value;
+      else if (key === 'sal') f.hasSalary = value === '1';
+      else if (key === 'fb') { if (FEEDBACK_FILTERS.indexOf(value) !== -1) f.feedback = value; }
+      else if (key === 'app') { if (value === 'untracked' || APP_STATUSES.indexOf(value) !== -1) f.app = value; }
+      else if (key === 'hideapp') f.hideApplied = value === '1';
+      else if (key === 'hidenospon') f.hideNoSponsorship = value === '1';
+      else if (key === 'sort') { if (SORT_MODES.indexOf(value) !== -1) f.sort = value; }
+    });
+    return f;
+  }
+
+  // Latest write per (kind, key) wins; oldest entries fall off past the cap.
+  function enqueue(outbox, item, max) {
+    var limit = max || MAX_OUTBOX;
+    var next = outbox.filter(function (o) { return !(o.kind === item.kind && o.key === item.key); });
+    next.push(item);
+    return next.length > limit ? next.slice(next.length - limit) : next;
+  }
+
+  // 'permanent' = the server understood and refused (unknown job, bad payload): retrying can
+  // never succeed, so the UI drops the write and says so. Everything else is worth retrying.
+  function classifyStatus(status) {
+    if (status >= 200 && status < 300) return 'ok';
+    if (status >= 400 && status < 500 && status !== 408 && status !== 429) return 'permanent';
+    return 'retry';
+  }
+
+  function backoffMs(attempt) {
+    return Math.min(30000, 2000 * Math.pow(2, Math.max(0, attempt)));
+  }
+
+  function isoNow(ms) { return new Date(ms).toISOString(); }
+
+  // localLabels: {key: label}; serverMap: {key: {label}}; pendingKeys: keys with an unsent write.
+  function reconcile(localLabels, serverMap, pendingKeys) {
+    var changes = [], seen = {};
+    Object.keys(serverMap).forEach(function (k) {
+      seen[k] = true;
+      if (pendingKeys.indexOf(k) !== -1) return;
+      if (localLabels[k] !== serverMap[k].label) changes.push({ key: k, label: serverMap[k].label });
+    });
+    Object.keys(localLabels).forEach(function (k) {
+      if (seen[k] || pendingKeys.indexOf(k) !== -1) return;
+      changes.push({ key: k, label: null });
+    });
+    return changes;
+  }
+
+  function sameApp(a, b) {
+    return a.status === b.status && (a.applied_at || null) === (b.applied_at || null) &&
+      (a.notes || null) === (b.notes || null);
+  }
+
+  // localApps / serverApps: {key: {status, applied_at, notes}}; pendingKeys: keys with an unsent write.
+  function reconcileApps(localApps, serverApps, pendingKeys) {
+    var changes = [], seen = {};
+    Object.keys(serverApps).forEach(function (k) {
+      seen[k] = true;
+      if (pendingKeys.indexOf(k) !== -1) return;
+      if (!localApps[k] || !sameApp(localApps[k], serverApps[k])) changes.push({ key: k, app: serverApps[k] });
+    });
+    Object.keys(localApps).forEach(function (k) {
+      if (seen[k] || pendingKeys.indexOf(k) !== -1) return;
+      changes.push({ key: k, app: null });
+    });
+    return changes;
+  }
+
+  // Text for the notice shown after clicking a row's Resume button. `copied` says whether the
+  // clipboard write succeeded; without it the prompt is shown so it can be copied by hand.
+  function resumeNotice(status, json, copied) {
+    if (status === 200) {
+      if (!json || typeof json.prompt !== 'string' || typeof json.path !== 'string') {
+        return 'Could not reach the radar server (unexpected reply); try again.';
+      }
+      return copied
+        ? 'Copied to clipboard \u2014 paste it into Claude Code or Hermes. JD saved: ' + json.path
+        : 'Copy this and paste it into Claude Code or Hermes: ' + json.prompt;
+    }
+    if (status === 404) return 'This job is no longer in the database, so its text can\u2019t be exported.';
+    if (status === 409) return 'This job changed or has no text to tailor a resume against.';
+    if (status === 400 || status === 403 || status === 415 || status === 411 || status === 413) {
+      return 'The server rejected the request (HTTP ' + status + ').';
+    }
+    return 'Could not reach the radar server; try again.';
+  }
+
+  // Text for the notice shown after clicking Stop server (POST /api/shutdown). Only a 200 means
+  // the server is actually stopping; 403 is the loopback-only refusal.
+  function shutdownNotice(status) {
+    if (status === 200) return 'Server stopped \u2014 you can close this tab.';
+    if (status === 403) {
+      return 'The server refused to stop: Stop server only works on a local (loopback) bind. Press Ctrl+C in its terminal instead.';
+    }
+    return 'Could not stop the server (HTTP ' + status + '); try again or press Ctrl+C in its terminal.';
+  }
+
+  // A save that newly reaches "offer" is worth celebrating; re-saving notes on an existing
+  // offer, or any other transition, is not.
+  function isNewOffer(prevStatus, nextStatus) { return nextStatus === 'offer' && prevStatus !== 'offer'; }
+
+  var api = {
+    SORT_MODES: SORT_MODES, APP_STATUSES: APP_STATUSES, emptyFilters: emptyFilters, filtersActive: filtersActive,
+    rowPasses: rowPasses, sortOrder: sortOrder, encodeHash: encodeHash, decodeHash: decodeHash,
+    enqueue: enqueue, classifyStatus: classifyStatus, backoffMs: backoffMs, isoNow: isoNow,
+    reconcile: reconcile, reconcileApps: reconcileApps, resumeNotice: resumeNotice, shutdownNotice: shutdownNotice,
+    isNewOffer: isNewOffer
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.RadarLive = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+// Outbox + retry engine shared by the live radar and Applications pages (extracted from
+// radar_live_ui.js, behavior unchanged). DOM-free and dependency-injected so it can be unit
+// tested with `node --test` (tests/js/radar_live_sync.test.js). Requires radar_live_core.js.
+(function (root) {
+  'use strict';
+  var core = (typeof module !== 'undefined' && module.exports) ? require('./radar_live_core.js') : root.RadarLive;
+
+  function createSync(opts) {
+    var storage = opts.storage, storageKey = opts.storageKey;
+    var setT = opts.setTimeout || function (fn, ms) { return setTimeout(fn, ms); };
+    var clearT = opts.clearTimeout || function (id) { return clearTimeout(id); };
+    var outbox = load();
+    var loaded = outbox.slice();
+    var flushing = false, attempt = 0, retryTimer = null, stopped = false;
+
+    function load() {
+      try {
+        var parsed = JSON.parse(storage.getItem(storageKey) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) { return []; }
+    }
+    function save() {
+      try { storage.setItem(storageKey, JSON.stringify(outbox)); } catch (e) { /* private mode / quota */ }
+    }
+    function state() { return flushing ? 'saving' : (outbox.length ? 'offline' : 'live'); }
+    function notify() { if (opts.onState) opts.onState(state(), outbox.length); }
+
+    function scheduleRetry() {
+      if (stopped) return;
+      flushing = false;
+      attempt += 1;
+      notify();
+      clearT(retryTimer);
+      retryTimer = setT(flush, core.backoffMs(attempt - 1));
+    }
+
+    function flush() {
+      if (stopped) return;
+      if (flushing || !outbox.length) { notify(); return; }
+      flushing = true;
+      notify();
+      var item = outbox[0];
+      opts.send(item).then(function (res) {
+        var kind = core.classifyStatus(res.status);
+        if (kind === 'retry') { scheduleRetry(); return; }
+        // Remove only this exact entry: a newer write for the same key may have replaced it
+        // while the request was in flight, and must stay queued.
+        outbox = outbox.filter(function (o) { return o !== item; });
+        save();
+        var superseded = outbox.some(function (o) { return o.kind === item.kind && o.key === item.key; });
+        if (kind === 'ok') opts.onOk(item, res, superseded);
+        else opts.onRejected(item, res, superseded);
+        flushing = false;
+        attempt = 0;
+        flush();
+      }, function () {
+        // Network failure only (not post-processing errors).
+        scheduleRetry();
+      }).catch(function (e) {
+        // Post-processing errors: reset so the queue cannot wedge, and surface the error.
+        flushing = false;
+        notify();
+        (opts.onError || function (err) { setTimeout(function () { throw err; }); })(e);
+      });
+    }
+
+    return {
+      queue: function (item) { outbox = core.enqueue(outbox, item); save(); notify(); flush(); },
+      flush: flush,
+      // The server is gone: cancel the pending retry and stop flushing. Unsent writes stay in storage.
+      stop: function () { stopped = true; clearT(retryTimer); },
+      restored: function () { return loaded.slice(); },
+      items: function () { return outbox.slice(); },
+      pending: function (kind) {
+        return outbox.filter(function (o) { return o.kind === kind; }).map(function (o) { return o.key; });
+      }
+    };
+  }
+
+  var api = { createSync: createSync };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.RadarLiveSync = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+// Behavior for the /applications page. Requires window.RadarLive (radar_live_core.js),
+// window.RadarLiveSync (radar_live_sync.js) and window.__APPS_LIVE__ (emitted by
+// scripts/render_applications.py). Shares the radar page's outbox (same localStorage key), so a
+// write queued while offline on either page is flushed by whichever page is open next.
+(function () {
+  'use strict';
+  var L = window.RadarLive, S = window.RadarLiveSync, boot = window.__APPS_LIVE__;
+  if (!L || !S || !boot) return;
+
+  var SEND_URL = { feedback: '/api/feedback', application: '/api/application' };
+  var container = document.getElementById('app-rows');
+  function $(id) { return document.getElementById(id); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function todayIso() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function safeStorage() {
+    try { var s = window.localStorage; s.getItem('job-hunter-probe'); return s; } catch (e) {
+      var mem = {};
+      return {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+        setItem: function (k, v) { mem[k] = String(v); }
+      };
+    }
+  }
+  function rowsList() { return Array.prototype.slice.call(container.querySelectorAll('.app-row')); }
+  function keyOf(row) { return row.dataset.sourceKey + '|' + row.dataset.jobId; }
+
+  var noticeTimer = null;
+  function notice(message) {
+    var el = $('live-notice');
+    if (!el) return;
+    el.textContent = message;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(function () { el.textContent = ''; }, 8000);
+  }
+  function showReload() { var b = $('live-reload'); if (b) b.hidden = false; }
+  function renderStatus(state, unsaved) {
+    var el = $('live-status');
+    if (!el) return;
+    el.dataset.state = state;
+    el.textContent = state === 'saving' ? 'Saving…'
+      : state === 'offline' ? 'Offline (' + unsaved + ' unsaved)' : 'Live';
+  }
+
+  function daysText(status, appliedAt) {
+    if (status === 'saved' || !appliedAt) return '';
+    var n = Math.round((Date.parse(todayIso() + 'T00:00:00Z') - Date.parse(appliedAt + 'T00:00:00Z')) / 86400000);
+    if (isNaN(n)) return '';
+    return n <= 0 ? 'Applied today' : n === 1 ? 'Applied 1 day ago' : 'Applied ' + n + ' days ago';
+  }
+
+  function updateCounts() {
+    var counts = { all: 0 };
+    rowsList().forEach(function (row) {
+      counts.all += 1;
+      counts[row.dataset.status] = (counts[row.dataset.status] || 0) + 1;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#app-counts [data-count-status]'), function (el) {
+      var b = el.querySelector('b');
+      if (b) b.textContent = String(counts[el.dataset.countStatus] || 0);
+    });
+    var empty = $('app-empty');
+    if (empty) empty.hidden = counts.all > 0;
+  }
+
+  function refreshRow(row, app) {
+    row.dataset.status = app.status;
+    row.dataset.appliedAt = app.applied_at || '';
+    var sel = row.querySelector('.app-status'), date = row.querySelector('.app-date');
+    var notes = row.querySelector('.app-notes');
+    sel.value = app.status;
+    date.value = app.applied_at || '';
+    date.disabled = app.status === 'saved';
+    if (document.activeElement !== notes) notes.value = app.notes || '';
+    row.querySelector('.app-days').textContent = daysText(app.status, app.applied_at);
+    updateCounts();
+  }
+
+  function rowApp(row) {
+    return {
+      status: row.dataset.status, applied_at: row.dataset.appliedAt || null,
+      notes: row.querySelector('.app-notes').value.trim() === '' ? null : row.querySelector('.app-notes').value
+    };
+  }
+
+  var sync = S.createSync({
+    storage: safeStorage(),
+    storageKey: 'job-hunter-outbox',
+    send: function (item) {
+      return fetch(SEND_URL[item.kind], {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item.payload)
+      }).then(function (res) {
+        return res.json().catch(function () { return null; }).then(function (json) {
+          return { status: res.status, json: json };
+        });
+      });
+    },
+    onState: renderStatus,
+    onOk: function (item, res, superseded) {
+      if (item.kind !== 'application') return;
+      var it = res.json && res.json.item;
+      var row = rowsList().filter(function (r) { return keyOf(r) === item.key; })[0];
+      if (!superseded && row) {
+        if (it) refreshRow(row, it); else { row.remove(); updateCounts(); }
+        if (it && item.celebrate && it.status === 'offer') announceOffer(item.key, it);
+      }
+      if (res.json && res.json.export_warning) {
+        notice('Saved, but the export files could not be refreshed: ' + res.json.export_warning);
+      }
+    },
+    onRejected: function (item, res) {
+      notice('Could not save that change: ' + ((res.json && res.json.error) || 'HTTP ' + res.status) +
+        ' — reload to see the current state.');
+      showReload();
+    },
+    onError: function (e) { setTimeout(function () { throw e; }); }
+  });
+
+  // Fired only after the server acknowledged a save that newly reached "offer".
+  function announceOffer(key, app) {
+    try {
+      window.dispatchEvent(new CustomEvent('jobhunter:application-status', {
+        detail: { status: app.status, key: key }
+      }));
+    } catch (e) { /* CustomEvent unavailable: the save already succeeded, skip the flourish */ }
+  }
+
+  function saveRow(row) {
+    var status = row.querySelector('.app-status').value;
+    var date = row.querySelector('.app-date').value;
+    var notes = row.querySelector('.app-notes').value;
+    var payload = {
+      source_key: row.dataset.sourceKey, job_id: row.dataset.jobId, status: status,
+      notes: notes.trim() === '' ? null : notes, client_ts: L.isoNow(Date.now())
+    };
+    if (status !== 'saved') payload.applied_at = date || todayIso();
+    var celebrate = L.isNewOffer(row.dataset.status, status);
+    refreshRow(row, {
+      status: status,
+      applied_at: status === 'saved' ? null : (payload.applied_at || row.dataset.appliedAt || todayIso()),
+      notes: payload.notes
+    });
+    sync.queue({ kind: 'application', key: keyOf(row), payload: payload, celebrate: celebrate });
+  }
+
+  container.addEventListener('change', function (evt) {
+    var field = evt.target.closest ? evt.target.closest('.app-status, .app-date, .app-notes') : null;
+    if (!field) return;
+    var row = field.closest('.app-row');
+    if (row) saveRow(row);
+  });
+  container.addEventListener('click', function (evt) {
+    var del = evt.target.closest ? evt.target.closest('.app-delete') : null;
+    if (!del) return;
+    var row = del.closest('.app-row');
+    if (!row || !window.confirm('Stop tracking this job and delete its notes?')) return;
+    var payload = {
+      source_key: row.dataset.sourceKey, job_id: row.dataset.jobId, status: null,
+      client_ts: L.isoNow(Date.now())
+    };
+    var key = keyOf(row);
+    row.remove();
+    updateCounts();
+    sync.queue({ kind: 'application', key: key, payload: payload });
+  });
+
+  // Pending application writes from an earlier page load: show them as the row's state.
+  sync.restored().filter(function (o) { return o.kind === 'application'; }).forEach(function (o) {
+    var row = rowsList().filter(function (r) { return keyOf(r) === o.key; })[0];
+    if (!row) return;
+    if (o.payload.status === null) { row.remove(); return; }
+    refreshRow(row, {
+      status: o.payload.status,
+      applied_at: o.payload.status === 'saved' ? null : (o.payload.applied_at || row.dataset.appliedAt || todayIso()),
+      notes: o.payload.notes === undefined ? rowApp(row).notes : o.payload.notes
+    });
+  });
+
+  // Changes made elsewhere (another tab, the radar page): tell the user, never reshuffle rows.
+  var known = (boot.versions || {}).applications;
+  function domMap() {
+    var map = {};
+    rowsList().forEach(function (row) { map[keyOf(row)] = rowApp(row); });
+    return map;
+  }
+  function poll() {
+    if (document.visibilityState !== 'visible') return;
+    fetch('/api/state').then(function (r) { return r.json(); }).then(function (s) {
+      var v = (s.versions || {}).applications;
+      if (v === known) return;
+      return fetch('/api/applications').then(function (r) { return r.json(); }).then(function (body) {
+        known = v;
+        if (L.reconcileApps(domMap(), body.applications || {}, sync.pending('application')).length) showReload();
+      });
+    }).catch(function () { /* server briefly unreachable; the next tick retries */ });
+  }
+  setInterval(poll, 10000);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') { poll(); sync.flush(); }
+  });
+  window.addEventListener('focus', sync.flush);
+  var reloadLink = $('live-reload-link');
+  if (reloadLink) reloadLink.addEventListener('click', function (evt) { evt.preventDefault(); location.reload(); });
+
+  updateCounts();
+  sync.flush();
+})();
+
+</script>

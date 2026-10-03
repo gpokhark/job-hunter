@@ -274,3 +274,13 @@ test('shutdownNotice: success, non-loopback refusal, and generic failure', () =>
   assert.match(core.shutdownNotice(500), /Could not stop/);
   assert.match(core.shutdownNotice(415), /Could not stop/);
 });
+
+test('isNewOffer fires only when a status newly becomes offer', () => {
+  assert.equal(core.isNewOffer('', 'offer'), true);
+  assert.equal(core.isNewOffer(undefined, 'offer'), true);
+  assert.equal(core.isNewOffer('interviewing', 'offer'), true);
+  assert.equal(core.isNewOffer('offer', 'offer'), false); // re-saving notes on an existing offer
+  assert.equal(core.isNewOffer('applied', 'applied'), false);
+  assert.equal(core.isNewOffer('offer', 'rejected'), false);
+  assert.equal(core.isNewOffer('offer', null), false); // stop tracking
+});

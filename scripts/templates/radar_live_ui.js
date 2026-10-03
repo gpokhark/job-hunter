@@ -108,6 +108,7 @@
           var it = res.json && res.json.item;
           setApp(item.key, it ? pick(it) : null);
           applyFilters();
+          if (item.celebrate && it && it.status === 'offer') announceOffer(item.key, it);
         }
         if (res.json && res.json.export_warning) {
           notice('Saved, but the export files could not be refreshed: ' + res.json.export_warning);
@@ -178,6 +179,16 @@
     if (next) apps[o.key] = next; else delete apps[o.key];
   });
 
+  // Fired only after the server acknowledged a save that newly reached "offer"; the forest
+  // themes listen for it. With no listener (default theme) nothing happens.
+  function announceOffer(key, app) {
+    try {
+      window.dispatchEvent(new CustomEvent('jobhunter:application-status', {
+        detail: { status: app.status, key: key }
+      }));
+    } catch (e) { /* CustomEvent unavailable: the save already succeeded, skip the flourish */ }
+  }
+
   function saveApp(row) {
     var key = keyOf(row), panel = row.querySelector('.app-panel');
     var status = panel.querySelector('.app-status').value;
@@ -203,8 +214,9 @@
       var notes = panel.querySelector('.app-notes').value;
       payload.notes = notes.trim() === '' ? null : notes;
     }
+    var celebrate = payload.status !== null && L.isNewOffer(apps[key] ? apps[key].status : '', payload.status);
     setApp(key, appFromPayload(key, payload));
-    sync.queue({ kind: 'application', key: key, payload: payload });
+    sync.queue({ kind: 'application', key: key, payload: payload, celebrate: celebrate });
     applyFilters();
   }
 

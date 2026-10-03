@@ -68,6 +68,7 @@ from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
 from job_hunter.search_archive import resolve_search_path
 from job_hunter.storage import Storage
+from job_hunter.theme import EMPTY, THEMES, ResolvedTheme, load_theme, resolve_theme_name
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "radar_template.html"
 _TEMPLATE_DIR = _TEMPLATE_PATH.parent
@@ -824,6 +825,7 @@ def render(
     collection_fallback: bool = True,
     live: bool = False,
     live_state: LiveState | None = None,
+    theme: ResolvedTheme | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if live and live_state is None:
         raise ValueError("live=True requires a LiveState")
@@ -1015,6 +1017,11 @@ def render(
         ),
         "__SOURCE_ISSUES_ROWS__": _source_issue_rows_html(source_issues),
     }
+    # Theme CSS/JS ride on token values the template already has, so `auto` (EMPTY) adds nothing
+    # and the default page stays byte-identical.
+    active_theme = theme or EMPTY
+    tokens["__LIVE_STYLE__"] += active_theme.css
+    tokens["__LIVE_SCRIPT__"] += active_theme.script_html
     # Single pass: substituted text is never rescanned, so data containing a token is inert.
     out = re.sub(r"__[A-Z][A-Z0-9_]*__", lambda m: tokens.get(m.group(0), m.group(0)), template)
     return out, {
@@ -1104,6 +1111,21 @@ def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
             "note-with-no-jobs behavior for a source that failed to scrape this run"
         ),
     )
+    parser.add_argument(
+        "--theme", choices=THEMES, default=None,
+        help=(
+            "page theme for this run (default: settings.yaml's radar.theme; "
+            "auto = the plain light/dark page)"
+        ),
+    )
+
+
+def resolve_page_theme(
+    args: argparse.Namespace, settings: Any, profile: CandidateProfile | None
+) -> ResolvedTheme:
+    """`--theme` wins over settings.yaml's radar.theme; `auto` resolves to the empty theme."""
+    name = resolve_theme_name(getattr(args, "theme", None), settings.radar.theme)
+    return load_theme(name, profile, templates_dir=_TEMPLATE_DIR / "themes")
 
 
 def selection_render_kwargs(
@@ -1125,6 +1147,7 @@ def selection_render_kwargs(
         max_age_days=settings.search.max_posting_age_days,
         keywords=keywords,
         collection_fallback=not args.no_collection_fallback,
+        theme=resolve_page_theme(args, settings, profile),
     )
 
 

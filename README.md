@@ -107,6 +107,36 @@ installable skills (`sh scripts/install_skill.sh`):
 | `salary-compare` | Compare an offer to your package and draft a negotiation plan |
 | `onboard-source` | Add any company from its careers URL |
 
+## Make the hunt feel good (optional themes)
+
+The radar can wear a forest: **`forest`** (night) or **`forest-dawn`** (sunrise), with a light
+"Offer Season" layer: a daily affirmation, an **offer email** that opens like a message (with an
+*Accept offer* button), and a *You got the offer* moment: when you set an application to **Offer**
+a mail banner slides in first, then the celebration. It is cosmetic only: scores,
+filters and data never change, and **offer mode** (bottom-left) switches the words off and
+restores the plain labels.
+
+```yaml
+# config/settings.yaml
+radar:
+  theme: forest-dawn   # auto (default) | forest | forest-dawn
+```
+
+One-off: `uv run python scripts/render_radar.py --theme forest`.
+Personalise (all optional, in your git-ignored `config/candidate_profile.yaml`): your first name
+comes from `contact.name`; set `vision:` for the role and notes, or `use_first_name: false` to keep
+your name out of the pages.
+
+On the Applications page the same themes turn the list into an *inbox*: hopeful status badges, an offer ribbon and a **Compare this offer** button that copies a `salary-compare` prompt.
+
+<p align="center"><img src="docs/img/offer-season-demo.gif" alt="Offer Season demo: a new affirmation, the offer email opening, the mail banner and the You got the offer moment, then offer mode switched off and on" width="820"></p>
+
+<p align="center"><img src="docs/img/offer-season.png" alt="Candidate Radar in the forest-dawn theme: the Offer Season title, an affirmation, the offer email and The Yes List" width="820"></p>
+
+<p align="center"><sub>Illustrative data (fictional companies and a placeholder name), forest-dawn theme.</sub></p>
+
+<p align="center"><img src="docs/img/theme-forest.png" alt="Forest (night) theme" width="400"> <img src="docs/img/theme-forest-dawn.png" alt="Forest dawn (sunrise) theme" width="400"></p>
+
 ## Company coverage
 
 84 companies are registered: 80 with working adapters and 4 explicitly unsupported (Tesla, Meta,

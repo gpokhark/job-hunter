@@ -104,6 +104,7 @@
       var row = rowsList().filter(function (r) { return keyOf(r) === item.key; })[0];
       if (!superseded && row) {
         if (it) refreshRow(row, it); else { row.remove(); updateCounts(); }
+        if (it && item.celebrate && it.status === 'offer') announceOffer(item.key, it);
       }
       if (res.json && res.json.export_warning) {
         notice('Saved, but the export files could not be refreshed: ' + res.json.export_warning);
@@ -117,6 +118,15 @@
     onError: function (e) { setTimeout(function () { throw e; }); }
   });
 
+  // Fired only after the server acknowledged a save that newly reached "offer".
+  function announceOffer(key, app) {
+    try {
+      window.dispatchEvent(new CustomEvent('jobhunter:application-status', {
+        detail: { status: app.status, key: key }
+      }));
+    } catch (e) { /* CustomEvent unavailable: the save already succeeded, skip the flourish */ }
+  }
+
   function saveRow(row) {
     var status = row.querySelector('.app-status').value;
     var date = row.querySelector('.app-date').value;
@@ -126,12 +136,13 @@
       notes: notes.trim() === '' ? null : notes, client_ts: L.isoNow(Date.now())
     };
     if (status !== 'saved') payload.applied_at = date || todayIso();
+    var celebrate = L.isNewOffer(row.dataset.status, status);
     refreshRow(row, {
       status: status,
       applied_at: status === 'saved' ? null : (payload.applied_at || row.dataset.appliedAt || todayIso()),
       notes: payload.notes
     });
-    sync.queue({ kind: 'application', key: keyOf(row), payload: payload });
+    sync.queue({ kind: 'application', key: keyOf(row), payload: payload, celebrate: celebrate });
   }
 
   container.addEventListener('change', function (evt) {

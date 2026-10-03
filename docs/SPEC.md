@@ -1693,3 +1693,35 @@ changed target does not fit.
 - **Prefilter decision** — the `PrefilterDecision` (`passes`/`rule`/`term`/`rescued_by`) returned
   by `evaluate_prefilter`, the structured verdict `passes_prefilter` wraps down to a bool; what
   `diff_profile.py` uses to explain *why* a job's candidacy changed, not just that it did.
+
+### Page themes (`radar.theme`)
+
+`src/job_hunter/theme.py` resolves `--theme` > `settings.radar.theme` > `auto` and packages
+`scripts/templates/themes/{forest.css,forest-dawn.css,offer.js}` into a `ResolvedTheme(name, css,
+script_html)`. The radar appends `css`/`script_html` to its `__LIVE_STYLE__`/`__LIVE_SCRIPT__` token
+values; the Applications page uses a `__THEME_CSS__` token before `</style>` and appends the script
+to `__SCRIPTS__`. `auto` is empty, so default output is byte-identical (golden tests). The config
+block is `<script type="application/json" id="mf-config">` with keys `theme`, `firstName`, `role`,
+`pay`, `when`, escaped with `json_for_script`; `offer.js` writes every dynamic string with
+`textContent`. The live pages dispatch `window` event `jobhunter:application-status`
+(`detail: {status: "offer", key}`) after the server acknowledges a save that newly reached `offer`
+(`RadarLive.isNewOffer`); the theme listens and shows the celebration unless offer mode is off.
+
+The masthead vision card is a mail notification (`aside.mf-offer.mf-mail`) that expands into the
+offer email; sender text is fixed (`Hiring Team - Your future employer`), subject/preview/body come
+from the `mf-config` block. A zero-height spacer (`.mf-mail-gap`) before the first stats block is
+sized by `syncGap()` so the expanded card never covers it (32 px below the card). A real offer event
+and the preview button call `JobHunterTheme.announce()` (a `#mf-toast` banner for about 1.8 s, the
+masthead card hidden meanwhile, then the celebration); `celebrate()` stays immediate and is what
+**Accept offer** uses. Nothing runs while offer mode is off.
+
+Applications "inbox" layer: `load_applications_assets(name, templates_dir=None) -> (css, script_html)`
+returns the contents of `applications.css`/`applications.js` (empty for `auto`; rejects unknown names and
+style/script terminators); `render_applications.py` appends the CSS to `__THEME_CSS__` and the script after
+`offer.js`, so the radar never ships it. Display only: it never changes a status, count or saved value, and
+builds nodes with `textContent`. It adds `html.mf-apps`, `p.mf-tag` after the h1, `span.mf-badge[data-s]`
+inside each `.app-main` (before `.app-sub`), `span.mf-ribbon` as an offer row's first child and
+`button.mf-compare` in its `.app-controls` (copies a `salary-compare` prompt; falls back to showing it in
+`#live-notice` when the clipboard is blocked). A MutationObserver on `#app-rows` keeps rows in step with the
+page's own `data-status` updates. Under `forest-dawn` only, it also adds `html.mf-dawn` and a `div.mf-dusk` as the first child of `#mf-bg`, and sets `--mf-rise` on `<html>` (0.1 when no row is saved/applied/interviewing/offer, else the furthest stage 1-4 divided by 4; rejected/withdrawn do not count) so the sun rises and the dusk overlay fades as the pipeline advances. Heading, count-chip labels and the empty state are swapped for themed text
+and restored when `offer.js` dispatches `window` event `jobhunter:offer-mode` (`detail.off`) on its toggle.
