@@ -431,3 +431,19 @@ def test_the_night_theme_has_no_progress_sky(browser, tmp_path):
         assert page.evaluate("document.documentElement.classList.contains('mf-dawn')") is False
     finally:
         context.close()
+
+
+def test_the_glow_follows_progress_after_the_intro_animation(browser, tmp_path):
+    glow = "parseFloat(getComputedStyle(document.querySelector('.mf-skyglow')).opacity)"
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", []))
+    try:
+        page.wait_for_timeout(4000)
+        assert page.evaluate(glow) < 0.5
+    finally:
+        context.close()
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", ["offer"]))
+    try:
+        page.wait_for_timeout(4000)
+        assert page.evaluate(glow) > 0.9
+    finally:
+        context.close()

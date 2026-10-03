@@ -26,7 +26,8 @@ html.mf-off .mf-badge, html.mf-off .mf-ribbon, html.mf-off .mf-compare { display
 
 /* ---- progress sky (forest-dawn only): --mf-rise is 0..1, set by applications.js ---- */
 html.mf-apps.mf-dawn .mf-sun, html.mf-apps.mf-dawn .mf-rays { bottom: calc(-4% + 37% * var(--mf-rise, 1)); }
-html.mf-apps.mf-dawn .mf-skyglow { opacity: calc(.15 + .85 * var(--mf-rise, 1)); }
+/* animation: none -- the intro keyframes (fill-mode both) would otherwise pin opacity at 1 */
+html.mf-apps.mf-dawn .mf-skyglow { animation: none; opacity: calc(.15 + .85 * var(--mf-rise, 1)); }
 .mf-dusk {
   inset: 0; opacity: calc(.8 * (1 - var(--mf-rise, 1)));
   background: linear-gradient(180deg, #0b0a22 0%, #1b1445 55%, #2a1c52 100%);
