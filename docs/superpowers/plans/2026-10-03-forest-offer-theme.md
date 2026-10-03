@@ -1907,3 +1907,404 @@ git commit -m "docs(theme): document forest themes, vision block and event contr
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Addendum: Task 9 — email-style offer card, banner-then-moment, no-overlap (2026-10-03)
+
+Spec: section 11 of the design doc. Branch state: Tasks 1-8 are implemented; this is a follow-up that
+touches only `offer.js`, the two CSS files, three test files and docs. **Global Constraints and
+Review Focus above still apply** (ASCII assets, `textContent` only, golden tests untouched,
+fake names only). Extra Review Focus lines for this task, each pinned by a test below:
+
+6. **Expanded card must not overlap the stats block** at desktop width, and must reserve nothing on a
+   narrow (static) layout. *(Step 1, `test_expanded_mail_card_clears_the_stats_block`)*
+7. **Banner timing:** an offer event shows the banner first and the celebration after it; offer mode
+   off shows neither; **Accept offer** celebrates at once with no banner. *(Step 1)*
+
+### Task 9: Mail card, sliding banner, spacing fix
+
+**Files:**
+- Modify: `scripts/templates/themes/offer.js` (replace the card builder; add `announce`, `syncGap`)
+- Modify: `scripts/templates/themes/forest.css` (replace the `.mf-offer` letter styles; add banner + gap)
+- Modify: `scripts/templates/themes/forest-dawn.css` (drop the card/seal overrides)
+- Test: `tests/test_forest_theme_browser.py`, `tests/test_theme_assets.py`
+- Docs: `README.md`, `docs/USAGE.md`, `docs/SPEC.md`, `CLAUDE.md`, `docs/img/theme-*.png`
+
+**Interfaces:**
+- Produces: DOM `aside.mf-offer.mf-mail` (`role=button`, `aria-expanded`, class `open` when expanded) with
+  children `.mm-top`, `.mm-row`, `.mm-body` (hidden until open), `.mm-accept`; `div.mf-mail-gap`
+  before the first `.stats-group`; `#mf-toast.mf-toast.mf-mail` (class `in` while visible);
+  `window.JobHunterTheme = { celebrate, announce }`.
+
+- [ ] **Step 1: Write the failing tests.**
+
+In `tests/test_forest_theme_browser.py`, change `_open` to accept a reduced-motion flag and viewport
+(replace its first lines `def _open(...)` / `context = browser.new_context(...)`):
+
+```python
+def _open(browser, path, color_scheme="light", init_script=None, reduced_motion=None, viewport=None):
+    options = {"color_scheme": color_scheme}
+    if reduced_motion:
+        options["reduced_motion"] = reduced_motion
+    if viewport:
+        options["viewport"] = viewport
+    context = browser.new_context(**options)
+```
+
+Replace `test_celebration_rules_follow_offer_mode` with:
+
+```python
+FIRE = ("window.dispatchEvent(new CustomEvent('jobhunter:application-status',"
+        "{detail:{status:'offer'}}))")
+
+
+def _win_on(page):
+    return "on" in (page.get_attribute("#mf-win", "class") or "")
+
+
+def test_an_offer_event_shows_the_banner_then_the_moment(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
+    try:
+        page.evaluate(FIRE)
+        page.wait_for_selector("#mf-toast.in")
+        assert not _win_on(page), "the banner comes first"
+        page.wait_for_selector("#mf-win.on", timeout=6000)
+        page.wait_for_selector("#mf-toast", state="detached", timeout=3000)
+        page.click("#mf-win")
+        page.evaluate("window.dispatchEvent(new CustomEvent('jobhunter:application-status',"
+                      "{detail:{status:'applied'}}))")
+        page.wait_for_timeout(300)
+        assert page.locator("#mf-toast").count() == 0 and not _win_on(page)
+    finally:
+        context.close()
+
+
+def test_offer_mode_off_shows_neither_banner_nor_moment(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
+    try:
+        page.click("#mf-toggle")
+        page.evaluate(FIRE)
+        page.wait_for_timeout(2600)
+        assert page.locator("#mf-toast").count() == 0 and not _win_on(page)
+    finally:
+        context.close()
+
+
+def test_accept_offer_celebrates_at_once_without_a_banner(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest-dawn"))
+    try:
+        page.click(".mf-offer")
+        page.click(".mm-accept")
+        assert _win_on(page)
+        assert page.locator("#mf-toast").count() == 0
+    finally:
+        context.close()
+
+
+def test_the_mail_card_expands_and_collapses_by_click_and_keyboard(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
+    try:
+        card = page.locator(".mf-offer")
+        assert card.get_attribute("aria-expanded") == "false"
+        assert not page.is_visible(".mm-body")
+        assert "Hiring Team" in card.inner_text() and "Your future employer" in card.inner_text()
+        card.click()
+        assert card.get_attribute("aria-expanded") == "true" and page.is_visible(".mm-body")
+        assert "Dear Jane," in page.inner_text(".mm-body")
+        card.focus()
+        page.keyboard.press("Enter")
+        assert card.get_attribute("aria-expanded") == "false"
+    finally:
+        context.close()
+
+
+def test_expanded_mail_card_clears_the_stats_block(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _page_file(tmp_path, "forest-dawn"), reduced_motion="reduce",
+        viewport={"width": 1440, "height": 900},
+    )
+    try:
+        page.click(".mf-offer")
+        card_bottom = page.evaluate("document.querySelector('.mf-offer').getBoundingClientRect().bottom")
+        stats_top = page.evaluate("document.querySelector('.stats-group').getBoundingClientRect().top")
+        assert stats_top - card_bottom >= 31, (card_bottom, stats_top)
+        page.click(".mf-offer")
+        assert page.evaluate("document.querySelector('.mf-mail-gap').offsetHeight") == 0
+    finally:
+        context.close()
+
+
+def test_a_narrow_layout_reserves_no_gap(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _page_file(tmp_path, "forest"), reduced_motion="reduce",
+        viewport={"width": 430, "height": 900},
+    )
+    try:
+        page.click(".mf-offer")
+        assert page.evaluate("document.querySelector('.mf-mail-gap').offsetHeight") == 0
+        assert page.evaluate("getComputedStyle(document.querySelector('.mf-offer')).position") == "static"
+    finally:
+        context.close()
+```
+
+In `test_hostile_vision_text_stays_text`, expand the card before reading text — replace its
+`assert hostile in page.inner_text(".mf-offer")` with:
+
+```python
+        page.click(".mf-offer")
+        assert hostile in page.inner_text(".mf-offer")
+```
+
+In `test_titles_swap_restore_and_celebrate` keep `"Dear Jane," in page.inner_text(".mf-offer")`
+(the collapsed preview carries it) and change nothing else.
+
+In `tests/test_theme_assets.py` extend the selector tuple in
+`test_css_outranks_the_page_dark_mode_block_and_defines_the_components` to
+`("#mf-bg", "#mf-win", "#mf-toggle", "#mf-preview", ".mf-offer", ".mf-mail", ".mf-toast", ".mf-mail-gap", ".mm-accept", ".mf-line")`
+and add to `test_js_is_safe_by_construction`:
+
+```python
+    assert "announce" in js and "mf-toast" in js and "syncGap" in js
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `uv run pytest tests/test_forest_theme_browser.py tests/test_theme_assets.py -q`
+Expected: FAIL (no `#mf-toast`, no `.mm-body`, no `.mf-mail-gap`; asset selectors missing).
+
+- [ ] **Step 3: Implement `offer.js`.** Add this block directly above `function decorateRadar() {`:
+
+```js
+  // ---- the offer email: one builder for the masthead card and the sliding banner ----
+  var WHO = name ? 'Dear ' + name + ',' : 'Hello,';
+  var MAIL_GAP_PX = 32; // matches the page's own vertical rhythm between blocks
+  var mailCard = null, mailGap = null;
+  function mailHead() {
+    var frag = document.createDocumentFragment();
+    var top = el('div', 'mm-top');
+    var app = el('span', 'mm-app');
+    app.appendChild(el('i', 'mm-icon'));
+    app.appendChild(document.createTextNode('MAIL'));
+    top.appendChild(app);
+    top.appendChild(el('span', null, 'now'));
+    frag.appendChild(top);
+    var row = el('div', 'mm-row');
+    row.appendChild(el('div', 'mm-av', 'H'));
+    var txt = el('div', 'mm-txt');
+    var from = el('div', 'mm-from', 'Hiring Team ');
+    from.appendChild(el('small', null, '· Your future employer'));
+    txt.appendChild(from);
+    var subj = el('div', 'mm-subj');
+    subj.appendChild(el('b', 'mm-dot'));
+    subj.appendChild(document.createTextNode('Offer of employment: ' + cfg.role));
+    txt.appendChild(subj);
+    txt.appendChild(el('div', 'mm-prev',
+      WHO + ' we’re delighted to offer you the position of ' + cfg.role + '. ' + cfg.pay + ' ' + cfg.when));
+    row.appendChild(txt);
+    frag.appendChild(row);
+    return frag;
+  }
+  // Keep the expanded email from covering the stats block: reserve exactly the missing space.
+  function syncGap() {
+    if (!mailCard || !mailGap) return;
+    var stats = mailGap.parentNode && mailGap.parentNode.querySelector('.stats-group');
+    var need = 0;
+    if (stats && mailCard.classList.contains('open') && getComputedStyle(mailCard).position === 'absolute') {
+      var resting = stats.getBoundingClientRect().top - mailGap.offsetHeight;
+      need = Math.max(0, Math.ceil(mailCard.getBoundingClientRect().bottom + MAIL_GAP_PX - resting));
+    }
+    mailGap.style.height = need + 'px';
+  }
+  function buildMailCard() {
+    var card = el('aside', 'mf-offer mf-mail');
+    card.setAttribute('aria-label', 'Offer email');
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-expanded', 'false');
+    card.tabIndex = 0;
+    card.appendChild(mailHead());
+    var body = el('div', 'mm-body');
+    body.appendChild(el('p', null, WHO));
+    var p2 = el('p');
+    p2.appendChild(document.createTextNode('We’re delighted to offer you the position of '));
+    p2.appendChild(el('b', null, cfg.role));
+    p2.appendChild(document.createTextNode('. '));
+    p2.appendChild(el('span', 'hl', cfg.pay));
+    body.appendChild(p2);
+    body.appendChild(el('p', null, cfg.when + '. Welcome to the team.'));
+    var sig = el('p');
+    sig.appendChild(document.createTextNode('Warm regards,'));
+    sig.appendChild(document.createElement('br'));
+    sig.appendChild(document.createTextNode('The Hiring Team'));
+    body.appendChild(sig);
+    var foot = el('div', 'mm-foot');
+    foot.appendChild(el('span', 'mm-att', 'Offer_Letter.pdf · 1 page'));
+    var accept = el('button', 'mm-accept', 'Accept offer ✓');
+    accept.type = 'button';
+    foot.appendChild(accept);
+    body.appendChild(foot);
+    card.appendChild(body);
+    function toggle() {
+      var open = card.classList.toggle('open');
+      card.setAttribute('aria-expanded', open ? 'true' : 'false');
+      syncGap();
+    }
+    card.addEventListener('click', function (evt) {
+      if (evt.target.closest('.mm-accept')) { celebrate(); return; }
+      toggle();
+    });
+    card.addEventListener('keydown', function (evt) {
+      if ((evt.key === 'Enter' || evt.key === ' ') && evt.target === card) { evt.preventDefault(); toggle(); }
+    });
+    return card;
+  }
+
+```
+
+Inside `decorateRadar`, replace the whole old card block (from `var card = el('aside', 'mf-offer');`
+through `head.insertBefore(card, head.firstChild);`) with:
+
+```js
+    mailGap = el('div', 'mf-mail-gap');
+    mailGap.setAttribute('aria-hidden', 'true');
+    var firstStats = head.querySelector('.stats-group');
+    if (firstStats) head.insertBefore(mailGap, firstStats); else head.appendChild(mailGap);
+    mailCard = buildMailCard();
+    head.insertBefore(mailCard, head.firstChild);
+    window.addEventListener('resize', syncGap);
+```
+
+In `buildControls`, change the preview wiring `pv.addEventListener('click', celebrate);` to
+`pv.addEventListener('click', announce);`.
+
+Replace the block from `window.addEventListener('jobhunter:application-status', ...` through
+`window.JobHunterTheme = { celebrate: celebrate };` with:
+
+```js
+  // The banner slides in first, then the full-screen moment; both stay silent in offer mode off.
+  var TOAST_MS = 1800;
+  var announcing = false;
+  function announce() {
+    if (announcing || isOff()) return;
+    announcing = true;
+    var toast = el('div', 'mf-toast mf-mail');
+    toast.id = 'mf-toast';
+    toast.setAttribute('role', 'status');
+    toast.appendChild(mailHead());
+    document.body.appendChild(toast);
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () { toast.classList.add('in'); });
+    });
+    setTimeout(function () {
+      toast.classList.remove('in');
+      setTimeout(function () {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+        announcing = false;
+      }, 450);
+      if (!isOff()) celebrate();
+    }, TOAST_MS);
+  }
+  window.addEventListener('jobhunter:application-status', function (evt) {
+    var d = evt && evt.detail;
+    if (d && d.status === 'offer') announce();
+  });
+  window.JobHunterTheme = { celebrate: celebrate, announce: announce };
+```
+
+- [ ] **Step 4: Implement the CSS.** In `forest.css`, delete the old rules from `.mf-offer {` through the
+`@media (max-width: 760px) { .mf-offer { ... } }` block (the card, `.k`, `.t`, `.d`, `.r`, `.p`,
+`.seal` and the narrow-screen rule) and put this in their place:
+
+```css
+/* the offer email: a mail notification that opens into the letter */
+.mf-mail {
+  width: 348px; padding: 12px 14px 14px; text-align: left; cursor: pointer;
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 34px rgba(0, 0, 0, .5);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+}
+.mf-offer.mf-mail { position: absolute; right: 0; top: 0; z-index: 20; }
+.mf-mail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mf-mail .mm-top {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+  font: 600 10.5px "IBM Plex Mono", monospace; letter-spacing: .1em; color: var(--muted);
+}
+.mf-mail .mm-app { display: inline-flex; align-items: center; gap: 7px; }
+.mf-mail .mm-icon { display: inline-block; position: relative; width: 16px; height: 12px; border-radius: 3px; background: var(--accent); }
+.mf-mail .mm-icon::after {
+  content: ""; position: absolute; left: 50%; top: 2px; margin-left: -6px; width: 0; height: 0;
+  border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 5px solid rgba(0, 0, 0, .45);
+}
+.mf-mail .mm-row { display: flex; gap: 11px; }
+.mf-mail .mm-av {
+  flex: none; width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: #1a1205;
+  display: grid; place-items: center; font: 700 17px "IBM Plex Sans", sans-serif;
+}
+.mf-mail .mm-txt { min-width: 0; }
+.mf-mail .mm-from { font-size: 14px; font-weight: 600; color: var(--ink); }
+.mf-mail .mm-from small { font-weight: 400; color: var(--ink-soft); font-size: 12.5px; }
+.mf-mail .mm-subj { display: flex; align-items: center; gap: 7px; margin-top: 1px; font-size: 14px; font-weight: 600; color: var(--ink); }
+.mf-mail .mm-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.mf-mail .mm-prev {
+  margin-top: 2px; font-size: 13px; line-height: 1.35; color: var(--ink-soft);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mf-mail .mm-body { display: none; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); font-size: 13.5px; line-height: 1.5; color: var(--ink-soft); }
+.mf-mail.open .mm-body { display: block; }
+.mf-mail.open .mm-prev { display: none; }
+.mf-mail .mm-body p { margin: 0 0 9px; }
+.mf-mail .mm-body b { color: var(--ink); }
+.mf-mail .mm-body .hl { color: var(--accent); font-weight: 600; }
+.mf-mail .mm-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.mf-mail .mm-att { font-size: 12px; color: var(--ink-soft); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; }
+.mf-mail .mm-att::before {
+  content: ""; display: inline-block; width: 9px; height: 11px; margin-right: 7px; vertical-align: -1px;
+  border: 1.5px solid var(--accent); border-radius: 2px;
+}
+.mf-mail .mm-accept {
+  font: 600 13px "IBM Plex Sans", sans-serif; color: #1a1205; background: var(--accent);
+  border: 0; border-radius: 999px; padding: 7px 14px; cursor: pointer;
+}
+.mf-mail-gap { height: 0; }
+.mf-toast { position: fixed; top: 16px; right: 16px; z-index: 120; cursor: default; pointer-events: none; opacity: 0; transform: translateY(-140%); }
+.mf-toast.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .mf-mail-gap { transition: height .25s ease; }
+  .mf-toast { transition: transform .5s cubic-bezier(.2, .8, .2, 1), opacity .3s ease; }
+}
+@media (max-width: 760px) {
+  .mf-offer.mf-mail { position: static; width: auto; margin: 0 0 18px; }
+  .mf-toast { left: 12px; right: 12px; width: auto; }
+}
+```
+
+In the offer-mode-off rule list in `forest.css`, add `html.mf-off .mf-mail-gap` to the selectors that get
+`display: none` (keep `.mf-offer` there).
+
+In `forest-dawn.css` delete the `.mf-offer { background: ...; border-color: ...; }` rule and the
+`.mf-offer .seal { ... }` rule (lines 52-56); the card now takes its colours from the theme variables.
+
+- [ ] **Step 5: Run tests**
+
+Run: `uv run pytest tests/test_forest_theme_browser.py tests/test_theme_assets.py tests/test_theme.py tests/test_theme_render.py tests/test_render_radar.py tests/test_render_applications.py -q`
+Expected: PASS (both goldens unchanged: no Python or template change).
+
+- [ ] **Step 6: Docs and screenshots.** Update wording: README ("a *Signed & Sealed* vision card" ->
+"an **offer email** that opens like a message, with a sliding mail banner before the celebration"),
+`docs/USAGE.md` ("shown on the Signed & Sealed card" -> "used in the offer email card"),
+`docs/SPEC.md` and `CLAUDE.md` (one sentence each: card is a mail notification, `announce()` shows the
+banner then the moment, `.mf-mail-gap` prevents overlap). Re-shoot `docs/img/theme-forest.png` and
+`docs/img/theme-forest-dawn.png` with the Task 8 script (the card now shows the mail banner).
+
+- [ ] **Step 7: Verify and commit**
+
+Run: `uv run pytest -q`, `node --test tests/js/`, `uv run ruff check .` — all green.
+
+```bash
+git add scripts/templates/themes tests README.md docs/USAGE.md docs/SPEC.md CLAUDE.md docs/img
+git commit -m "feat(theme): email-style offer card, banner-then-moment, no-overlap spacing
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```

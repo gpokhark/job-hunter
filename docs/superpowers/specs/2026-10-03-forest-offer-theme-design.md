@@ -167,3 +167,28 @@ These supersede the matching statements above.
   (0,3,0) instead of `[data-theme=...]`; `offer.js` still sets `data-theme` for hooks.
 - **A3 Honorifics.** The first name skips a leading honorific (`Dr`, `Mr`, `Mrs`, `Ms`, `Miss`,
   `Mx`, `Prof`, with or without a trailing dot); a name made only of honorifics yields no first name.
+
+## 11. Addendum: email-style offer card, mail banner, no-overlap layout (2026-10-03)
+
+Requested after the first implementation; supersedes the "Signed & Sealed" vision card (3.1, 4.1).
+
+- **E1 Card.** The masthead vision card becomes a **mail notification** that opens into the offer
+  email. Collapsed: a banner with a mail icon, `MAIL`, `now`, a gold `H` avatar, sender
+  **`Hiring Team · Your future employer`** (fixed text, no new config field), a bold subject with an
+  unread dot (`Offer of employment: {role}`) and a two-line preview (`Dear {name}, we're delighted to
+  offer you the position of {role}. {pay} {when}`; `Hello,` when no first name). Click, Enter or
+  Space expands it into the full letter (`Dear {name},` / role + pay / `{when}. Welcome to the team.` /
+  `Warm regards, The Hiring Team`), an `Offer_Letter.pdf - 1 page` chip and an **Accept offer**
+  button that runs the celebration immediately. The card keeps the class `mf-offer` so offer mode still
+  hides it. `role`, `pay_note`, `start_note` and the first name still come from `vision:`/`contact`.
+- **E2 Banner then moment.** A real `jobhunter:application-status` offer event and the **preview**
+  button now call `announce()`: a mail banner slides in at the top-right (about 1.8 s), then leaves
+  as the full-screen celebration opens. `celebrate()` stays immediate (used by **Accept offer**).
+  Nothing runs while offer mode is off; overlapping announcements are ignored.
+- **E3 No overlap.** The expanded card must never cover the "This run" block. A zero-height spacer
+  (`.mf-mail-gap`) sits before the first stats block; on open, `syncGap()` sets its height so the stats
+  start at least **32 px** below the card (the page's own vertical rhythm), and resets it on close and
+  on narrow screens (card is static there). The card's right edge stays aligned with the stats box.
+  Height changes animate only when reduced motion is not requested.
+- **E4 Compatibility.** No Python, config, token or event-contract changes. The seal and the
+  `Signed & Sealed` label are retired; assets stay ASCII; every dynamic string is still `textContent`.
