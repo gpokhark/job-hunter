@@ -1357,6 +1357,15 @@ def test_saved_application_disables_the_date_input(tmp_path):
     assert re.search(r'<input type="date" class="app-date"[^>]*disabled', row)
 
 
+def test_hide_no_sponsorship_chip_is_in_the_static_and_live_toolbars(tmp_path):
+    chip = 'data-filter-group="hide" data-filter-value="no-sponsorship"'
+    assert chip in _live_apps_html(tmp_path, {"x|1": _app("saved", None)})
+    # The static page filters rows client-side on data-sponsorship; the chip is the same markup.
+    template = (Path(__file__).resolve().parents[1] / "scripts/templates/radar_template.html").read_text()
+    assert chip in template
+    assert "row.dataset.sponsorship === 'not_available'" in template
+
+
 def test_live_toolbar_bar_and_boot_json_carry_the_application_features(tmp_path):
     html = _live_apps_html(tmp_path, {"x|1": _app(notes="</script><img src=x>")})
     assert 'id="live-app"' in html and 'id="live-hide-applied"' in html
@@ -1608,3 +1617,33 @@ def test_early_stopped_warning_with_nothing_stored_uses_the_zero_wording(tmp_pat
     _stats, html = _build_with_health(tmp_path, [_early_stop_row()])
     assert "Collection stopped early today — no additional earlier jobs to show." in html
     assert "showing 0 earlier" not in html
+
+
+def test_fallback_job_row_carries_a_per_company_stale_source_tag(tmp_path):
+    """A job merged in from a source that failed to scrape stays on the radar and is flagged
+    on its own row (with the last-collected date), not only in the Collection Issues list."""
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    last_success = datetime(2026, 9, 10, 18, 0, tzinfo=UTC)
+    with Storage(db_path) as storage:
+        storage.upsert_job(_make_stored_job(job_id="fresh", posted_at=now - timedelta(days=5)))
+        storage.update_health(
+            SourceHealth(source_key="waymo", company="Waymo", status=HealthStatus.OK,
+                         job_count=1, attempted_at=last_success)
+        )
+    search_path = tmp_path / "search.json"
+    search_path.write_text(json.dumps(_search_json([], source_health=[
+        {"source_key": "waymo", "company": "Waymo", "status": "failed", "message": "Timed out."}
+    ])))
+    assessments_path = tmp_path / "assessments.json"
+    assessments_path.write_text(json.dumps([]))
+    output_path = tmp_path / "out.html"
+    build(
+        search_path=search_path, assessments_path=assessments_path, output_path=output_path,
+        title="Test Radar", keyword_label=None, new_days=10, now=now,
+        database_path=db_path, profile=CandidateProfile(target_domains=["perception"]), max_age_days=30,
+    )
+    html = output_path.read_text()
+    expected_date = last_success.astimezone().strftime("%b %-d, %Y")
+    assert ">Source stale</span>" in html
+    assert f"Source failed to scrape today; last collected {expected_date}" in html

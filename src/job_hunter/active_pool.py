@@ -35,6 +35,7 @@ actually needed from it:
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -166,6 +167,48 @@ def source_jobs(
             continue
         kept.append(job)
     return kept
+
+
+def stopped_early(health: dict) -> bool:
+    """A source that stopped early and kept partial results: a recorded failure_kind (rate limit /
+    timeout) or a `warning` carrying an error_type. A count-drop warning has neither."""
+    return bool(health.get("failure_kind")) or (
+        health.get("status") == "warning" and bool(health.get("error_type"))
+    )
+
+
+def wants_fallback(health: dict) -> bool:
+    """`failed`, or a `warning` that stopped early (kept partial results after an error, rate
+    limit or timeout). A bare count-drop warning has neither and gets no merge. The one
+    definition shared by the radar's stale-source fallback and the reviewer, so both always
+    agree on which sources' last-known jobs belong in the report."""
+    return health.get("status") == "failed" or (
+        health.get("status") == "warning" and stopped_early(health)
+    )
+
+
+def fallback_candidates(
+    source_health: list[dict],
+    database_path: Path,
+    profile: CandidateProfile,
+    max_age_days: int,
+    *,
+    keywords: list[str] | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Last-known active jobs, as candidate dicts, for every source in `source_health` whose
+    collection failed or stopped early. A failed scrape never drops a company's jobs: they stay
+    on the report and are held back only by the profile's own filter rules (`source_jobs`
+    applies `passes_prefilter`/`passes_recency`), never by the failure itself."""
+    out: list[dict] = []
+    for health in source_health:
+        if not wants_fallback(health) or not health.get("source_key"):
+            continue
+        for job in source_jobs(
+            database_path, health["source_key"], profile, max_age_days, keywords=keywords, now=now
+        ):
+            out.append(json.loads(job.model_dump_json()))
+    return out
 
 
 @dataclass(frozen=True)

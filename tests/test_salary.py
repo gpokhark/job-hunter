@@ -115,3 +115,9 @@ def test_currency_code_ranges_without_a_dollar_sign():
     # a bare number range, or a USD that isn't attached to the first number, is not pay
     for text in ("100,000 - 200,000 users", "we serve 5,000 USD customers - 10"):
         assert evaluate_salary(text).evidence is None, text
+
+
+def test_a_sentence_comma_after_the_range_is_not_part_of_the_number():
+    decision = evaluate_salary("pay is $184,200–$240,000, plus a bonus")
+    assert decision.evidence == "$184,200–$240,000"
+    assert decision.max_value == 240000.0

@@ -47,6 +47,14 @@ class HtmlPaginatedAdapter(JobAdapter):
             response = await self.request("GET", url)
             tree = HTMLParser(response.text)
             cards = tree.css(cfg.get("card_selector", "[data-job-id]"))
+            # Opt-in: some sites (Harman's Avature) answer the page *after* the last one with
+            # a "No jobs found" placeholder inside the same card element, so a catalog that is
+            # an exact multiple of page_size would otherwise read as a job card with no link.
+            # A placeholder is not a job card: dropping it lets the empty-page rule below decide
+            # (end of listing once jobs exist, a loud SchemaError if it is the very first page).
+            empty_text = str(cfg.get("empty_page_text") or "").lower()
+            if empty_text:
+                cards = [c for c in cards if empty_text not in normalize_text(c.text()).lower()]
             if not cards:
                 # No cards on this page — if we already have jobs, this is
                 # graceful end-of-pagination (WAF timeout, last page, etc.).

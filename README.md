@@ -163,6 +163,12 @@ are configurable in `config/settings.yaml`; see `docs/SPEC.md` §8.6 and
 
 **Application tracking (live mode only):** each row has a Track chip that opens an editor panel (status saved/applied/interviewing/offer/rejected/withdrawn, applied date, notes; edits autosave), the toolbar adds Application and Hide applied filters, and `/applications` lists every tracked application. Application data lives in SQLite; `data/applications.json`/`.csv` are refreshed after each save (a refresh failure is reported as a warning and never fails the save), and `uv run job-hunter export-applications` rewrites them on demand. Live saves do not refresh the feedback exports. Applications are never removed by `cleanup`; a posting it deletes shows as "removed".
 
+The radar toolbar (static and live) has chips for New, Long-standing, Remote, Hybrid, **Sponsorship OK**
+and **No Sponsorship** (these keep only matching rows, so they also drop the ~85% of jobs that never
+mention sponsorship), plus **Hide No Sponsorship**, which removes only jobs that state they don't
+sponsor and keeps both Sponsorship OK and unmentioned jobs. All are view-only; the live page keeps
+them in the URL hash.
+
 Each radar report row has 👍/🆗/👎 relevance-feedback buttons and a floating "Export Feedback"
 button — `apply_radar_feedback.py` ingests the export, `suggest_exclusions.py` turns repeated
 "irrelevant" tags into safe `soft_exclude_terms` candidates for `candidate_profile.yaml` (never

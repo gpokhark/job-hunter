@@ -14,7 +14,7 @@
     return {
       query: '', tags: [], arrangement: [], sponsorship: [], minScore: null, postedDays: null,
       company: '', location: '', hasSalary: false, feedback: '', sort: 'default',
-      app: '', hideApplied: false
+      app: '', hideApplied: false, hideNoSponsorship: false
     };
   }
 
@@ -22,7 +22,7 @@
   function filtersActive(f) {
     return !!(f.query.trim() || f.tags.length || f.arrangement.length || f.sponsorship.length ||
       f.minScore !== null || f.postedDays !== null || f.company || f.location.trim() ||
-      f.hasSalary || f.feedback || f.app || f.hideApplied);
+      f.hasSalary || f.feedback || f.app || f.hideApplied || f.hideNoSponsorship);
   }
 
   function dayDiff(todayIso, dayIso) {
@@ -37,6 +37,8 @@
     })) return false;
     if (f.arrangement.length && f.arrangement.indexOf(facts.arrangement) === -1) return false;
     if (f.sponsorship.length && f.sponsorship.indexOf(facts.sponsorship) === -1) return false;
+    // Exclusion, not inclusion: keeps 'available' and 'unmentioned' (the large majority) rows.
+    if (f.hideNoSponsorship && facts.sponsorship === 'not_available') return false;
     if (f.minScore !== null && (facts.score === null || facts.score < f.minScore)) return false;
     if (f.postedDays !== null) {
       if (!facts.posted) return false;
@@ -90,6 +92,7 @@
     if (f.feedback) add('fb', f.feedback);
     if (f.app) add('app', f.app);
     if (f.hideApplied) add('hideapp', '1');
+    if (f.hideNoSponsorship) add('hidenospon', '1');
     if (f.sort !== 'default') add('sort', f.sort);
     return parts.join('&');
   }
@@ -115,6 +118,7 @@
       else if (key === 'fb') { if (FEEDBACK_FILTERS.indexOf(value) !== -1) f.feedback = value; }
       else if (key === 'app') { if (value === 'untracked' || APP_STATUSES.indexOf(value) !== -1) f.app = value; }
       else if (key === 'hideapp') f.hideApplied = value === '1';
+      else if (key === 'hidenospon') f.hideNoSponsorship = value === '1';
       else if (key === 'sort') { if (SORT_MODES.indexOf(value) !== -1) f.sort = value; }
     });
     return f;

@@ -466,3 +466,35 @@ def test_find_jobs_unambiguous_id_shapes_still_resolve_from_an_unknown_host(tmp_
     ]
     assert _keys(find_jobs(db, "https://mirror.example/x/Some-Title_JR102607")) == [("stoneridge", "hash-sr-1")]
     assert _keys(find_jobs(db, "https://mirror.example/x/200462446-0836")) == [("apple", "200462446-0836")]
+
+
+def test_fallback_candidates_keep_a_failed_sources_jobs_and_only_the_filters_drop_them(tmp_path):
+    """A failed or stopped-early scrape never drops a company's jobs; only the profile's own
+    prefilter/recency rules do. A healthy source and a count-drop warning add nothing."""
+    from datetime import timedelta
+
+    from job_hunter.active_pool import fallback_candidates, wants_fallback
+
+    now = datetime(2026, 9, 17, tzinfo=UTC)
+    db_path = tmp_path / "jobs.sqlite3"
+    with Storage(db_path) as storage:
+        storage.upsert_job(make_job(source_key="a", job_id="fresh", title="Perception Engineer",
+                                    posted_at=now - timedelta(days=3)))
+        storage.upsert_job(make_job(source_key="a", job_id="old", title="Perception Engineer",
+                                    posted_at=now - timedelta(days=400)))  # recency rule
+        storage.upsert_job(make_job(source_key="a", job_id="off", title="Pastry Chef",
+                                    posted_at=now - timedelta(days=3)))  # prefilter rule
+        storage.upsert_job(make_job(source_key="b", job_id="b1", title="Perception Engineer",
+                                    posted_at=now - timedelta(days=3)))
+        storage.upsert_job(make_job(source_key="c", job_id="c1", title="Perception Engineer",
+                                    posted_at=now - timedelta(days=3)))
+    profile = CandidateProfile(target_domains=["perception"])
+    health = [
+        {"source_key": "a", "status": "failed"},
+        {"source_key": "b", "status": "warning", "failure_kind": "rate_limited"},
+        {"source_key": "c", "status": "warning"},  # count-drop: live data this run, no merge
+        {"source_key": "d", "status": "ok"},
+    ]
+    assert [wants_fallback(h) for h in health] == [True, True, False, False]
+    got = fallback_candidates(health, db_path, profile, 30, now=now)
+    assert sorted((c["source_key"], c["job_id"]) for c in got) == [("a", "fresh"), ("b", "b1")]

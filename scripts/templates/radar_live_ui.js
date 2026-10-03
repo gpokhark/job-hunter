@@ -378,6 +378,7 @@
       if (g === 'tag') f.tags.push(v);
       else if (g === 'arrangement') f.arrangement.push(v);
       else if (g === 'sponsorship') f.sponsorship.push(v);
+      else if (g === 'hide' && v === 'no-sponsorship') f.hideNoSponsorship = true;
     });
     var min = parseInt(minScore.value, 10);
     f.minScore = isNaN(min) ? null : Math.max(0, Math.min(100, min));
@@ -395,6 +396,10 @@
   function writeFilters(f) {
     search.value = f.query;
     chips.forEach(function (c) {
+      if (c.dataset.filterGroup === 'hide') {
+        c.classList.toggle('active', c.dataset.filterValue === 'no-sponsorship' && f.hideNoSponsorship);
+        return;
+      }
       var list = c.dataset.filterGroup === 'tag' ? f.tags
         : c.dataset.filterGroup === 'arrangement' ? f.arrangement : f.sponsorship;
       c.classList.toggle('active', list.indexOf(c.dataset.filterValue) !== -1);

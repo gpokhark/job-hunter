@@ -191,6 +191,29 @@ test('application filters make filtersActive true and survive the hash round tri
   assert.equal(core.decodeHash('hideapp=0').hideApplied, false);
 });
 
+test('hide-no-sponsorship drops only not_available rows and keeps available and unmentioned', () => {
+  const f = core.emptyFilters();
+  f.hideNoSponsorship = true;
+  assert.equal(core.rowPasses(facts({ sponsorship: 'not_available' }), f, null, TODAY), false);
+  assert.equal(core.rowPasses(facts({ sponsorship: 'available' }), f, null, TODAY), true);
+  assert.equal(core.rowPasses(facts({ sponsorship: 'unmentioned' }), f, null, TODAY), true);
+  assert.equal(core.rowPasses(facts({ sponsorship: '' }), f, null, TODAY), true);
+  // Combined with the inclusion chip it narrows to the explicit-OK rows, as before.
+  f.sponsorship = ['available'];
+  assert.equal(core.rowPasses(facts({ sponsorship: 'unmentioned' }), f, null, TODAY), false);
+  assert.equal(core.rowPasses(facts({ sponsorship: 'available' }), f, null, TODAY), true);
+});
+
+test('hide-no-sponsorship makes filtersActive true and survives the hash round trip', () => {
+  const f = core.emptyFilters();
+  assert.equal(core.filtersActive(f), false);
+  f.hideNoSponsorship = true;
+  assert.equal(core.filtersActive(f), true);
+  assert.equal(core.encodeHash(f), 'hidenospon=1');
+  assert.deepEqual(core.decodeHash('#' + core.encodeHash(f)), f);
+  assert.equal(core.decodeHash('hidenospon=0').hideNoSponsorship, false);
+});
+
 test('APP_STATUSES lists the six statuses in lifecycle order', () => {
   assert.deepEqual(core.APP_STATUSES, ['saved', 'applied', 'interviewing', 'offer', 'rejected', 'withdrawn']);
 });
