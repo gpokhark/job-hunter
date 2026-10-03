@@ -54,3 +54,11 @@ def test_the_real_assets_load_for_both_themes():
     assert dawn.css.startswith(forest.css) and ".mf-sun" in dawn.css
     config = json.loads(re.search(r'id="mf-config">(.*?)</script>', dawn.script_html, re.S).group(1))
     assert config["theme"] == "forest-dawn" and config["firstName"] == "Jane"
+
+
+def test_the_live_pages_announce_new_offers():
+    templates = DEFAULT_TEMPLATES_DIR.parent
+    for name in ("radar_live_ui.js", "applications_ui.js"):
+        source = (templates / name).read_text(encoding="utf-8")
+        assert "jobhunter:application-status" in source, name
+        assert "isNewOffer" in source and "celebrate" in source, name

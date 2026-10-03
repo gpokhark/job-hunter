@@ -210,11 +210,16 @@
     return 'Could not stop the server (HTTP ' + status + '); try again or press Ctrl+C in its terminal.';
   }
 
+  // A save that newly reaches "offer" is worth celebrating; re-saving notes on an existing
+  // offer, or any other transition, is not.
+  function isNewOffer(prevStatus, nextStatus) { return nextStatus === 'offer' && prevStatus !== 'offer'; }
+
   var api = {
     SORT_MODES: SORT_MODES, APP_STATUSES: APP_STATUSES, emptyFilters: emptyFilters, filtersActive: filtersActive,
     rowPasses: rowPasses, sortOrder: sortOrder, encodeHash: encodeHash, decodeHash: decodeHash,
     enqueue: enqueue, classifyStatus: classifyStatus, backoffMs: backoffMs, isoNow: isoNow,
-    reconcile: reconcile, reconcileApps: reconcileApps, resumeNotice: resumeNotice, shutdownNotice: shutdownNotice
+    reconcile: reconcile, reconcileApps: reconcileApps, resumeNotice: resumeNotice, shutdownNotice: shutdownNotice,
+    isNewOffer: isNewOffer
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RadarLive = api;
