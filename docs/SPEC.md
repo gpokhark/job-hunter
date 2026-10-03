@@ -1693,3 +1693,16 @@ changed target does not fit.
 - **Prefilter decision** — the `PrefilterDecision` (`passes`/`rule`/`term`/`rescued_by`) returned
   by `evaluate_prefilter`, the structured verdict `passes_prefilter` wraps down to a bool; what
   `diff_profile.py` uses to explain *why* a job's candidacy changed, not just that it did.
+
+### Page themes (`radar.theme`)
+
+`src/job_hunter/theme.py` resolves `--theme` > `settings.radar.theme` > `auto` and packages
+`scripts/templates/themes/{forest.css,forest-dawn.css,offer.js}` into a `ResolvedTheme(name, css,
+script_html)`. The radar appends `css`/`script_html` to its `__LIVE_STYLE__`/`__LIVE_SCRIPT__` token
+values; the Applications page uses a `__THEME_CSS__` token before `</style>` and appends the script
+to `__SCRIPTS__`. `auto` is empty, so default output is byte-identical (golden tests). The config
+block is `<script type="application/json" id="mf-config">` with keys `theme`, `firstName`, `role`,
+`pay`, `when`, escaped with `json_for_script`; `offer.js` writes every dynamic string with
+`textContent`. The live pages dispatch `window` event `jobhunter:application-status`
+(`detail: {status: "offer", key}`) after the server acknowledges a save that newly reached `offer`
+(`RadarLive.isNewOffer`); the theme listens and shows the celebration unless offer mode is off.

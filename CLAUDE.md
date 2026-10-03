@@ -262,6 +262,16 @@ ranked `SearchResult` JSON.
   for that one. See `skills/job-feedback/SKILL.md`.
 
 - **`scripts/serve_radar.py`** — opt-in localhost live radar: GET `/`, `/applications`, `/api/state`, `/api/feedback`, `/api/applications`; POST `/api/feedback`, `/api/application`, `/api/jd`, `/api/shutdown` (loopback-bind only, replies then stops via a short-lived thread; the radar page's Stop server button) (application snapshot fields derived server-side; every UI edit sends the full record; `applied_at` can't be cleared; unknown job → 404; 15 s handler timeout; feedback untag is idempotent). Loopback by default, unauthenticated. Opens a per-request `Storage`, holds `run_lock("radar-server")`, validates writes against `jobs` (the label is client-supplied and validated; company/title/department/score are derived server-side from the `jobs`/`assessments` tables), never renders on the write path, never writes `data/radar/`; `--project` supported. Live saves don't refresh `data/job_feedback.json`/`.csv`, but each committed application write refreshes `data/applications.json`/`.csv` (`applications_export.py`'s `write_applications_exports`; CSV formula guard prefixes `'` on cells starting `= + - @` tab/CR); a refresh failure surfaces as `export_warning` and never fails or reverts the save. `scripts/render_applications.py` renders `/applications`; `scripts/templates/radar_live_sync.js` is the shared node-tested outbox engine (`tests/js/`) used by both live pages. The unsent-writes outbox is one shared localStorage key (`job-hunter-outbox`); with the server down and two tabs open, an unsent edit in one tab can overwrite the other tab's stored entry (each tab still retries its own from memory; the event-time rule makes duplicate sends harmless).
+- **`src/job_hunter/theme.py`** (+ `scripts/templates/themes/`) — opt-in `forest`/`forest-dawn` page
+  themes chosen by `settings.radar.theme` (`render_radar.py --theme` overrides). Pure resolver: `auto`
+  returns empty strings so default pages stay byte-identical (the radar and Applications goldens
+  guard this). CSS rides on existing token values (`__LIVE_STYLE__`/`__LIVE_SCRIPT__`, plus
+  `__THEME_CSS__` on the Applications template) because tokens are substituted in one regex pass —
+  adjacent tokens would mis-tokenise. Theme CSS uses `:root:root:root` to beat the page's dark-mode
+  block. The first name is the first whitespace token of `contact.name` that is not an honorific
+  (`display_first_name`), dropped for placeholders or
+  `vision.use_first_name: false`; all dynamic text is written with `textContent`. Live pages dispatch
+  `jobhunter:application-status` only for a save that *newly* reaches `offer`.
 
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from

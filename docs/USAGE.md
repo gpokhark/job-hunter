@@ -309,3 +309,25 @@ assessments, feedback, and reports. Your personal profile and resume live in `co
 To move to another machine, stop running collection/review processes and copy both complete
 folders into the new checkout. Recreate dependencies with `uv sync --all-extras` (plus the two one-time browser installs) and reinstall agent skills
 from the new location. Git alone does not transfer these ignored personal and generated files.
+
+## Themes (forest, forest-dawn)
+
+`config/settings.yaml` → `radar.theme`: `auto` (default, the plain light/dark page), `forest`
+(night) or `forest-dawn` (sunrise). `render_radar.py --theme NAME` overrides it for one run;
+`serve_radar.py` and `job-hunter pipeline` read the setting. The theme applies to the static radar,
+the live radar and the Applications page.
+
+Optional `vision:` block in `config/candidate_profile.yaml` (display text only):
+
+```yaml
+vision:
+  role: "Staff Perception Engineer"   # shown on the Signed & Sealed card
+  pay_note: "Better. Higher paying."
+  start_note: "Start date: soon"
+  use_first_name: true                 # false keeps your name out of the generated pages
+```
+
+The first name is `contact.name` without a leading honorific; it is omitted if missing, still the
+example placeholder, or `use_first_name: false`. The page's **offer mode** switch (bottom-left,
+remembered in the browser) hides every manifestation line and restores the original labels.
+Rendered pages contain your first name, so mind screenshots you share.

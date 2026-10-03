@@ -107,6 +107,27 @@ installable skills (`sh scripts/install_skill.sh`):
 | `salary-compare` | Compare an offer to your package and draft a negotiation plan |
 | `onboard-source` | Add any company from its careers URL |
 
+## Make the hunt feel good (optional themes)
+
+The radar can wear a forest: **`forest`** (night) or **`forest-dawn`** (sunrise), with a light
+"Offer Season" layer: a daily affirmation, a *Signed & Sealed* vision card, and a *You got the
+offer* moment the moment you set an application to **Offer**. It is cosmetic only: scores,
+filters and data never change, and **offer mode** (bottom-left) switches the words off and
+restores the plain labels.
+
+```yaml
+# config/settings.yaml
+radar:
+  theme: forest-dawn   # auto (default) | forest | forest-dawn
+```
+
+One-off: `uv run python scripts/render_radar.py --theme forest`.
+Personalise (all optional, in your git-ignored `config/candidate_profile.yaml`): your first name
+comes from `contact.name`; set `vision:` for the role and notes, or `use_first_name: false` to keep
+your name out of the pages.
+
+<p align="center"><img src="docs/img/theme-forest.png" alt="Forest (night) theme" width="400"> <img src="docs/img/theme-forest-dawn.png" alt="Forest dawn (sunrise) theme" width="400"></p>
+
 ## Company coverage
 
 84 companies are registered: 80 with working adapters and 4 explicitly unsupported (Tesla, Meta,
