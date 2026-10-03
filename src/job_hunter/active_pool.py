@@ -35,9 +35,12 @@ actually needed from it:
 
 from __future__ import annotations
 
+import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .config import CandidateProfile
 from .models import Job
@@ -68,7 +71,18 @@ def _row_to_job(row: sqlite3.Row) -> Job:
     return Job(**data)
 
 
-def raw_active_jobs(database_path: Path, source_scope: set[str] | None = None) -> list[Job]:
+def connect_readonly(database_path: Path) -> sqlite3.Connection:
+    """A genuinely read-only connection (`mode=ro`): no directory creation, no WAL pragma, no
+    schema creation and no migrations, unlike `Storage(...)`. Diagnostics use this so that
+    asking "why" never changes the database it is asking about."""
+    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def raw_active_jobs(
+    database_path: Path, source_scope: set[str] | None = None, *, readonly: bool = False
+) -> list[Job]:
     """Every currently-active, US-eligible job in SQLite, optionally restricted to a source-key
     scope (`None` means every source currently sitting in the database, not just one company) —
     no prefilter or recency applied. Attaches `prior_assessment` exactly like a live search's
@@ -90,19 +104,26 @@ def raw_active_jobs(database_path: Path, source_scope: set[str] | None = None) -
     syntax, not merely slow."""
     if source_scope is not None and not source_scope:
         return []
-    with Storage(database_path) as storage:
-        if source_scope is None:
-            rows = storage.connection.execute(
-                "SELECT * FROM jobs WHERE status='active' AND us_eligible=1"
-            ).fetchall()
-        else:
-            placeholders = ",".join("?" for _ in source_scope)
-            rows = storage.connection.execute(
-                "SELECT * FROM jobs WHERE status='active' AND us_eligible=1 "
-                f"AND source_key IN ({placeholders})",
-                tuple(source_scope),
-            ).fetchall()
-        assessments = storage.all_assessments()
+    sql, params = "SELECT * FROM jobs WHERE status='active' AND us_eligible=1", ()
+    if source_scope is not None:
+        sql += f" AND source_key IN ({','.join('?' for _ in source_scope)})"
+        params = tuple(source_scope)
+    if readonly:
+        # `readonly=True` (the why-missed / near-misses diagnostics, docs/SPEC.md 7.5) reads the
+        # same rows through a `mode=ro` connection; `Storage(...)` would create/migrate the schema.
+        conn = connect_readonly(database_path)
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            assessments = {
+                (row["source_key"], row["job_id"]): Storage._row_to_assessment(row)
+                for row in conn.execute("SELECT * FROM assessments").fetchall()
+            }
+        finally:
+            conn.close()
+    else:
+        with Storage(database_path) as storage:
+            rows = storage.connection.execute(sql, params).fetchall()
+            assessments = storage.all_assessments()
     jobs = []
     for row in rows:
         job = _row_to_job(row)
@@ -145,3 +166,218 @@ def source_jobs(
             continue
         kept.append(job)
     return kept
+
+
+@dataclass(frozen=True)
+class StoredJob:
+    """A stored job plus the two storage columns the `Job` model does not carry."""
+
+    job: Job
+    status: str
+    missing_count: int
+
+
+_SOURCE_AND_ID = re.compile(r"^([A-Za-z0-9_]+):([^/\s].*)$")
+# Query parameters that only track how a link was shared; never part of a job's identity.
+_TRACKING_PARAM = re.compile(r"^(?:utm_|mc_)|^(?:gclid|fbclid|msclkid)$", re.IGNORECASE)
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+_QUERY_ID = re.compile(r"[A-Za-z0-9_-]{4,}")
+_ORDER = " ORDER BY source_key, job_id"
+
+
+def url_host(parts) -> str:
+    """Lower-cased host of a `urlsplit` result, without a leading `www.`."""
+    host = (parts.hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _normalized_url(url: str, *, with_query: bool) -> str:
+    """Scheme/host lower-cased, `www.` and trailing `/` dropped, fragment dropped, and either
+    the query dropped or reduced to its sorted non-tracking parameters."""
+    parts = urlsplit(url.strip())
+    base = f"{parts.scheme.lower()}://{url_host(parts)}{parts.path.rstrip('/')}"
+    if not with_query:
+        return base
+    pairs = sorted(
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING_PARAM.match(k)
+    )
+    return f"{base}?{urlencode(pairs)}" if pairs else base
+
+
+def _has_digit(token: str) -> bool:
+    return any(c.isdigit() for c in token)
+
+
+_WORKDAY_TAIL = re.compile(r"[A-Za-z]{1,4}-?\d[\d-]*")
+_DIGITS_DASH_DIGITS = re.compile(r"\d{4,}-\d+")
+
+
+def distinctive_id_tokens(url: str) -> set[str]:
+    """The id tokens of `url` whose shape alone identifies one posting: a UUID, a Workday tail
+    (`_R0000391568`, `_JR102607`, `_R-097854-1`) or an Apple-style `digits-digits` id. Only these
+    are trusted when no stored job shares the URL's host; a plain number (`12345`, `?page=12345`)
+    could be any source's id."""
+    segment = next((s for s in reversed(urlsplit(url.strip()).path.split("/")) if s and _has_digit(s)), None)
+    if not segment:
+        return set()
+    segment = re.sub(r"\.(?:html?|aspx?|php)$", "", segment, flags=re.IGNORECASE)
+    found = set(_UUID.findall(segment))
+    if "_" in segment:
+        tail = segment.rsplit("_", 1)[1]
+        if _WORKDAY_TAIL.fullmatch(tail) or _DIGITS_DASH_DIGITS.fullmatch(tail):
+            found.add(tail)
+    leading = _DIGITS_DASH_DIGITS.match(segment)
+    if leading:
+        found.add(leading.group())
+    return found
+
+
+def url_id_tokens(url: str) -> tuple[list[str], list[str]]:
+    """Id candidates carried by a job URL, as `(strong, weak)`, each in priority order.
+
+    Strong: non-tracking query values (`?gh_jid=`, `?reqId=`, `?opportunityId=`); the id segment
+    (the *last* path segment containing a digit; earlier digit runs are shared location/category
+    ids) as a whole (`19528`, `200462446-0836`, a UUID); its Workday tail after the last `_`
+    (`R0000391568`, `JR102607`, `R-097854-1`); any UUID in it; a leading `digits-digits` id.
+    Weak: the alphanumeric runs inside the id segment (`REF1018E`, `0836`), which may be shared
+    by many postings, so callers only trust them on the same host and when unique per source.
+    Every token is >= 4 characters and contains a digit."""
+    parts = urlsplit(url.strip())
+    strong: list[str] = []
+    weak: list[str] = []
+
+    def add(bucket: list[str], token: str) -> None:
+        if len(token) >= 4 and _has_digit(token) and token not in strong and token not in weak:
+            bucket.append(token)
+
+    for key, value in parse_qsl(parts.query):
+        if not _TRACKING_PARAM.match(key) and _QUERY_ID.fullmatch(value.strip()):
+            add(strong, value.strip())
+    segment = next((s for s in reversed(parts.path.split("/")) if s and _has_digit(s)), None)
+    if segment:
+        segment = re.sub(r"\.(?:html?|aspx?|php)$", "", segment, flags=re.IGNORECASE)
+        add(strong, segment)
+        if "_" in segment:
+            add(strong, segment.rsplit("_", 1)[1])
+        for uuid in _UUID.findall(segment):
+            add(strong, uuid)
+        leading = re.match(r"\d{4,}-\d+", segment)
+        if leading:
+            add(strong, leading.group())
+        for run in re.findall(r"[A-Za-z0-9]+", segment):
+            add(weak, run)
+    return strong, weak
+
+
+def _full_rows(conn: sqlite3.Connection, rowids: list[int], limit: int) -> list[sqlite3.Row]:
+    if not rowids:
+        return []
+    marks = ",".join("?" for _ in rowids)
+    return conn.execute(
+        f"SELECT * FROM jobs WHERE rowid IN ({marks}){_ORDER} LIMIT ?", (*rowids, limit)
+    ).fetchall()
+
+
+def _url_lookups(conn: sqlite3.Connection, ref: str, limit: int):
+    """URL resolution, most exact first (see `find_jobs`). Never falls through to titles."""
+    ref_parts = urlsplit(ref)
+    host = url_host(ref_parts)
+    same_host_rows = conn.execute(
+        "SELECT rowid, source_key, job_id, canonical_url FROM jobs WHERE instr(lower(canonical_url), ?) > 0",
+        (host,),
+    ).fetchall() if host else []
+    # (a) the same URL once normalized, with its non-tracking query. Then the query-less form,
+    # but only for a ref that is genuinely bare (no non-tracking query left: `/jobs?gh_jid=9` must
+    # never resolve to a stored `/jobs?gh_jid=1`) and only when that identifies a single job.
+    bare_ref = _normalized_url(ref, with_query=True) == _normalized_url(ref, with_query=False)
+    for with_query in (True, False) if bare_ref else (True,):
+        wanted = _normalized_url(ref, with_query=with_query)
+        hits = [r["rowid"] for r in same_host_rows if _normalized_url(r["canonical_url"], with_query=with_query) == wanted]
+        if hits and (with_query or len(hits) == 1):
+            yield _full_rows(conn, hits, limit)
+    strong, weak = url_id_tokens(ref)
+
+    def on_same_host(row) -> bool:
+        return url_host(urlsplit(row["canonical_url"] or "")) == host
+
+    # On a host no stored job uses, a plain number or query value could be any source's id, so
+    # only distinctive shapes (UUID, Workday tail, digits-digits) may match there.
+    if not any(on_same_host(r) for r in same_host_rows):
+        distinctive = distinctive_id_tokens(ref)
+        strong = [t for t in strong if t in distinctive]
+        weak = []
+
+    # (b) an exact stored job_id. A weak token counts only on the same host; when a strong token
+    # is a job_id on several sources, the ones on the URL's own host win.
+    for token, weak_token in [(t, False) for t in strong] + [(t, True) for t in weak]:
+        rows = conn.execute(
+            "SELECT rowid, source_key, job_id, canonical_url FROM jobs WHERE job_id=?", (token,)
+        ).fetchall()
+        local = [r for r in rows if on_same_host(r)]
+        rows = local if (weak_token or local) else rows
+        if rows:
+            yield _full_rows(conn, [r["rowid"] for r in rows], limit)
+            return
+    # (c) the token is an id token of a stored canonical_url (same extraction on both sides, so
+    # it is always bounded by non-alphanumerics). A token matching several jobs of one source is
+    # a shared location/category/date segment, not an id, and is ignored for that source.
+    for token, weak_token in [(t, False) for t in strong] + [(t, True) for t in weak]:
+        candidates = conn.execute(
+            "SELECT rowid, source_key, job_id, canonical_url FROM jobs WHERE instr(canonical_url, ?) > 0",
+            (token,),
+        ).fetchall()
+        by_source: dict[str, list[int]] = {}
+        for row in candidates:
+            stored_strong, stored_weak = url_id_tokens(row["canonical_url"] or "")
+            local = on_same_host(row)
+            if weak_token and not local:
+                continue
+            if token in stored_strong or (local and token in stored_weak):
+                by_source.setdefault(row["source_key"], []).append(row["rowid"])
+        hits = [ids[0] for ids in by_source.values() if len(ids) == 1]
+        if hits:
+            yield _full_rows(conn, hits, limit)
+            return
+
+
+def _lookups(conn: sqlite3.Connection, ref: str, limit: int):
+    """Successive attempts to resolve `ref`; `find_jobs` returns the first non-empty one."""
+    if "://" not in ref:
+        match = _SOURCE_AND_ID.match(ref)
+        if match:
+            yield conn.execute(
+                "SELECT * FROM jobs WHERE source_key=? AND job_id=?", (match[1], match[2])
+            ).fetchall()
+    if ref.lower().startswith(("http://", "https://")):
+        yield from _url_lookups(conn, ref, limit)
+        return
+    if " " not in ref:
+        yield conn.execute(f"SELECT * FROM jobs WHERE job_id=?{_ORDER} LIMIT ?", (ref, limit)).fetchall()
+    yield conn.execute(
+        "SELECT * FROM jobs WHERE instr(lower(title), ?) > 0 "
+        "ORDER BY last_seen_at DESC, source_key, job_id LIMIT ?",
+        (ref.lower(), limit),
+    ).fetchall()
+
+
+def find_jobs(database_path: Path, ref: str, *, limit: int = 50) -> list[StoredJob]:
+    """Resolve a user's reference to stored jobs (any status, any eligibility), read-only.
+
+    Order, first non-empty wins: `source_key:job_id`; for a URL (never falls through to a title
+    match): (a) the stored `canonical_url` equal after normalizing (case of scheme/host, `www.`,
+    trailing `/`, fragment, tracking query params; then query-less if that is unique), (b) an id
+    token from its query values or last digit-bearing path segment equal to a stored `job_id`,
+    (c) that token equal to an id token of a stored `canonical_url` (unique within its source);
+    a bare `job_id`; finally a case-insensitive title substring (`instr`, so `%`/`_` are
+    literal). A careers-site URL whose ids were never stored legitimately resolves to nothing."""
+    ref = ref.strip()
+    if not ref:
+        return []
+    conn = connect_readonly(database_path)
+    try:
+        for rows in _lookups(conn, ref, limit):
+            if rows:
+                return [StoredJob(_row_to_job(r), r["status"], r["missing_count"]) for r in rows]
+        return []
+    finally:
+        conn.close()

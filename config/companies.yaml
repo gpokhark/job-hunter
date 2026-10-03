@@ -705,28 +705,26 @@ companies:
       location_filter: United States
   - key: wayve
     company: Wayve
-    adapter: html_paginated
-    platform: first_ats
+    adapter: ashby
+    platform: ashby
     config:
-      # The tracked-companies snapshot listed Wayve as Greenhouse
-      # (job-boards.greenhouse.io/wayve), but that URL now 302-redirects to
-      # wayve.firststage.co/jobs — Wayve has moved off Greenhouse entirely onto "First"
-      # (firststage.co), a Next.js-based ATS. Its /jobs listing is plain
-      # server-rendered HTML (confirmed: a job's real ID appears identically in a plain
-      # curl fetch and a Playwright-rendered one, same byte count) with all 163 current
-      # postings on one page — no pagination config needed. Its cards have no wrapping
-      # element: each posting is a single `<a href="https://wayve.firststage.co/jobs/
-      # <id>/view">` with the title and location(s) as child spans directly inside it,
-      # so card_selector and link_selector both resolve to the *same* node — link_selector:
-      # self is html_paginated.py's opt-in for exactly this shape (see its comment).
-      # The detail page carries a schema.org JobPosting JSON-LD block (clean HTML,
-      # real datePosted) that html_paginated's fetch_detail already always checks
-      # regardless of config, so no description_selector is needed here at all.
-      list_url: https://wayve.firststage.co/jobs
-      card_selector: a[href*="/jobs/"][href*="/view"]
-      link_selector: self
-      title_selector: span.font-medium
-      location_selector: span.capitalize
+      # Wayve is on Ashby (jobs.ashbyhq.com/wayve), confirmed via its public posting API
+      # (62 jobs, full descriptionHtml inline). It was previously scraped from
+      # wayve.firststage.co/jobs (First ATS), which on 2026-10-02 started serving "0 jobs
+      # open" and failed every run with SchemaError. Postings have no structured `address`
+      # (always null), so location is the plain string ("Sunnyvale, California USA").
+      list_url: https://api.ashbyhq.com/posting-api/job-board/wayve
+      items_path: jobs
+      listing_description_path: descriptionHtml
+      fields:
+        id: id
+        title: title
+        url: jobUrl
+        location: location
+        department: department
+        employment_type: employmentType
+        posted_at: publishedAt
+        work_arrangement: workplaceType
   - key: magna
     company: Magna International
     adapter: workday

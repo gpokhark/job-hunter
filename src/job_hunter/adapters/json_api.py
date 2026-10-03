@@ -103,7 +103,13 @@ class ConfigurableJsonAdapter(JobAdapter):
             api_url = urljoin(cfg.get("detail_base_url", summary.url), raw_url)
         response = await self.request("GET", api_url)
         payload = response.json()
-        return JobDetail(description=_concat_description(payload, description_path))
+        description = _concat_description(payload, description_path)
+        return JobDetail(description=self.augment_description(payload, description))
+
+    def augment_description(self, payload: dict, description: str | None) -> str | None:
+        """Hook for a platform that keeps a fact (e.g. pay) in structured fields outside the
+        description text; the default adds nothing."""
+        return description
 
 
 def _concat_description(data: dict, path_or_paths: str | list[str]) -> str | None:
