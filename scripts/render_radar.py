@@ -61,6 +61,8 @@ from pathlib import Path
 from typing import Any
 
 from job_hunter.active_pool import source_jobs as _pool_source_jobs
+from job_hunter.active_pool import stopped_early as _stopped_early
+from job_hunter.active_pool import wants_fallback as _wants_fallback
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.rootutil import add_project_argument, chdir_to_project_root, nonneg_int
@@ -303,6 +305,13 @@ def _app_panel_html(app: dict[str, Any] | None, *, hidden: bool) -> str:
     )
 
 
+def _stale_source_tag(note: str | None) -> str:
+    """Per-company warning on a job merged in from a source whose scrape failed or stopped early."""
+    if not note:
+        return ""
+    return f'<span class="tag tag-stale" title="{html.escape(note, quote=True)}">Source stale</span>'
+
+
 def _row_html(
     row: dict[str, Any], *, live: bool = False, feedback: dict[str, dict[str, Any]] | None = None,
     apps: dict[str, dict[str, Any]] | None = None,
@@ -318,6 +327,7 @@ def _row_html(
     other_tags = ""
     if row.get("long_standing"):
         other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _stale_source_tag(row.get("stale_source_note"))
     other_tags += _sponsorship_tag(row.get("visa_sponsorship"))
     other_tags += _arrangement_tag(row.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
@@ -426,6 +436,7 @@ def _never_reviewed_row_html(
     other_tags = ""
     if is_long_standing:
         other_tags += '<span class="tag tag-long-standing">Long-standing</span>'
+    other_tags += _stale_source_tag(candidate.get("stale_source_note"))
     other_tags += _sponsorship_tag(candidate.get("visa_sponsorship"))
     other_tags += _arrangement_tag(candidate.get("work_arrangement"))
     filter_attrs = _filter_data_attrs(
@@ -537,12 +548,6 @@ def _source_issue_rows_html(entries: list[dict[str, Any]]) -> str:
     return "".join(_source_issue_row_html(h) for h in entries)
 
 
-def _stopped_early(h: dict[str, Any]) -> bool:
-    """A source that stopped early and kept partial results: a recorded failure_kind (rate limit /
-    timeout) or a `warning` carrying an error_type. A count-drop warning has neither."""
-    return bool(h.get("failure_kind")) or (h.get("status") == "warning" and bool(h.get("error_type")))
-
-
 def _rate_limited_sources(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sources that stopped early and kept partial results (the key stays `rate_limited_sources`
     for compatibility; `failure_kind` is None when the stop was a plain error)."""
@@ -561,15 +566,6 @@ def _rate_limited_sources(entries: list[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
-def _wants_fallback(health: dict[str, Any]) -> bool:
-    """`failed`, or a `warning` that stopped early (kept partial results after an error, rate
-    limit or timeout: it carries a failure_kind or an error_type). A bare count-drop warning has
-    neither and still gets no merge."""
-    return health.get("status") == "failed" or (
-        health.get("status") == "warning" and _stopped_early(health)
-    )
-
-
 def _merge_pool_jobs(
     candidates: dict[tuple[str, str], dict[str, Any]],
     database_path: Path,
@@ -578,9 +574,11 @@ def _merge_pool_jobs(
     max_age_days: int,
     keywords: list[str] | None,
     now: datetime,
+    stale_note: str | None = None,
 ) -> int:
     """Merge one source's stored active/eligible jobs not already in `candidates`, in place;
-    returns how many were added."""
+    returns how many were added. `stale_note` is stamped on each merged job so its row can carry
+    a per-company warning tag (the failed scrape itself never removes a job)."""
     merged = 0
     for job in _pool_source_jobs(
         database_path, source_key, profile, max_age_days, keywords=keywords, now=now
@@ -589,6 +587,8 @@ def _merge_pool_jobs(
         if key in candidates:
             continue
         candidates[key] = json.loads(job.model_dump_json())
+        if stale_note:
+            candidates[key]["stale_source_note"] = stale_note
         merged += 1
     return merged
 
@@ -665,7 +665,8 @@ def _apply_collection_fallback(
             # earlier ones this run didn't re-collect. Independent of last_success_at, which a
             # partial run itself just advanced.
             merged = _merge_pool_jobs(
-                candidates, database_path, source_key, profile, max_age_days, keywords, now
+                candidates, database_path, source_key, profile, max_age_days, keywords, now,
+                stale_note="Collection stopped early today; this job is from an earlier scrape",
             )
             note = (
                 f"Collection stopped early today — showing {merged} earlier job(s) "
@@ -677,7 +678,10 @@ def _apply_collection_fallback(
             note = "Failed to scrape — no prior successful data available for this source."
         else:
             merged = _merge_pool_jobs(
-                candidates, database_path, source_key, profile, max_age_days, keywords, now
+                candidates, database_path, source_key, profile, max_age_days, keywords, now,
+                stale_note=(
+                    f"Source failed to scrape today; last collected {_fmt_local_date(last_success_at)}"
+                ),
             )
             note = (
                 f"Failed to scrape today — showing {merged} job(s) from the last successful "
@@ -894,6 +898,7 @@ def render(
                 "work_arrangement": candidate.get("work_arrangement"),
                 "state": candidate.get("state"),
                 "country": candidate.get("country"),
+                "stale_source_note": candidate.get("stale_source_note"),
             }
         )
 

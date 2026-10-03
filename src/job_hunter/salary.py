@@ -33,7 +33,8 @@ _TAG = re.compile(r"<[^>]+>")
 # or around the dash (confirmed live on Toro's "between \u200b$84,300 - \u200b$105,400").
 _INVISIBLE = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
 
-_NUM = r"\d[\d,]*(?:\.\d+)?"
+# Never ends in a comma: "$240,000," (a sentence comma) must not be part of the number.
+_NUM = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
 # After a number (and an optional "K"): reject a trailing digit or a magnitude word, so
 # "$98 billion", "$300M" or "$100K to $10M+" (company size/spend boilerplate) never reads as pay.
 _END = r"(?:\s?[kK]\b)?(?!\d|\s?(?:[MmBb]\b|million|billion|bn\b))"

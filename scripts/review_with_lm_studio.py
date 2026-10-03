@@ -34,6 +34,7 @@ from typing import Any, TextIO
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from job_hunter.active_pool import fallback_candidates
 from job_hunter.atomic import atomic_write_text
 from job_hunter.config import CandidateProfile, load_profile, load_settings
 from job_hunter.lm_studio_health import check_lm_studio, load_lm_studio_config
@@ -308,6 +309,26 @@ def main() -> int:
 
     data = json.loads(args.input.read_text(encoding="utf-8"))
     candidates = [c for c in data.get("candidates", []) if c.get("us_eligible")]
+    # A source whose scrape failed (or stopped early) keeps its last-known jobs on the radar,
+    # so they must be scored too: the radar merges them in at render time, and without this
+    # they would sit under "Not LLM Reviewed" forever. Same rule and same profile filters as
+    # the radar's own fallback (`job_hunter.active_pool`), never an extra drop.
+    keywords = [t.strip() for t in args.keyword.split(",") if t.strip()] if args.keyword else None
+    seen = {(c.get("source_key"), c.get("job_id")) for c in candidates}
+    stale = [
+        c
+        for c in fallback_candidates(
+            data.get("source_health", []), settings.database_path, profile,
+            settings.search.max_posting_age_days, keywords=keywords,
+        )
+        if (c["source_key"], c["job_id"]) not in seen and c.get("us_eligible")
+    ]
+    if stale:
+        print(
+            f"Including {len(stale)} last-known job(s) from sources that failed or stopped "
+            "early in this archive (they appear on the radar, so they are scored too)."
+        )
+        candidates.extend(stale)
     if not candidates:
         print(f"No U.S.-eligible candidates in {args.input}.")
         _write_result_json(args.result_json, reviewed=0, skipped_cached=0, failed=0)

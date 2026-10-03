@@ -586,6 +586,7 @@
   .tag-source-ratelimited, .tag-source-timeout { background: var(--status-warning-soft); color: var(--status-warning); }
   .tag-source-unsupported { background: var(--line); color: var(--muted); }
   .tag-long-standing { background: var(--line); color: var(--muted); }
+  .tag-stale { background: var(--line); color: var(--muted); border: 1px dashed var(--muted); cursor: help; }
 
   .tag-new {
     display: inline-block;
@@ -919,6 +920,7 @@ __LIVE_STYLE__</style>
       <button type="button" class="filter-chip" data-filter-group="arrangement" data-filter-value="hybrid">Hybrid</button>
       <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="available">Sponsorship OK</button>
       <button type="button" class="filter-chip" data-filter-group="sponsorship" data-filter-value="not_available">No Sponsorship</button>
+      <button type="button" class="filter-chip" data-filter-group="hide" data-filter-value="no-sponsorship" title="Hide jobs that state they do not sponsor; keeps Sponsorship OK and unmentioned jobs">Hide No Sponsorship</button>
     </div>
     __LIVE_TOOLBAR__<button type="button" id="filter-clear" class="toolbar-clear" hidden>Clear filters</button>
     <span class="toolbar-count" id="filter-count"></span>
@@ -1115,7 +1117,7 @@ __LIVE_STYLE__</style>
 <script>
 (function () {
   // Quick-glance client-side filtering — company/title search plus tag/arrangement/
-  // sponsorship chips. Pure view-layer: never touches feedback state, never changes what a
+  // sponsorship chips (plus a "Hide No Sponsorship" exclusion chip). Pure view-layer: never touches feedback state, never changes what a
   // job scored, and filter selections are intentionally NOT persisted (a fresh page load
   // always starts unfiltered) since this is a per-visit viewing convenience, not a fact worth
   // remembering the way a feedback tag is.
@@ -1159,6 +1161,9 @@ __LIVE_STYLE__</style>
 
     var sponsorshipValues = activeValues('sponsorship');
     if (sponsorshipValues.length && sponsorshipValues.indexOf(row.dataset.sponsorship) === -1) return false;
+
+    // Exclusion chip: drops only rows that explicitly state no sponsorship.
+    if (activeValues('hide').indexOf('no-sponsorship') !== -1 && row.dataset.sponsorship === 'not_available') return false;
 
     return true;
   }
