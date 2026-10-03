@@ -1,5 +1,5 @@
 // "Offer Season" layer for the forest themes. Injected after the page's own scripts by
-// src/job_hunter/theme.py; reads <script type="application/json" id="mf-config">.
+// src/job_hunter/theme.py; reads the JSON config block it is injected beside.
 // Every dynamic string is written with textContent: the config is user-controlled text.
 (function () {
   'use strict';
