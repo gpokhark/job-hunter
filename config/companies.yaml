@@ -2039,6 +2039,12 @@ companies:
       page_parameter: jobOffset
       page_size: 20
       max_pages: 40
+      # 2026-10-03: the catalog hit exactly 340 jobs (17 full pages), so the next page
+      # (jobOffset=340) is no longer a short page but an `article.article--result` holding
+      # only "No jobs found" — which the adapter read as a card with no link and failed with
+      # SchemaError after all 340 jobs were already collected. empty_page_text treats that
+      # placeholder as the end of the listing (still a loud error if page 1 is empty).
+      empty_page_text: "No jobs found"
   - key: mitsubishi_motors_na
     company: Mitsubishi Motors North America
     adapter: greenhouse

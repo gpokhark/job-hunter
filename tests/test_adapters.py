@@ -2376,3 +2376,64 @@ def test_smartrecruiters_pay_from_custom_fields():
     assert pay_text_from_custom_fields({"customField": [field("Min. Salary Region 1", "1 EUR")]}) is None
     assert pay_text_from_custom_fields({"customField": [field("Min. Salary Region 1", "5 USD")]}) is None
     assert pay_text_from_custom_fields({}) is None
+
+
+def _avature_page(titles: list[str]) -> str:
+    cards = "".join(
+        f'<article class="article--result"><h3 class="t"><a href="/job/{t}">{t}</a></h3></article>'
+        for t in titles
+    ) or (
+        '<article class="article--result"><h3 class="t">No jobs found</h3></article>'
+    )
+    return f"<html><body>{cards}</body></html>"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_empty_page_placeholder_ends_the_listing_when_jobs_exist():
+    """Harman (Avature): a catalog that is an exact multiple of page_size is followed by a
+    'No jobs found' placeholder inside the same card element — the end of the listing, not a
+    broken card."""
+    base = "https://jobs.example/search"
+    respx.get(base, params={"off": "2"}).mock(return_value=httpx.Response(200, text=_avature_page([])))
+    respx.get(base, params={"off": "0"}).mock(return_value=httpx.Response(200, text=_avature_page(["a", "b"])))
+    respx.get(base).mock(return_value=httpx.Response(200, text=_avature_page(["a", "b"])))
+    cfg = {
+        "list_url": base, "card_selector": "article.article--result", "link_selector": ".t a",
+        "title_selector": ".t a", "page_parameter": "off", "page_size": 2, "max_pages": 5,
+        "empty_page_text": "No jobs found",
+    }
+    company = CompanyConfig(key="h", company="H", adapter="html_paginated", config=cfg)
+    async with httpx.AsyncClient() as client:
+        jobs = await HtmlPaginatedAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+    assert [j.title for j in jobs] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_empty_page_placeholder_on_the_first_page_still_fails_loudly():
+    base = "https://jobs.example/search"
+    respx.get(base).mock(return_value=httpx.Response(200, text=_avature_page([])))
+    cfg = {
+        "list_url": base, "card_selector": "article.article--result", "link_selector": ".t a",
+        "title_selector": ".t a", "empty_page_text": "No jobs found",
+    }
+    company = CompanyConfig(key="h", company="H", adapter="html_paginated", config=cfg)
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SchemaError):
+            await HtmlPaginatedAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_html_placeholder_without_the_setting_is_still_a_schema_error():
+    """Opt-in only: no silent behavior change for any other source."""
+    base = "https://jobs.example/search"
+    respx.get(base).mock(return_value=httpx.Response(200, text=_avature_page(["a", "b"]) + _avature_page([])))
+    company = CompanyConfig(key="h", company="H", adapter="html_paginated", config={
+        "list_url": base, "card_selector": "article.article--result", "link_selector": ".t a",
+        "title_selector": ".t a",
+    })
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SchemaError):
+            await HtmlPaginatedAdapter(company, client, CollectionConfig(max_retries=0)).fetch_summaries()
