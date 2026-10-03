@@ -129,6 +129,12 @@ your name out of the pages.
 
 On the Applications page the same themes turn the list into an *inbox*: hopeful status badges, an offer ribbon and a **Compare this offer** button that copies a `salary-compare` prompt.
 
+<p align="center"><img src="docs/img/offer-season-demo.gif" alt="Offer Season demo: a new affirmation, the offer email opening, the mail banner and the You got the offer moment, then offer mode switched off and on" width="820"></p>
+
+<p align="center"><img src="docs/img/offer-season.png" alt="Candidate Radar in the forest-dawn theme: the Offer Season title, an affirmation, the offer email and The Yes List" width="820"></p>
+
+<p align="center"><sub>Illustrative data (fictional companies and a placeholder name), forest-dawn theme.</sub></p>
+
 <p align="center"><img src="docs/img/theme-forest.png" alt="Forest (night) theme" width="400"> <img src="docs/img/theme-forest-dawn.png" alt="Forest dawn (sunrise) theme" width="400"></p>
 
 ## Company coverage
