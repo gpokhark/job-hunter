@@ -2345,3 +2345,34 @@ async def test_oracle_hcm_keeps_earlier_pages_when_a_later_page_is_rate_limited(
         with pytest.raises(RateLimitError):
             await adapter.fetch_summaries()
     assert [job.job_id for job in adapter.kept] == ["1", "2"]
+
+
+def test_smartrecruiters_pay_from_custom_fields():
+    """Intuitive posts pay only as structured customField entries, never in the text."""
+    from job_hunter.adapters.smartrecruiters import pay_text_from_custom_fields
+    from job_hunter.salary import evaluate_salary
+
+    def field(label, value):
+        return {"fieldLabel": label, "valueLabel": value}
+
+    payload = {
+        "customField": [
+            field("Max. Salary Region 2", "208500 USD"),
+            field("Max. Salary Region 1", "245300 USD"),
+            field("Min. Salary Region 1", "170500 USD"),
+            field("Min. Salary Region 2", "144900 USD"),
+            field("Ways of Working", "Onsite - This job is fully onsite."),
+        ]
+    }
+    text = pay_text_from_custom_fields(payload)
+    assert "Region 1: $170,500 - $245,300 USD" in text
+    assert "Region 2: $144,900 - $208,500 USD" in text
+    decision = evaluate_salary(text)
+    assert (decision.min_value, decision.max_value) == (144900.0, 245300.0)
+    # one region -> just that range; non-USD, half a pair or min > max -> nothing, never a guess
+    assert pay_text_from_custom_fields({"customField": payload["customField"][1:3]}) == (
+        "Pay range: $170,500 - $245,300 USD."
+    )
+    assert pay_text_from_custom_fields({"customField": [field("Min. Salary Region 1", "1 EUR")]}) is None
+    assert pay_text_from_custom_fields({"customField": [field("Min. Salary Region 1", "5 USD")]}) is None
+    assert pay_text_from_custom_fields({}) is None

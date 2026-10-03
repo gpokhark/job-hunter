@@ -1,8 +1,45 @@
 from __future__ import annotations
 
+import re
+
 from ..models import JobSummary
 from .base import SchemaError, nested
 from .json_api import ConfigurableJsonAdapter
+
+_PAY_LABEL = re.compile(r"^(min|max)\.?\s+salary\s+(.+)$", re.I)
+_PAY_VALUE = re.compile(r"^\s*(\d[\d,]*(?:\.\d+)?)\s+([A-Z]{3})\s*$")
+
+
+def pay_text_from_custom_fields(payload: dict) -> str | None:
+    """Intuitive posts pay only as structured `customField` entries ("Min. Salary Region 1":
+    "170500 USD", "Max. Salary Region 1": ...), never in the description, so a text mine of
+    the description finds nothing. Turns each region's min/max pair into a plain sentence
+    the shared `salary.evaluate_salary` reads like any other posting. Which region applies
+    to which office isn't stated, so when there are several the leading range spans all of
+    them and each region is listed after it; a lone region is just its own range. Only USD
+    pairs with min <= max are used, never a guess."""
+    regions: dict[str, dict[str, float]] = {}
+    for field in payload.get("customField") or []:
+        label = _PAY_LABEL.match(str(field.get("fieldLabel") or "").strip())
+        value = _PAY_VALUE.match(str(field.get("valueLabel") or ""))
+        if not label or not value or value.group(2) != "USD":
+            continue
+        regions.setdefault(label.group(2).strip(), {})[label.group(1).lower()] = float(
+            value.group(1).replace(",", "")
+        )
+    pairs = {r: v for r, v in regions.items() if "min" in v and "max" in v and v["min"] <= v["max"]}
+    if not pairs:
+        return None
+
+    def money(low: float, high: float) -> str:
+        return f"${low:,.0f} - ${high:,.0f} USD"
+
+    if len(pairs) == 1:
+        (low, high), = [(v["min"], v["max"]) for v in pairs.values()]
+        return f"Pay range: {money(low, high)}."
+    span = money(min(v["min"] for v in pairs.values()), max(v["max"] for v in pairs.values()))
+    per_region = "; ".join(f"{r}: {money(v['min'], v['max'])}" for r, v in sorted(pairs.items()))
+    return f"Pay range across pay regions: {span} ({per_region})."
 
 
 class SmartRecruitersAdapter(ConfigurableJsonAdapter):
@@ -68,3 +105,9 @@ class SmartRecruitersAdapter(ConfigurableJsonAdapter):
             if offset >= total:
                 break
         return jobs
+
+    def augment_description(self, payload: dict, description: str | None) -> str | None:
+        pay = pay_text_from_custom_fields(payload)
+        if not pay:
+            return description
+        return f"{description}\n\n{pay}" if description else pay
