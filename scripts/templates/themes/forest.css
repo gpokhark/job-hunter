@@ -1,0 +1,143 @@
+/* Forest theme (night) + the "Offer Season" layer.
+   Injected by src/job_hunter/theme.py only when radar.theme is forest or forest-dawn.
+   `:root:root:root` (specificity 0,3,0) outranks the page's own dark-mode block
+   (a `:root:not(...)` rule, specificity 0,2,0) without needing an attribute at parse time. */
+:root:root:root {
+  --paper: #08110d; --ink: #E6EFE8; --ink-soft: #A9C0B1; --surface: #0F1F18; --line: #25402F;
+  --accent: #F0B45A; --accent-soft: #1E2A19;
+  --score-fair: #8FA9C4; --score-moderate: #4FB3C8; --score-promising: #E8C44E;
+  --score-strong: #F08A55; --score-exceptional: #6FD6A0;
+  --status-good: #6FD6A0; --status-good-soft: #12301F; --status-warning: #E3AA45;
+  --status-warning-soft: #33290F; --danger: #E2695E; --danger-soft: #3A1F1C;
+  --arrangement-remote: #6FB1EE; --arrangement-remote-soft: #17293A;
+  --arrangement-hybrid: #C0A3EA; --arrangement-hybrid-soft: #2A2038;
+  --muted: #86A090; --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --atmosphere-1: rgba(95, 174, 126, 0.14); --atmosphere-2: rgba(240, 180, 90, 0.10);
+  color-scheme: dark;
+  background: var(--paper);
+}
+:root:root:root body {
+  background:
+    radial-gradient(1100px 620px at 10% -12%, var(--atmosphere-1), transparent 60%),
+    radial-gradient(900px 560px at 100% -4%, var(--atmosphere-2), transparent 55%),
+    transparent;
+}
+:root:root:root .masthead::before { background-image: none; }
+:root:root:root .masthead { overflow: visible; }
+:root:root:root h1 { color: var(--ink); text-shadow: 0 2px 24px rgba(0, 0, 0, 0.5); }
+:root:root:root .stats-new { border-color: #3a3a1d; }
+:root:root:root details.row:hover { border-color: var(--accent); }
+:root:root:root .row.tier-exceptional { box-shadow: inset 3px 0 0 var(--score-exceptional); }
+:root:root:root main { position: relative; }
+@media (min-width: 761px) {
+  :root:root:root .subhead, .mf-line { max-width: 52ch; }
+}
+
+/* ---- backdrop: fixed, behind the page, static ---- */
+#mf-bg {
+  position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden;
+  background: linear-gradient(180deg, #07100c 0%, #0b1c14 55%, #07130d 100%);
+}
+#mf-bg > * { position: absolute; }
+.mf-moon {
+  right: 9%; top: 5%; width: 210px; height: 210px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(245, 241, 210, .45), rgba(245, 241, 210, .12) 45%, rgba(245, 241, 210, 0) 70%);
+}
+.mf-trees { left: 0; bottom: 0; width: 100%; height: 46%; }
+.mf-trees svg { display: block; width: 100%; height: 100%; }
+.mf-ground {
+  left: 0; right: 0; bottom: 0; height: 22%;
+  background: linear-gradient(180deg, rgba(4, 9, 6, 0), #040906 70%);
+}
+.mf-mote {
+  width: 5px; height: 5px; border-radius: 50%; background: #ffd98a;
+  box-shadow: 0 0 10px 4px rgba(255, 200, 90, .45); opacity: .55;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mf-mote { animation: mf-twinkle 4s ease-in-out infinite; }
+  @keyframes mf-twinkle { 50% { opacity: .12; } }
+}
+
+/* ---- manifestation layer: separate from data, always optional ---- */
+.mf-tag {
+  font-family: "IBM Plex Sans", system-ui, sans-serif; font-style: italic; font-size: 19px;
+  color: var(--accent); margin: -4px 0 16px;
+}
+.mf-line {
+  font-family: "IBM Plex Sans", system-ui, sans-serif; font-style: italic; font-size: 17px;
+  color: var(--accent); margin: -10px 0 22px; max-width: 60ch; cursor: pointer;
+}
+.mf-line::before { content: "\2726"; font-style: normal; margin-right: 10px; opacity: .85; }
+.mf-offer {
+  position: absolute; right: 0; top: 0; width: 262px; padding: 14px 18px;
+  background: linear-gradient(160deg, #17281d, #101d16); border: 1px solid #3a5a44; border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45); transform: rotate(1.2deg);
+}
+.mf-offer .k {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent); font-weight: 600;
+}
+.mf-offer .t { font-style: italic; font-size: 12px; color: var(--accent); margin: 4px 0 8px; line-height: 1.3; }
+.mf-offer .d { font-size: 13px; color: var(--ink-soft); margin-bottom: 2px; }
+.mf-offer .r {
+  font-family: "Big Shoulders Display", sans-serif; font-weight: 800; font-size: 26px; line-height: 1;
+  margin: 6px 0 4px; color: var(--ink); text-transform: uppercase;
+}
+.mf-offer .p { font-size: 13px; color: var(--ink-soft); }
+.mf-offer .p b { color: var(--accent); font-weight: 600; }
+.mf-offer .seal {
+  position: absolute; right: 12px; bottom: -18px; width: 46px; height: 46px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffd98a, #d99a3a 70%); color: #2a1a02;
+  display: grid; place-items: center; font-weight: 700; font-size: 22px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .5); transform: rotate(-8deg);
+}
+@media (max-width: 760px) {
+  .mf-offer { position: static; width: auto; transform: none; margin: 0 0 18px; }
+}
+.mf-sub {
+  font-family: "IBM Plex Sans", sans-serif; font-style: italic; font-size: 13px;
+  color: var(--accent); margin-left: 12px; opacity: .9;
+}
+.mf-note { font-style: italic; color: var(--accent); }
+.mf-foot { text-align: center; font-style: italic; color: var(--ink-soft); margin: 56px 0 0; font-size: 15px; }
+.mf-foot::before { content: "\2726  "; color: var(--accent); }
+.mf-foot::after { content: "  \2726"; color: var(--accent); }
+#mf-toggle {
+  position: fixed; left: 14px; bottom: 14px; z-index: 50; font: 500 12px "IBM Plex Mono", monospace;
+  color: var(--ink-soft); background: rgba(8, 17, 13, .85); border: 1px solid var(--line);
+  border-radius: 999px; padding: 7px 14px; cursor: pointer;
+}
+#mf-toggle b { color: var(--accent); font-weight: 500; }
+#mf-preview {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 50;
+  font: 500 12px "IBM Plex Mono", monospace; color: var(--ink-soft); background: rgba(8, 17, 13, .85);
+  border: 1px dashed var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer;
+}
+html.mf-off .mf-line, html.mf-off .mf-tag, html.mf-off .mf-offer, html.mf-off .mf-sub,
+html.mf-off .mf-note, html.mf-off .mf-foot, html.mf-off #mf-preview { display: none; }
+
+/* ---- the moment ---- */
+#mf-win {
+  position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center;
+  flex-direction: column; text-align: center; cursor: pointer;
+  background: radial-gradient(circle, rgba(8, 17, 13, .78), rgba(8, 17, 13, .94));
+}
+#mf-win.on { display: flex; }
+#mf-win h2 {
+  font-family: "Big Shoulders Display", sans-serif; font-weight: 900; font-size: clamp(60px, 12vw, 150px);
+  text-transform: uppercase; margin: 0; line-height: .9; color: var(--ink);
+}
+#mf-win h2 em { font-style: normal; color: var(--accent); }
+#mf-win p { font-style: italic; font-size: 22px; color: var(--ink-soft); margin: 18px 0 0; }
+.mf-spark {
+  position: absolute; width: 8px; height: 8px; border-radius: 50%; background: #ffd98a;
+  box-shadow: 0 0 14px 6px rgba(255, 200, 90, .6); bottom: -20px; opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #mf-win.on .mf-spark { animation: mf-rise 3.2s ease-out forwards; }
+  @keyframes mf-rise {
+    0% { opacity: 0; transform: translateY(0); }
+    15% { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-110vh); }
+  }
+}

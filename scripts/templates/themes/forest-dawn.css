@@ -1,0 +1,62 @@
+/* Forest theme (sunrise): layered after forest.css; overrides palette and swaps the moon for a
+   sun. The text column sits on a dark scrim so no text renders over the bright horizon. */
+:root:root:root {
+  --paper: #150f26; --ink: #F7EFF1; --ink-soft: #D3C5DC; --surface: #1A142E; --line: #3D3360;
+  --accent: #FFC46B; --accent-soft: #2B2348;
+  --score-fair: #9FB4D6; --score-moderate: #56C2D6; --score-promising: #F0CB55;
+  --score-strong: #F59A62; --score-exceptional: #7FE0A8;
+  --status-good: #7FE0A8; --status-good-soft: #173629; --status-warning: #F0B450;
+  --status-warning-soft: #3A2D12; --danger: #F07A70; --danger-soft: #40222A;
+  --muted: #AD9EC2;
+  --atmosphere-1: rgba(255, 160, 120, 0.10); --atmosphere-2: rgba(255, 196, 107, 0.12);
+}
+:root:root:root h1 { text-shadow: 0 2px 30px rgba(20, 10, 40, .7); }
+:root:root:root .stats-new { border-color: #4a3f6e; }
+:root:root:root main {
+  background: linear-gradient(180deg, transparent 0, transparent 150px, rgba(18, 13, 34, .80) 460px, rgba(18, 13, 34, .86) 100%);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+#mf-bg {
+  background: linear-gradient(180deg, #171340 0%, #2c2158 22%, #6a3478 42%, #c4566a 60%, #f08a5c 72%, #ffb870 82%, #ffe3a0 92%, #fff0c4 100%);
+}
+.mf-stars {
+  inset: 0 0 55% 0; opacity: .55;
+  background-image:
+    radial-gradient(1.4px 1.4px at 12% 18%, #fff, transparent), radial-gradient(1.2px 1.2px at 28% 8%, #fff, transparent),
+    radial-gradient(1.6px 1.6px at 47% 22%, #fff, transparent), radial-gradient(1.2px 1.2px at 63% 10%, #fff, transparent),
+    radial-gradient(1.4px 1.4px at 81% 16%, #fff, transparent), radial-gradient(1.2px 1.2px at 92% 6%, #fff, transparent);
+}
+.mf-skyglow {
+  left: 50%; bottom: -6%; width: 150%; height: 70%; transform: translateX(-50%);
+  background: radial-gradient(ellipse at 88% 58%, rgba(255, 214, 140, .75), rgba(255, 160, 100, .35) 38%, rgba(255, 120, 110, 0) 70%);
+}
+.mf-sun {
+  left: 90%; bottom: 33%; width: 170px; height: 170px; margin-left: -85px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #fffbe8 0%, #ffe9a8 38%, #ffc66b 70%, rgba(255, 170, 90, 0) 72%);
+  box-shadow: 0 0 90px 40px rgba(255, 200, 110, .55);
+}
+.mf-rays {
+  left: 90%; bottom: 33%; width: 900px; height: 900px; margin: 0 0 -450px -450px;
+  background: repeating-conic-gradient(from 0deg at 50% 50%, rgba(255, 226, 150, .10) 0deg 4deg, transparent 4deg 14deg);
+  -webkit-mask-image: radial-gradient(circle, #000 0%, transparent 62%);
+  mask-image: radial-gradient(circle, #000 0%, transparent 62%);
+}
+.mf-ground { background: linear-gradient(180deg, rgba(12, 8, 22, 0), #0c0816 62%); }
+.mf-mote { background: #fff1c0; box-shadow: 0 0 10px 4px rgba(255, 210, 120, .5); }
+@media (prefers-reduced-motion: no-preference) {
+  .mf-sun, .mf-rays { animation: mf-sunrise 3.4s cubic-bezier(.2, .7, .2, 1) both; }
+  .mf-skyglow { animation: mf-glowup 3.4s ease-out both; }
+  @keyframes mf-sunrise { from { transform: translateY(120px); opacity: .2; } to { transform: none; opacity: 1; } }
+  @keyframes mf-glowup { from { opacity: .25; } to { opacity: 1; } }
+}
+.mf-offer { background: linear-gradient(160deg, #2c2352, #1d1739); border-color: #6a58a0; }
+.mf-offer .seal {
+  background: radial-gradient(circle at 35% 30%, #fff1b8, #f2a93f 70%);
+  box-shadow: 0 0 22px 6px rgba(255, 200, 110, .55), 0 4px 12px rgba(0, 0, 0, .5);
+}
+#mf-toggle, #mf-preview { background: rgba(21, 15, 38, .88); }
+#mf-win { background: radial-gradient(circle at 50% 88%, rgba(255, 196, 107, .45), rgba(21, 15, 38, .94) 62%); }
+@media (max-width: 760px) {
+  .mf-sun { left: 70%; bottom: 34%; width: 130px; height: 130px; margin-left: -65px; }
+  .mf-rays { left: 70%; bottom: 34%; }
+}
