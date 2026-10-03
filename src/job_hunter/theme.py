@@ -1,7 +1,7 @@
 """Resolve the radar theme and package it for the generated pages.
 
-Pure apart from reading three bundled asset files: `forest.css`, `forest-dawn.css`, `offer.js`
-under `scripts/templates/themes/`. `auto` yields empty strings, so the default pages stay
+Pure apart from reading the bundled asset files (`forest.css`, `forest-dawn.css`, `offer.js` for every
+page; `applications.css`, `applications.js` for the Applications page) under `scripts/templates/themes/`. `auto` yields empty strings, so the default pages stay
 byte-identical. Spec: docs/superpowers/specs/2026-10-03-forest-offer-theme-design.md
 """
 
@@ -92,3 +92,22 @@ def load_theme(
         f"<script>\n{script}\n</script>"
     )
     return ResolvedTheme(name, "\n".join(css_parts), script_html)
+
+
+def load_applications_assets(name: str, templates_dir: Path | None = None) -> tuple[str, str]:
+    """(css, script_html) of the Applications-page "inbox" layer; empty for `auto`.
+
+    Kept separate from `load_theme` so the radar never ships code it does not use.
+    """
+    if name not in THEMES:
+        raise ValueError(f"unknown theme {name!r}; choose one of {', '.join(THEMES)}")
+    if name == "auto":
+        return "", ""
+    base = Path(templates_dir) if templates_dir is not None else DEFAULT_TEMPLATES_DIR
+    css = (base / "applications.css").read_text(encoding="utf-8")
+    script = (base / "applications.js").read_text(encoding="utf-8")
+    if "</style" in css.lower():
+        raise ValueError("applications.css must not contain a style terminator")
+    if "</script" in script.lower():
+        raise ValueError("applications.js must not contain a script terminator")
+    return css, f"<script>\n{script}\n</script>"

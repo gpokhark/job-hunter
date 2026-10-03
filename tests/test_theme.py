@@ -10,6 +10,7 @@ from job_hunter.theme import (
     build_vision,
     display_first_name,
     json_for_script,
+    load_applications_assets,
     load_theme,
     resolve_theme_name,
 )
@@ -134,3 +135,32 @@ def test_assets_with_a_terminator_are_refused(tmp_path):
 def test_a_missing_asset_fails_loudly(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_theme("forest", None, templates_dir=tmp_path)
+
+
+def _stub_apps_assets(tmp_path, css="/*apps-css*/", js="/*apps-js*/"):
+    (tmp_path / "applications.css").write_text(css, encoding="utf-8")
+    (tmp_path / "applications.js").write_text(js, encoding="utf-8")
+    return tmp_path
+
+
+def test_applications_assets_are_empty_for_auto():
+    assert load_applications_assets("auto") == ("", "")
+
+
+def test_applications_assets_load_for_the_forest_themes(tmp_path):
+    base = _stub_apps_assets(tmp_path)
+    for name in ("forest", "forest-dawn"):
+        css, script_html = load_applications_assets(name, templates_dir=base)
+        assert css == "/*apps-css*/"
+        assert script_html == "<script>\n/*apps-js*/\n</script>"
+
+
+def test_applications_assets_reject_unknown_themes_terminators_and_missing_files(tmp_path):
+    with pytest.raises(ValueError):
+        load_applications_assets("sunset")
+    with pytest.raises(ValueError, match="script"):
+        load_applications_assets("forest", templates_dir=_stub_apps_assets(tmp_path, js="x</script>y"))
+    with pytest.raises(ValueError, match="style"):
+        load_applications_assets("forest", templates_dir=_stub_apps_assets(tmp_path, css="a</style>b"))
+    with pytest.raises(FileNotFoundError):
+        load_applications_assets("forest", templates_dir=tmp_path / "missing")

@@ -275,6 +275,9 @@ ranked `SearchResult` JSON.
   The vision card is an email-style notification (`.mf-offer.mf-mail`); `announce()` slides a mail
   banner in before the celebration, and `syncGap()` reserves space so the expanded card never covers
   the stats block.
+  On the Applications page `applications.css`/`applications.js` (loaded by `load_applications_assets`,
+  appended only for forest themes) add a display-only "inbox" layer (badges, offer ribbon, Compare
+  button, themed heading/chips); it listens for `jobhunter:offer-mode` and the goldens are unaffected.
 
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from

@@ -317,6 +317,8 @@ from the new location. Git alone does not transfer these ignored personal and ge
 `serve_radar.py` and `job-hunter pipeline` read the setting. The theme applies to the static radar,
 the live radar and the Applications page.
 
+On the Applications page the same themes turn the list into an *inbox*: hopeful status badges, an offer ribbon and a **Compare this offer** button that copies a `salary-compare` prompt.
+
 Optional `vision:` block in `config/candidate_profile.yaml` (display text only):
 
 ```yaml

@@ -1,11 +1,12 @@
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+import render_applications  # noqa: E402
 import render_radar  # noqa: E402
 
 from job_hunter.config import CandidateProfile, ContactInfo, VisionConfig  # noqa: E402
@@ -274,5 +275,118 @@ def test_floating_buttons_do_not_collide_on_a_phone(browser, tmp_path):
         )
         (al, at, ar, ab), (bl, bt, br, bb) = boxes
         assert ar <= bl or br <= al or ab <= bt or bb <= at, boxes
+    finally:
+        context.close()
+
+
+def _app_row(job_id, status, title=None, company="Acme"):
+    return {
+        "source_key": "acme", "job_id": job_id, "status": status,
+        "applied_at": None if status == "saved" else "2026-09-20", "notes": None,
+        "company": company, "title": title or f"Role {job_id}", "url": f"https://example.com/{job_id}",
+        "location": "Detroit, MI", "posted_at": "2026-09-01T00:00:00Z", "score": 82,
+        "salary_evidence": None, "created_at": "2026-09-20T10:00:00+00:00",
+        "updated_at": "2026-09-21T10:00:00+00:00",
+    }
+
+
+def _apps_file(tmp_path, theme_name, statuses):
+    profile = CandidateProfile(contact=ContactInfo(name="Jane Doe", email="jane@real-mail.test"))
+    page = render_applications.render_applications_page(
+        applications=[_app_row(str(i), s) for i, s in enumerate(statuses, 1)], job_states={},
+        versions={"applications": "v1"}, today=date(2026, 9, 26), archive_name="a.json",
+        theme=load_theme(theme_name, profile, templates_dir=THEMES_DIR),
+    )
+    out = tmp_path / f"apps-{theme_name}-{len(statuses)}.html"
+    out.write_text(page, encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("theme", ["forest", "forest-dawn"])
+def test_applications_page_becomes_the_inbox(browser, tmp_path, theme):
+    context, page, errors = _open(browser, _apps_file(tmp_path, theme, ["offer", "applied", "rejected"]))
+    try:
+        assert page.inner_text("h1") == "Inbox: Offers Incoming"
+        assert "Every row is a reply on its way." in page.inner_text("main")
+        offer_chip = page.inner_text('#app-counts [data-count-status="offer"]')
+        assert offer_chip.startswith("Yes") and offer_chip.strip().endswith("1")
+        assert page.inner_text('#app-counts [data-count-status="all"]').startswith("In inbox")
+        assert page.inner_text('.app-row[data-status="applied"] .mf-badge') == "Sent, and already loved"
+        assert page.inner_text('.app-row[data-status="rejected"] .mf-badge') == "Redirected"
+        assert page.locator('.app-row[data-status="offer"] option[value="offer"]').text_content() == "Offer"
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_offer_rows_get_a_ribbon_and_a_compare_button(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer", "applied"]))
+    try:
+        assert page.locator('.app-row[data-status="offer"] .mf-ribbon').count() == 1
+        assert page.locator('.app-row[data-status="applied"] .mf-ribbon').count() == 0
+        assert page.locator('.app-row[data-status="applied"] .mf-compare').count() == 0
+        page.click('.app-row[data-status="offer"] .mf-compare')
+        page.wait_for_function("document.getElementById('live-notice').textContent.length > 0")
+        notice = page.inner_text("#live-notice")
+        assert "salary-compare" in notice
+    finally:
+        context.close()
+
+
+def test_a_blocked_clipboard_still_shows_the_compare_prompt(browser, tmp_path):
+    blocker = "Object.defineProperty(navigator, 'clipboard', {get(){ return undefined; }});"
+    context, page, _ = _open(
+        browser, _apps_file(tmp_path, "forest", ["offer"]), init_script=blocker
+    )
+    try:
+        page.click(".mf-compare")
+        page.wait_for_function("document.getElementById('live-notice').textContent.length > 0")
+        assert "Use the salary-compare skill. I have an offer for Role 1 at Acme." in page.inner_text("#live-notice")
+    finally:
+        context.close()
+
+
+def test_a_status_change_updates_badge_ribbon_and_button_live(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["applied", "applied"]))
+    try:
+        row = page.locator(".app-row").first
+        row.locator(".app-status").select_option("offer")
+        page.wait_for_selector('.app-row[data-status="offer"] .mf-ribbon')
+        assert row.locator(".mf-badge").inner_text() == "Yes. Obviously."
+        assert row.locator(".mf-compare").count() == 1
+        row.locator(".app-status").select_option("applied")
+        page.wait_for_function("document.querySelectorAll('.mf-ribbon').length === 0")
+        assert row.locator(".mf-badge").inner_text() == "Sent, and already loved"
+        assert row.locator(".mf-compare").count() == 0
+    finally:
+        context.close()
+
+
+def test_offer_mode_off_restores_the_plain_applications_page(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer", "applied"]))
+    try:
+        page.click("#mf-toggle")
+        assert page.inner_text("h1") == "Applications"
+        chip = page.inner_text('#app-counts [data-count-status="offer"]')
+        assert chip.startswith("Offer") and chip.strip().endswith("1"), chip
+        assert page.inner_text('#app-counts [data-count-status="all"]').startswith("Total")
+        assert not page.is_visible(".mf-badge") and not page.is_visible(".mf-ribbon")
+        assert not page.is_visible(".mf-compare") and not page.is_visible(".mf-tag")
+        page.click("#mf-toggle")
+        assert page.inner_text("h1") == "Inbox: Offers Incoming"
+        assert page.inner_text('#app-counts [data-count-status="offer"]').startswith("Yes")
+    finally:
+        context.close()
+
+
+def test_the_empty_inbox_is_witty_and_restorable(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", []))
+    try:
+        assert "the first yes needs somewhere to land" in page.inner_text("#app-empty")
+        assert "press Track on a job" in page.inner_text("#app-empty")
+        page.click("#mf-toggle")
+        text = page.inner_text("#app-empty")
+        assert text.startswith("No tracked applications yet")
+        assert page.locator("#app-empty b").inner_text() == "Track"
     finally:
         context.close()

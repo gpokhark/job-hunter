@@ -13,7 +13,7 @@ from typing import Any, Literal
 import render_radar
 from render_radar import _attr, _e, _json_for_script
 
-from job_hunter.theme import EMPTY, ResolvedTheme
+from job_hunter.theme import EMPTY, ResolvedTheme, load_applications_assets
 
 STATUS_ORDER = ("offer", "interviewing", "applied", "saved", "rejected", "withdrawn")
 _LIFECYCLE = ("saved", "applied", "interviewing", "offer", "rejected", "withdrawn")
@@ -114,8 +114,13 @@ def render_applications_page(
             raise ValueError(f"{name} must not contain a script terminator")
         scripts.append(f"<script>\n{source}\n</script>")
     active_theme = theme or EMPTY
+    apps_css, apps_script = load_applications_assets(
+        active_theme.name, render_radar._TEMPLATE_DIR / "themes"
+    )
     if active_theme.script_html:
         scripts.append(active_theme.script_html)
+    if apps_script:
+        scripts.append(apps_script)
     page = _TEMPLATE_PATH.read_text(encoding="utf-8")
     subhead = f"{len(applications)} tracked application{'s' if len(applications) != 1 else ''}. Changes save immediately."
     archive = _e(archive_name) if archive_name else "live"
@@ -127,7 +132,7 @@ def render_applications_page(
         "__ARCHIVE__": archive,
         "__ROWS__": rows,
         "__SCRIPTS__": "\n".join(scripts),
-        "__THEME_CSS__": active_theme.css,
+        "__THEME_CSS__": active_theme.css + apps_css,
     }
     # Single pass: substituted text is never rescanned, so titles/notes containing a token are inert.
     return re.sub(r"__[A-Z][A-Z0-9_]*__", lambda m: tokens.get(m.group(0), m.group(0)), page)

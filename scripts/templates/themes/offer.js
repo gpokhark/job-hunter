@@ -237,6 +237,9 @@
     tg.addEventListener('click', function () {
       root.classList.toggle('mf-off');
       relabel(isOff());
+      try {
+        window.dispatchEvent(new CustomEvent('jobhunter:offer-mode', { detail: { off: isOff() } }));
+      } catch (e) { /* no CustomEvent: other layers simply keep their current text */ }
       paint();
       try { localStorage.setItem(KEY, isOff() ? 'off' : 'on'); } catch (e) { /* storage blocked */ }
     });

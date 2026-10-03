@@ -127,6 +127,8 @@ Personalise (all optional, in your git-ignored `config/candidate_profile.yaml`):
 comes from `contact.name`; set `vision:` for the role and notes, or `use_first_name: false` to keep
 your name out of the pages.
 
+On the Applications page the same themes turn the list into an *inbox*: hopeful status badges, an offer ribbon and a **Compare this offer** button that copies a `salary-compare` prompt.
+
 <p align="center"><img src="docs/img/theme-forest.png" alt="Forest (night) theme" width="400"> <img src="docs/img/theme-forest-dawn.png" alt="Forest dawn (sunrise) theme" width="400"></p>
 
 ## Company coverage

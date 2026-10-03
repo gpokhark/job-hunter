@@ -64,3 +64,25 @@ def test_the_live_pages_announce_new_offers():
         source = (templates / name).read_text(encoding="utf-8")
         assert "jobhunter:application-status" in source, name
         assert "isNewOffer" in source and "celebrate" in source, name
+
+
+APPS_CSS = DEFAULT_TEMPLATES_DIR / "applications.css"
+APPS_JS = DEFAULT_TEMPLATES_DIR / "applications.js"
+
+
+def test_applications_assets_exist_and_are_safe():
+    css = APPS_CSS.read_text(encoding="utf-8")
+    js = APPS_JS.read_text(encoding="utf-8")
+    assert css.isascii() and js.isascii()
+    assert "</script" not in js.lower() and "</style" not in css.lower()
+    assert "innerHTML" not in js, "applications.js must never use innerHTML"
+    assert "jobhunter:offer-mode" in js and "salary-compare" in js and "MutationObserver" in js
+    for selector in (".mf-badge", ".mf-ribbon", ".mf-compare"):
+        assert selector in css
+    assert "jobhunter:offer-mode" in JS.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_applications_js_parses():
+    result = subprocess.run(["node", "--check", str(APPS_JS)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

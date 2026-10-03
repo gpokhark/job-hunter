@@ -178,3 +178,16 @@ def test_forest_theme_themes_the_applications_page():
     assert page.count('id="mf-config"') == 1
     assert page.rstrip().endswith("</script>")
     assert "__THEME_CSS__" not in page
+
+
+def test_themed_applications_page_carries_the_inbox_layer_once():
+    page = _themed_page("forest")
+    assert page.count("Inbox: Offers Incoming") == 1
+    assert page.count('id="mf-config"') == 1
+    assert page.count("jobhunter:offer-mode") >= 2  # offer.js dispatches it, applications.js listens
+    assert ".mf-badge" in page
+
+
+def test_auto_applications_page_has_no_inbox_layer():
+    page = _page(_golden_apps(), states={"acme|1": "active", "acme|2": "closed"})
+    assert "Inbox: Offers Incoming" not in page and "mf-badge" not in page
