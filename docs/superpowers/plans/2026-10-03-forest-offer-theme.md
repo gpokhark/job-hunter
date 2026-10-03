@@ -2308,3 +2308,625 @@ git commit -m "feat(theme): email-style offer card, banner-then-moment, no-overl
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Addendum 2: Tasks 10-11 — the Applications "inbox" layer (2026-10-03)
+
+Spec: section 12 of the design doc. Intended for a **separate session**; it assumes Tasks 1-9 are
+merged on `feature/forest-offer-theme`. **Global Constraints and Review Focus above still apply**
+(ASCII assets, `textContent` only, goldens untouched, fake names only, `:root:root:root` selectors in
+theme CSS). Extra Review Focus lines, each pinned by a test below:
+
+8. **Live row changes:** moving a row to `offer` (or away from it) must add/remove its badge text,
+   ribbon and Compare button without a reload, and deleting rows must not leave a stale sky.
+   *(Task 10 live-update test, Task 11 rise test)*
+9. **Offer mode off** must restore the h1, every count-bar label and the empty state exactly, while the
+   count numbers keep updating; toggling back on must re-theme them. *(Task 10 restore test)*
+10. **Blocked clipboard:** **Compare this offer** must still show the prompt (30 s) when
+    `navigator.clipboard` is unavailable. *(Task 10 test)*
+11. **No overlap with page controls:** the status `<select>` keeps its real option names and a user
+    changing it still saves normally. *(Task 10 first browser test)*
+
+### Task 10: Inbox framing, status badges, offer row, Compare button
+
+**Files:**
+- Modify: `src/job_hunter/theme.py` (add `load_applications_assets`; update the module docstring to mention the two new assets)
+- Modify: `scripts/templates/themes/offer.js` (dispatch `jobhunter:offer-mode`)
+- Create: `scripts/templates/themes/applications.css`, `scripts/templates/themes/applications.js`
+- Modify: `scripts/render_applications.py` (append the assets)
+- Test: `tests/test_theme.py`, `tests/test_theme_assets.py`, `tests/test_render_applications.py`, `tests/test_forest_theme_browser.py`
+- Docs: `README.md`, `docs/USAGE.md`, `docs/SPEC.md`, `CLAUDE.md`
+
+**Interfaces:**
+- Produces: `load_applications_assets(name: str, templates_dir: Path | None = None) -> tuple[str, str]`;
+  window event `jobhunter:offer-mode` (`detail.off`); DOM added by `applications.js`: `p.mf-tag` after
+  the h1, `span.mf-badge[data-s]` inside each `.app-main` (before `.app-sub`), `span.mf-ribbon` as the
+  first child of an offer row, `button.mf-compare` inside an offer row's `.app-controls`; classes
+  `mf-apps` / `mf-dawn` on `<html>`.
+
+- [ ] **Step 1: Write the failing tests.**
+
+`tests/test_theme.py` — add `load_applications_assets` to the `from job_hunter.theme import (...)`
+block, then append:
+
+```python
+def _stub_apps_assets(tmp_path, css="/*apps-css*/", js="/*apps-js*/"):
+    (tmp_path / "applications.css").write_text(css, encoding="utf-8")
+    (tmp_path / "applications.js").write_text(js, encoding="utf-8")
+    return tmp_path
+
+
+def test_applications_assets_are_empty_for_auto():
+    assert load_applications_assets("auto") == ("", "")
+
+
+def test_applications_assets_load_for_the_forest_themes(tmp_path):
+    base = _stub_apps_assets(tmp_path)
+    for name in ("forest", "forest-dawn"):
+        css, script_html = load_applications_assets(name, templates_dir=base)
+        assert css == "/*apps-css*/"
+        assert script_html == "<script>\n/*apps-js*/\n</script>"
+
+
+def test_applications_assets_reject_unknown_themes_terminators_and_missing_files(tmp_path):
+    with pytest.raises(ValueError):
+        load_applications_assets("sunset")
+    with pytest.raises(ValueError, match="script"):
+        load_applications_assets("forest", templates_dir=_stub_apps_assets(tmp_path, js="x</script>y"))
+    with pytest.raises(ValueError, match="style"):
+        load_applications_assets("forest", templates_dir=_stub_apps_assets(tmp_path, css="a</style>b"))
+    with pytest.raises(FileNotFoundError):
+        load_applications_assets("forest", templates_dir=tmp_path / "missing")
+```
+
+`tests/test_theme_assets.py` — append:
+
+```python
+APPS_CSS = DEFAULT_TEMPLATES_DIR / "applications.css"
+APPS_JS = DEFAULT_TEMPLATES_DIR / "applications.js"
+
+
+def test_applications_assets_exist_and_are_safe():
+    css = APPS_CSS.read_text(encoding="utf-8")
+    js = APPS_JS.read_text(encoding="utf-8")
+    assert css.isascii() and js.isascii()
+    assert "</script" not in js.lower() and "</style" not in css.lower()
+    assert "innerHTML" not in js, "applications.js must never use innerHTML"
+    assert "jobhunter:offer-mode" in js and "salary-compare" in js and "MutationObserver" in js
+    for selector in (".mf-badge", ".mf-ribbon", ".mf-compare"):
+        assert selector in css
+    assert "jobhunter:offer-mode" in JS.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_applications_js_parses():
+    result = subprocess.run(["node", "--check", str(APPS_JS)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+```
+
+`tests/test_render_applications.py` — append (the file already defines `_page`, `_golden_apps`, `TODAY`,
+`VERSIONS`, `_THEMES_DIR`, `_themed_page`):
+
+```python
+def test_themed_applications_page_carries_the_inbox_layer_once():
+    page = _themed_page("forest")
+    assert page.count("Inbox: Offers Incoming") == 1
+    assert page.count('id="mf-config"') == 1
+    assert page.count("jobhunter:offer-mode") >= 2  # offer.js dispatches it, applications.js listens
+    assert ".mf-badge" in page
+
+
+def test_auto_applications_page_has_no_inbox_layer():
+    page = _page(_golden_apps(), states={"acme|1": "active", "acme|2": "closed"})
+    assert "Inbox: Offers Incoming" not in page and "mf-badge" not in page
+```
+
+`tests/test_forest_theme_browser.py` — add `from datetime import date` (merge with the existing datetime
+import), `import render_applications` (next to `import render_radar`), then append:
+
+```python
+def _app_row(job_id, status, title=None, company="Acme"):
+    return {
+        "source_key": "acme", "job_id": job_id, "status": status,
+        "applied_at": None if status == "saved" else "2026-09-20", "notes": None,
+        "company": company, "title": title or f"Role {job_id}", "url": f"https://example.com/{job_id}",
+        "location": "Detroit, MI", "posted_at": "2026-09-01T00:00:00Z", "score": 82,
+        "salary_evidence": None, "created_at": "2026-09-20T10:00:00+00:00",
+        "updated_at": "2026-09-21T10:00:00+00:00",
+    }
+
+
+def _apps_file(tmp_path, theme_name, statuses):
+    profile = CandidateProfile(contact=ContactInfo(name="Jane Doe", email="jane@real-mail.test"))
+    page = render_applications.render_applications_page(
+        applications=[_app_row(str(i), s) for i, s in enumerate(statuses, 1)], job_states={},
+        versions={"applications": "v1"}, today=date(2026, 9, 26), archive_name="a.json",
+        theme=load_theme(theme_name, profile, templates_dir=THEMES_DIR),
+    )
+    out = tmp_path / f"apps-{theme_name}-{len(statuses)}.html"
+    out.write_text(page, encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("theme", ["forest", "forest-dawn"])
+def test_applications_page_becomes_the_inbox(browser, tmp_path, theme):
+    context, page, errors = _open(browser, _apps_file(tmp_path, theme, ["offer", "applied", "rejected"]))
+    try:
+        assert page.inner_text("h1") == "Inbox: Offers Incoming"
+        assert "Every row is a reply on its way." in page.inner_text("main")
+        offer_chip = page.inner_text('#app-counts [data-count-status="offer"]')
+        assert offer_chip.startswith("Yes") and offer_chip.strip().endswith("1")
+        assert page.inner_text('#app-counts [data-count-status="all"]').startswith("In inbox")
+        assert page.inner_text('.app-row[data-status="applied"] .mf-badge') == "Sent, and already loved"
+        assert page.inner_text('.app-row[data-status="rejected"] .mf-badge') == "Redirected"
+        assert page.locator('.app-row[data-status="offer"] option[value="offer"]').text_content() == "Offer"
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_offer_rows_get_a_ribbon_and_a_compare_button(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer", "applied"]))
+    try:
+        assert page.locator('.app-row[data-status="offer"] .mf-ribbon').count() == 1
+        assert page.locator('.app-row[data-status="applied"] .mf-ribbon').count() == 0
+        assert page.locator('.app-row[data-status="applied"] .mf-compare').count() == 0
+        page.click('.app-row[data-status="offer"] .mf-compare')
+        page.wait_for_function("document.getElementById('live-notice').textContent.length > 0")
+        notice = page.inner_text("#live-notice")
+        assert "salary-compare" in notice
+    finally:
+        context.close()
+
+
+def test_a_blocked_clipboard_still_shows_the_compare_prompt(browser, tmp_path):
+    blocker = "Object.defineProperty(navigator, 'clipboard', {get(){ return undefined; }});"
+    context, page, _ = _open(
+        browser, _apps_file(tmp_path, "forest", ["offer"]), init_script=blocker
+    )
+    try:
+        page.click(".mf-compare")
+        page.wait_for_function("document.getElementById('live-notice').textContent.length > 0")
+        assert "Use the salary-compare skill. I have an offer for Role 1 at Acme." in page.inner_text("#live-notice")
+    finally:
+        context.close()
+
+
+def test_a_status_change_updates_badge_ribbon_and_button_live(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["applied", "applied"]))
+    try:
+        row = page.locator(".app-row").first
+        row.locator(".app-status").select_option("offer")
+        page.wait_for_selector('.app-row[data-status="offer"] .mf-ribbon')
+        assert row.locator(".mf-badge").inner_text() == "Yes. Obviously."
+        assert row.locator(".mf-compare").count() == 1
+        row.locator(".app-status").select_option("applied")
+        page.wait_for_function("document.querySelectorAll('.mf-ribbon').length === 0")
+        assert row.locator(".mf-badge").inner_text() == "Sent, and already loved"
+        assert row.locator(".mf-compare").count() == 0
+    finally:
+        context.close()
+
+
+def test_offer_mode_off_restores_the_plain_applications_page(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer", "applied"]))
+    try:
+        page.click("#mf-toggle")
+        assert page.inner_text("h1") == "Applications"
+        chip = page.inner_text('#app-counts [data-count-status="offer"]')
+        assert chip.startswith("Offer") and chip.strip().endswith("1"), chip
+        assert page.inner_text('#app-counts [data-count-status="all"]').startswith("Total")
+        assert not page.is_visible(".mf-badge") and not page.is_visible(".mf-ribbon")
+        assert not page.is_visible(".mf-compare") and not page.is_visible(".mf-tag")
+        page.click("#mf-toggle")
+        assert page.inner_text("h1") == "Inbox: Offers Incoming"
+        assert page.inner_text('#app-counts [data-count-status="offer"]').startswith("Yes")
+    finally:
+        context.close()
+
+
+def test_the_empty_inbox_is_witty_and_restorable(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", []))
+    try:
+        assert "the first yes needs somewhere to land" in page.inner_text("#app-empty")
+        assert "press Track on a job" in page.inner_text("#app-empty")
+        page.click("#mf-toggle")
+        text = page.inner_text("#app-empty")
+        assert text.startswith("No tracked applications yet")
+        assert page.locator("#app-empty b").inner_text() == "Track"
+    finally:
+        context.close()
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `uv run pytest tests/test_theme.py tests/test_theme_assets.py tests/test_render_applications.py tests/test_forest_theme_browser.py -q`
+Expected: FAIL — `ImportError: cannot import name 'load_applications_assets'`; missing asset files; browser tests cannot find `.mf-badge`.
+
+- [ ] **Step 3: Implement `theme.py`.** Append after `load_theme`:
+
+```python
+def load_applications_assets(name: str, templates_dir: Path | None = None) -> tuple[str, str]:
+    """(css, script_html) of the Applications-page "inbox" layer; empty for `auto`.
+
+    Kept separate from `load_theme` so the radar never ships code it does not use.
+    """
+    if name not in THEMES:
+        raise ValueError(f"unknown theme {name!r}; choose one of {', '.join(THEMES)}")
+    if name == "auto":
+        return "", ""
+    base = Path(templates_dir) if templates_dir is not None else DEFAULT_TEMPLATES_DIR
+    css = (base / "applications.css").read_text(encoding="utf-8")
+    script = (base / "applications.js").read_text(encoding="utf-8")
+    if "</style" in css.lower():
+        raise ValueError("applications.css must not contain a style terminator")
+    if "</script" in script.lower():
+        raise ValueError("applications.js must not contain a script terminator")
+    return css, f"<script>\n{script}\n</script>"
+```
+
+Update the module docstring line "Pure apart from reading three bundled asset files: ..." to
+"Pure apart from reading the bundled asset files (`forest.css`, `forest-dawn.css`, `offer.js` for every
+page; `applications.css`, `applications.js` for the Applications page) under `scripts/templates/themes/`."
+
+- [ ] **Step 4: Implement `offer.js`.** In the `#mf-toggle` click handler, directly after the line
+`relabel(isOff());` add:
+
+```js
+      try {
+        window.dispatchEvent(new CustomEvent('jobhunter:offer-mode', { detail: { off: isOff() } }));
+      } catch (e) { /* no CustomEvent: other layers simply keep their current text */ }
+```
+
+- [ ] **Step 5: Implement `render_applications.py`.** Change the import to
+`from job_hunter.theme import EMPTY, ResolvedTheme, load_applications_assets`, and replace
+
+```python
+    active_theme = theme or EMPTY
+    if active_theme.script_html:
+        scripts.append(active_theme.script_html)
+```
+with
+```python
+    active_theme = theme or EMPTY
+    apps_css, apps_script = load_applications_assets(
+        active_theme.name, render_radar._TEMPLATE_DIR / "themes"
+    )
+    if active_theme.script_html:
+        scripts.append(active_theme.script_html)
+    if apps_script:
+        scripts.append(apps_script)
+```
+and change the token entry `"__THEME_CSS__": active_theme.css,` to
+`"__THEME_CSS__": active_theme.css + apps_css,`.
+
+- [ ] **Step 6: Create `scripts/templates/themes/applications.css`.**
+
+```css
+/* Applications page "inbox" layer of the forest themes. Appended after forest.css by
+   render_applications.py (only for forest / forest-dawn). Display only. */
+.mf-badge {
+  display: inline-block; margin: 2px 0 6px; padding: 2px 10px; border-radius: 999px;
+  font: 600 12px "IBM Plex Sans", system-ui, sans-serif; color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+.mf-badge[data-s="applied"] { color: var(--ink); }
+.mf-badge[data-s="interviewing"] { color: var(--accent); border-color: var(--accent); }
+.mf-badge[data-s="offer"] { background: var(--accent); color: #1a1205; border-color: var(--accent); }
+.mf-badge[data-s="rejected"], .mf-badge[data-s="withdrawn"] { font-style: italic; }
+html.mf-apps:not(.mf-off) .app-row[data-status="rejected"] { border-left-color: var(--muted); }
+.app-row[data-status="offer"] {
+  position: relative; box-shadow: inset 0 0 0 1px var(--accent), 0 0 24px rgba(255, 200, 110, .18);
+}
+.mf-ribbon {
+  position: absolute; top: -10px; right: 16px; padding: 3px 12px; border-radius: 999px;
+  background: var(--accent); color: #1a1205; font: 700 11px "IBM Plex Mono", monospace;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.mf-compare {
+  font: 600 13px "IBM Plex Sans", system-ui, sans-serif; color: #1a1205; background: var(--accent);
+  border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+html.mf-off .mf-badge, html.mf-off .mf-ribbon, html.mf-off .mf-compare { display: none; }
+```
+
+- [ ] **Step 7: Create `scripts/templates/themes/applications.js`.**
+
+```js
+// "Inbox" layer for the Applications page of the forest themes. Appended after offer.js by
+// render_applications.py only when a forest theme is active. Display only: it never changes a
+// status, a count or a saved value, and every node it adds is built with textContent.
+(function () {
+  'use strict';
+  var container = document.getElementById('app-rows');
+  var countsBar = document.getElementById('app-counts');
+  if (!container || !countsBar) return;
+  var root = document.documentElement;
+  root.classList.add('mf-apps');
+
+  var STATUS = {
+    saved: { badge: 'Bookmarked for greatness', chip: 'Bookmarked' },
+    applied: { badge: 'Sent, and already loved', chip: 'Sent' },
+    interviewing: { badge: 'They\u2019re clearly interested', chip: 'Interested' },
+    offer: { badge: 'Yes. Obviously.', chip: 'Yes' },
+    rejected: { badge: 'Redirected', chip: 'Redirected' },
+    withdrawn: { badge: 'You chose differently', chip: 'Chose differently' }
+  };
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function isOff() { return root.classList.contains('mf-off'); }
+
+  // ---- text swaps that must be restorable when offer mode is switched off ----
+  var swaps = [];
+  function addTextSwap(node, themed) {
+    var original = node.nodeValue;
+    swaps.push(function (on) { node.nodeValue = on ? themed : original; });
+  }
+  function applySwaps(on) { swaps.forEach(function (fn) { fn(on); }); }
+
+  var h1 = document.querySelector('h1');
+  if (h1 && h1.firstChild && h1.firstChild.nodeType === 3) {
+    addTextSwap(h1.firstChild, 'Inbox: Offers Incoming');
+    h1.insertAdjacentElement('afterend', el('p', 'mf-tag', 'Every row is a reply on its way.'));
+  }
+  Array.prototype.forEach.call(countsBar.querySelectorAll('[data-count-status]'), function (chip) {
+    var label = chip.firstChild;
+    if (!label || label.nodeType !== 3) return;
+    var status = chip.getAttribute('data-count-status');
+    var themed = status === 'all' ? 'In inbox' : (STATUS[status] || {}).chip;
+    if (themed) addTextSwap(label, themed + ' ');
+  });
+  var empty = document.getElementById('app-empty');
+  if (empty) {
+    var originalNodes = Array.prototype.slice.call(empty.childNodes);
+    var themedNode = document.createTextNode(
+      'Your inbox is empty. Not for long: the first yes needs somewhere to land. ' +
+      'Open the radar and press Track on a job.');
+    swaps.push(function (on) {
+      if (on) empty.replaceChildren(themedNode);
+      else empty.replaceChildren.apply(empty, originalNodes);
+    });
+  }
+
+  // ---- per-row decoration: added elements only, never a rewritten control ----
+  function badgeFor(row) {
+    var status = row.getAttribute('data-status');
+    var info = STATUS[status];
+    var main = row.querySelector('.app-main');
+    if (!main) return;
+    var badge = main.querySelector('.mf-badge');
+    if (!info) { if (badge) badge.remove(); return; }
+    if (!badge) {
+      badge = el('span', 'mf-badge');
+      main.insertBefore(badge, main.querySelector('.app-sub'));
+    }
+    badge.setAttribute('data-s', status);
+    badge.textContent = info.badge;
+  }
+  function offerExtras(row) {
+    var ribbon = row.querySelector('.mf-ribbon');
+    var button = row.querySelector('.mf-compare');
+    if (row.getAttribute('data-status') !== 'offer') {
+      if (ribbon) ribbon.remove();
+      if (button) button.remove();
+      return;
+    }
+    if (!ribbon) row.insertBefore(el('span', 'mf-ribbon', 'Congratulations'), row.firstChild);
+    var controls = row.querySelector('.app-controls');
+    if (controls && !button) {
+      var b = el('button', 'mf-compare', 'Compare this offer');
+      b.type = 'button';
+      controls.insertBefore(b, controls.querySelector('.app-delete'));
+    }
+  }
+  function decorate(row) { badgeFor(row); offerExtras(row); }
+
+  // ---- Compare this offer: copy a ready-to-paste salary-compare prompt ----
+  var noticeTimer = null;
+  function say(message, ms) {
+    var box = document.getElementById('live-notice');
+    if (!box) return;
+    box.textContent = message;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(function () { box.textContent = ''; }, ms || 8000);
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    }
+    return Promise.resolve(false);
+  }
+  container.addEventListener('click', function (evt) {
+    var btn = evt.target.closest ? evt.target.closest('.mf-compare') : null;
+    if (!btn) return;
+    var row = btn.closest('.app-row');
+    var titleEl = row && row.querySelector('.app-title');
+    if (!titleEl) return;
+    var sub = row.querySelector('.app-sub');
+    var company = sub ? sub.textContent.split('\u00b7')[0].trim() : '';
+    var prompt = 'Use the salary-compare skill. I have an offer for ' + titleEl.textContent.trim() +
+      (company ? ' at ' + company : '') + '. Ask me for any details you are missing.';
+    copyText(prompt).then(function (copied) {
+      say(copied ? 'Copied. Paste it into your agent to start the salary-compare skill.' : prompt,
+        copied ? 8000 : 30000);
+    });
+  });
+
+  // ---- keep rows in step with the page's own script (it rewrites data-status live) ----
+  Array.prototype.forEach.call(container.querySelectorAll('.app-row'), decorate);
+  new MutationObserver(function (records) {
+    records.forEach(function (rec) {
+      if (rec.type === 'attributes') {
+        if (rec.target.classList.contains('app-row')) decorate(rec.target);
+        return;
+      }
+      Array.prototype.forEach.call(rec.addedNodes, function (n) {
+        if (n.nodeType === 1 && n.classList.contains('app-row')) decorate(n);
+      });
+    });
+  }).observe(container, { attributes: true, attributeFilter: ['data-status'], subtree: true, childList: true });
+
+  applySwaps(!isOff());
+  window.addEventListener('jobhunter:offer-mode', function (evt) {
+    applySwaps(!(evt.detail && evt.detail.off));
+  });
+})();
+```
+
+- [ ] **Step 8: Run tests**
+
+Run: `uv run pytest tests/test_theme.py tests/test_theme_assets.py tests/test_render_applications.py tests/test_forest_theme_browser.py tests/test_render_radar.py tests/test_theme_render.py -q`
+Expected: PASS, including `test_applications_page_matches_golden` and `test_static_radar_matches_golden`
+unmodified (the default pages gain nothing).
+
+- [ ] **Step 9: Docs.** README theme section: add one sentence ("On the Applications page the same themes
+turn the list into an *inbox*: hopeful status badges, an offer ribbon and a **Compare this offer**
+button that copies a `salary-compare` prompt."). `docs/USAGE.md`: same sentence under "Themes".
+`docs/SPEC.md` ("Page themes"): document `load_applications_assets`, the `jobhunter:offer-mode` event
+and the added DOM. `CLAUDE.md` `theme.py` bullet: one sentence on the Applications layer (display only,
+`applications.css/js`, goldens unaffected).
+
+- [ ] **Step 10: Verify and commit**
+
+Run: `uv run pytest -q`, `node --test tests/js/*.test.js`, `uv run ruff check .` — all green (a failing
+`test_no_owner_pii_in_shareable_files` caused by an *untracked* local file is unrelated; report it by
+name and do not touch the file).
+
+```bash
+git add src/job_hunter/theme.py scripts/render_applications.py scripts/templates/themes tests README.md docs/USAGE.md docs/SPEC.md CLAUDE.md
+git commit -m "feat(theme): Applications page inbox layer (badges, offer row, compare prompt)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```
+
+### Task 11: The sky follows your progress (forest-dawn, Applications page)
+
+**Files:**
+- Modify: `scripts/templates/themes/applications.js` (rise logic + dusk overlay)
+- Modify: `scripts/templates/themes/applications.css` (progress-sky rules)
+- Test: `tests/test_forest_theme_browser.py`, `tests/test_theme_assets.py`
+- Docs: `docs/SPEC.md`, `CLAUDE.md` (one sentence each)
+
+**Interfaces:**
+- Consumes: Task 10's `applications.js`, `_apps_file`, `_app_row`; `#mf-bg` and `.mf-sun/.mf-rays/.mf-skyglow` from `offer.js`/`forest-dawn.css`.
+- Produces: `--mf-rise` (string number 0-1) on `<html>.style`; class `mf-dawn` on `<html>` for the sunrise theme; `div.mf-dusk` as the first child of `#mf-bg` (sunrise theme only).
+
+- [ ] **Step 1: Write the failing tests** — append to `tests/test_forest_theme_browser.py`:
+
+```python
+def _rise(page):
+    return float(page.evaluate("document.documentElement.style.getPropertyValue('--mf-rise')"))
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [([], 0.1), (["rejected", "withdrawn"], 0.1), (["saved"], 0.25), (["saved", "applied"], 0.5),
+     (["applied", "interviewing"], 0.75), (["interviewing", "offer", "rejected"], 1.0)],
+)
+def test_the_sky_rises_with_the_furthest_stage(browser, tmp_path, statuses, expected):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest-dawn", statuses))
+    try:
+        assert _rise(page) == expected
+    finally:
+        context.close()
+
+
+def test_the_sun_is_higher_after_an_offer_and_the_sky_follows_live_changes(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _apps_file(tmp_path, "forest-dawn", ["applied", "applied"]), reduced_motion="reduce",
+    )
+    try:
+        sun_bottom = "parseFloat(getComputedStyle(document.querySelector('.mf-sun')).bottom)"
+        before = page.evaluate(sun_bottom)
+        assert _rise(page) == 0.5
+        page.locator(".app-row").first.locator(".app-status").select_option("offer")
+        page.wait_for_function("document.documentElement.style.getPropertyValue('--mf-rise') === '1'")
+        assert page.evaluate(sun_bottom) > before
+    finally:
+        context.close()
+
+
+def test_the_night_theme_has_no_progress_sky(browser, tmp_path):
+    context, page, _ = _open(browser, _apps_file(tmp_path, "forest", ["offer"]))
+    try:
+        assert page.evaluate("document.querySelector('.mf-dusk')") is None
+        assert page.evaluate("document.documentElement.classList.contains('mf-dawn')") is False
+    finally:
+        context.close()
+```
+
+In `tests/test_theme_assets.py`, extend `test_applications_assets_exist_and_are_safe` with
+`assert "--mf-rise" in js and "--mf-rise" in css and ".mf-dusk" in css`.
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `uv run pytest tests/test_forest_theme_browser.py tests/test_theme_assets.py -q -k "rise or progress or sun_is_higher or night_theme_has_no or applications_assets"`
+Expected: FAIL (`--mf-rise` is empty -> `float('')` ValueError; no `.mf-dusk`).
+
+- [ ] **Step 3: Implement the JS.** In `applications.js`, add this block directly above the comment
+`// ---- keep rows in step with the page's own script ...`:
+
+```js
+  // ---- the sky follows your progress (forest-dawn only; applications.css reads --mf-rise) ----
+  var DAWN = root.getAttribute('data-theme') === 'forest-dawn';
+  var STAGE = { saved: 1, applied: 2, interviewing: 3, offer: 4 }; // rejected/withdrawn do not count
+  if (DAWN) {
+    root.classList.add('mf-dawn');
+    var bg = document.getElementById('mf-bg');
+    if (bg) bg.insertBefore(el('div', 'mf-dusk'), bg.firstChild);
+  }
+  function updateRise() {
+    if (!DAWN) return;
+    var best = 0;
+    Array.prototype.forEach.call(container.querySelectorAll('.app-row'), function (row) {
+      best = Math.max(best, STAGE[row.getAttribute('data-status')] || 0);
+    });
+    root.style.setProperty('--mf-rise', String(best === 0 ? 0.1 : best / 4));
+  }
+
+```
+
+At the end of the `MutationObserver` callback body (after the `records.forEach(...)` call, still inside the
+callback) add `updateRise();`, and directly after the initial
+`Array.prototype.forEach.call(container.querySelectorAll('.app-row'), decorate);` line add `updateRise();`.
+
+- [ ] **Step 4: Implement the CSS** — append to `applications.css`:
+
+```css
+/* ---- progress sky (forest-dawn only): --mf-rise is 0..1, set by applications.js ---- */
+html.mf-apps.mf-dawn .mf-sun, html.mf-apps.mf-dawn .mf-rays { bottom: calc(-4% + 37% * var(--mf-rise, 1)); }
+html.mf-apps.mf-dawn .mf-skyglow { opacity: calc(.15 + .85 * var(--mf-rise, 1)); }
+.mf-dusk {
+  inset: 0; opacity: calc(.8 * (1 - var(--mf-rise, 1)));
+  background: linear-gradient(180deg, #0b0a22 0%, #1b1445 55%, #2a1c52 100%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  html.mf-apps.mf-dawn .mf-sun, html.mf-apps.mf-dawn .mf-rays { transition: bottom 1.6s ease; }
+  html.mf-apps.mf-dawn .mf-skyglow, html.mf-apps.mf-dawn .mf-dusk { transition: opacity 1.6s ease; }
+}
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `uv run pytest tests/test_forest_theme_browser.py tests/test_theme_assets.py tests/test_render_applications.py -q`
+Expected: PASS.
+
+- [ ] **Step 6: Manual check, then docs and commit.** Open a themed Applications page (serve the live
+radar with `radar.theme: forest-dawn`, open `/applications`): add a first application (sky starts low and
+blue), move it Saved -> Applied -> Interviewing -> Offer and watch the sun climb; at **Offer** the banner
+and celebration play and the sky is the full golden sunrise; delete the row and confirm the sky falls back
+to 0.1. Add one sentence each to `docs/SPEC.md` (progress sky, `--mf-rise` mapping) and `CLAUDE.md`.
+Run `uv run pytest -q`, `node --test tests/js/*.test.js`, `uv run ruff check .`.
+
+```bash
+git add scripts/templates/themes tests docs/SPEC.md CLAUDE.md
+git commit -m "feat(theme): Applications sky follows pipeline progress (forest-dawn)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```

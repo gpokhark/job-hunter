@@ -192,3 +192,53 @@ Requested after the first implementation; supersedes the "Signed & Sealed" visio
   Height changes animate only when reduced motion is not requested.
 - **E4 Compatibility.** No Python, config, token or event-contract changes. The seal and the
   `Signed & Sealed` label are retired; assets stay ASCII; every dynamic string is still `textContent`.
+
+## 12. Addendum: the Applications page becomes the "inbox" (2026-10-03)
+
+Follow-up to section 11. Today the Applications page only receives the backdrop, palette, offer-mode
+switch and celebration. This addendum gives it its own, witty, honest layer. Everything is **display
+only**: no status, count, saved value, select option or server markup changes, so default pages and
+both goldens stay byte-identical.
+
+- **B1 Framing (themes `forest`, `forest-dawn`).** `<h1>` "Applications" reads **"Inbox: Offers
+  Incoming"** with a `.mf-tag` line "Every row is a reply on its way." The count bar keeps every number
+  and relabels its text: Total -> `In inbox`, Saved -> `Bookmarked`, Applied -> `Sent`, Interviewing ->
+  `Interested`, Offer -> `Yes`, Rejected -> `Redirected`, Withdrawn -> `Chose differently`. The empty
+  state reads "Your inbox is empty. Not for long: the first yes needs somewhere to land. Open the radar
+  and press Track on a job."
+- **B2 Status badges.** Each row gets an added `span.mf-badge` (never a rewritten control):
+
+  | status | badge |
+  |---|---|
+  | saved | Bookmarked for greatness |
+  | applied | Sent, and already loved |
+  | interviewing | They're clearly interested |
+  | offer | Yes. Obviously. |
+  | rejected | Redirected (calm muted border instead of red) |
+  | withdrawn | You chose differently |
+
+  The `<select class="app-status">` keeps its real option names (`Saved`, `Applied`, ...): it is a
+  functional control that the page's own script rewrites.
+- **B3 Offer row.** A row whose status is `offer` gains a gold `Congratulations` ribbon and a
+  **Compare this offer** button. The button copies (client-side, no server change) the prompt
+  `Use the salary-compare skill. I have an offer for {title} at {company}. Ask me for any details you
+  are missing.` and reports it in the page's `#live-notice`; if the clipboard is blocked the prompt
+  itself is shown for 30 s. Rows react live: badge, ribbon and button follow `data-status` changes made
+  by the page's own script (a `MutationObserver`).
+- **B4 Progress sky (`forest-dawn` only).** `--mf-rise` (0-1) on `<html>` is set from the furthest
+  stage any row has reached: none 0.1, saved 0.25, applied 0.5, interviewing 0.75, offer 1 (rejected and
+  withdrawn rows do not count). The sun's height, sky glow and a dusk overlay follow it, so the page
+  opens in pre-dawn blue and reaches the full golden sunrise at the first offer. Default (variable
+  unset) is the full sunrise. Transitions animate only without reduced-motion.
+- **B5 Contracts.**
+  - New assets `scripts/templates/themes/applications.css` and `applications.js`, loaded **only** by
+    `render_applications_page` through `theme.load_applications_assets(name, templates_dir)` ->
+    `(css, script_html)`; `auto` returns `("", "")`.
+  - `offer.js` dispatches `window` event `jobhunter:offer-mode` (`detail: {off: boolean}`) after the
+    switch is toggled; `applications.js` restores/reapplies its text swaps from it.
+  - `applications.js` adds class `mf-apps` (and `mf-dawn` for the sunrise theme) to `<html>`, uses no
+    `innerHTML`, and every added node hides under `html.mf-off`.
+  - Offer mode off restores the h1, count-bar labels and empty state exactly; badges, ribbon, button and
+    tagline are hidden. The progress sky is a visual and is not affected by offer mode.
+- **B6 Out of scope.** Changes to the radar page; a progress sky for the night theme; a server-side
+  salary prompt/export endpoint; custom wording for the badges.
