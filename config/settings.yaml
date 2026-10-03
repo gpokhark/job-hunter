@@ -44,4 +44,12 @@ retention:
 # longer than that.
 pipeline:
   stage_timeout_seconds: 28800  # 8 hours
+# Look of the generated radar / applications pages
+# (docs/superpowers/specs/2026-10-03-forest-offer-theme-design.md).
+#   auto        the plain light/dark page (default)
+#   forest      night forest
+#   forest-dawn sunrise
+# `scripts/render_radar.py --theme ...` overrides this for a single run.
+radar:
+  theme: auto
 

@@ -153,3 +153,17 @@ manifestation text without a re-render.
 | Template edit breaks existing tests | tokens only; `auto` golden test written first |
 | Prototype files live in git-ignored `brag-output/` | plan copies them into `scripts/templates/themes/` as the tracked source |
 | Live scripts regress | event dispatch is additive; node tests + existing `test_radar_live_js.py` |
+
+## 10. Amendments made while planning (2026-10-03)
+
+These supersede the matching statements above.
+
+- **A1 Tokens.** The renderer substitutes tokens in a single regex pass over `__[A-Z][A-Z0-9_]*__`,
+  and golden tests demand byte-identical `auto` output, so no `__THEME_BOOT__` token exists. Radar:
+  theme CSS is appended to the value of the existing `__LIVE_STYLE__` token and the theme script to
+  `__LIVE_SCRIPT__`. Applications: one new `__THEME_CSS__` token directly before `</style>`, and the
+  theme script is appended to the `__SCRIPTS__` value. `ResolvedTheme` is `(name, css, script_html)`.
+- **A2 Specificity.** Because there is no boot script, theme CSS selectors use `:root:root:root`
+  (0,3,0) instead of `[data-theme=...]`; `offer.js` still sets `data-theme` for hooks.
+- **A3 Honorifics.** The first name skips a leading honorific (`Dr`, `Mr`, `Mrs`, `Ms`, `Miss`,
+  `Mx`, `Prof`, with or without a trailing dot); a name made only of honorifics yields no first name.

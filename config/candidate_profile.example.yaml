@@ -52,3 +52,11 @@ contact:
   phone: "+1 555 555 0100"
   linkedin: "https://www.linkedin.com/in/your-handle"
   github: "https://github.com/your-handle"
+
+# Optional: display text for the forest themes' "Offer Season" layer (settings.yaml radar.theme).
+# Never a filter or a score input. `use_first_name: false` keeps your name out of the pages.
+# vision:
+#   role: "Your next role"
+#   pay_note: "Better. Higher paying."
+#   start_note: "Start date: soon"
+#   use_first_name: true

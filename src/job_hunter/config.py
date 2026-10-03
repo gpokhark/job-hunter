@@ -97,6 +97,13 @@ class PipelineConfig(BaseModel):
     )
 
 
+class RadarConfig(BaseModel):
+    """Look of the generated HTML pages. `auto` is the plain light/dark page; the forest themes
+    are opt-in (docs/superpowers/specs/2026-10-03-forest-offer-theme-design.md)."""
+
+    theme: Literal["auto", "forest", "forest-dawn"] = "auto"
+
+
 class Settings(BaseModel):
     version: int = 1
     database_path: Path = Path("data/jobs.sqlite3")
@@ -106,6 +113,7 @@ class Settings(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     retention: RetentionConfig = RetentionConfig()
     pipeline: PipelineConfig = PipelineConfig()
+    radar: RadarConfig = RadarConfig()
 
 
 class CompanyConfig(BaseModel):
@@ -181,6 +189,16 @@ def contact_problems(contact: ContactInfo) -> list[str]:
     return problems
 
 
+class VisionConfig(BaseModel):
+    """Display text for the forest themes' "Offer Season" layer. Never a filter or a score input.
+    `use_first_name: false` keeps the applicant's name out of the generated pages."""
+
+    role: str = Field("Your next role", min_length=1, max_length=60)
+    pay_note: str = Field("Better. Higher paying.", min_length=1, max_length=60)
+    start_note: str = Field("Start date: soon", min_length=1, max_length=60)
+    use_first_name: bool = True
+
+
 class CandidateProfile(BaseModel):
     profile_version: int = 1
     resume_path: Path | None = None
@@ -193,6 +211,7 @@ class CandidateProfile(BaseModel):
     minimum_recommendation_score: int = Field(75, ge=0, le=100)
     location: dict[str, Any] = Field(default_factory=dict)
     contact: ContactInfo = Field(default_factory=ContactInfo)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
