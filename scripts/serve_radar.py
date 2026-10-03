@@ -316,6 +316,7 @@ def render_applications_html(cfg: ServerConfig) -> str:
         applications=rows, job_states=states,
         versions=_versions(cfg, feedback_rows, None, rows) | {"archive": None},
         today=date.today(), archive_name=archive_name,
+        theme=render_radar.resolve_page_theme(cfg.args, cfg.settings, cfg.profile_loader()),
     )
 
 

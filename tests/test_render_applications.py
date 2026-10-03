@@ -1,7 +1,13 @@
+import os
 import re
 import sys
 from datetime import date
 from pathlib import Path
+
+import pytest
+
+from job_hunter.config import CandidateProfile, ContactInfo
+from job_hunter.theme import EMPTY, load_theme
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from render_applications import (  # noqa: E402
@@ -121,3 +127,54 @@ def test_template_tokens_in_titles_and_notes_render_literally():
     html = _page([_app(title=hostile, notes=hostile)])
     assert html.count(hostile) == 2
     assert html.count("<script") == 4
+
+
+_APPS_GOLDEN = Path(__file__).parent / "fixtures" / "applications_static_golden.html"
+
+
+def _golden_apps():
+    return [
+        _app(job_id="1", status="offer", applied_at="2026-09-10", title="Perception Engineer"),
+        _app(job_id="2", status="applied", notes="Sent a note"),
+    ]
+
+
+def test_applications_page_matches_golden():
+    page = _page(_golden_apps(), states={"acme|1": "active", "acme|2": "closed"})
+    if os.environ.get("UPDATE_APPLICATIONS_GOLDEN") == "1":
+        _APPS_GOLDEN.write_text(page, encoding="utf-8")
+        pytest.skip("golden regenerated")
+    assert page == _APPS_GOLDEN.read_text(encoding="utf-8")
+
+
+_THEMES_DIR = Path(__file__).parents[1] / "scripts" / "templates" / "themes"
+
+
+def _themed_page(name):
+    theme = load_theme(
+        name,
+        CandidateProfile(contact=ContactInfo(name="Jane Doe", email="jane@real-mail.test")),
+        templates_dir=_THEMES_DIR,
+    )
+    return render_applications_page(
+        applications=_golden_apps(), job_states={}, versions=VERSIONS, today=TODAY,
+        archive_name="a.json", theme=theme,
+    )
+
+
+def test_auto_theme_leaves_the_applications_page_unchanged():
+    plain = _page(_golden_apps(), states={"acme|1": "active", "acme|2": "closed"})
+    again = render_applications_page(
+        applications=_golden_apps(), job_states={"acme|1": "active", "acme|2": "closed"},
+        versions=VERSIONS, today=TODAY, archive_name="default_2026-09-26.json", theme=EMPTY,
+    )
+    assert again == plain
+    assert "mf-config" not in plain and "__THEME_CSS__" not in plain
+
+
+def test_forest_theme_themes_the_applications_page():
+    page = _themed_page("forest-dawn")
+    assert ":root:root:root" in page and ".mf-sun" in page
+    assert page.count('id="mf-config"') == 1
+    assert page.rstrip().endswith("</script>")
+    assert "__THEME_CSS__" not in page
