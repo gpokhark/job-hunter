@@ -339,7 +339,7 @@ ranked `SearchResult` JSON.
   `scripts/*.py` entry point (`apply_radar_feedback.py`, `assessments_to_csv.py`,
   `check_lm_studio.py`, `diff_profile.py`, `log_resume.py`, `measure_resume.py`, `refilter_archive.py`, `render_radar.py`,
   `review_with_lm_studio.py`, `suggest_exclusions.py`); not `endpoint_probe.py`/
-  `prototype_tfidf_broad_match.py`/`search_to_csv.py` (diagnostic/prototype/pure-stdio), and hook
+  `prototype_tfidf_broad_match.py`/`search_to_csv.py`/`render_applications.py`/`test_tesla.py` (diagnostic/prototype/pure-stdio), and hook
   scripts take the project root positionally per their own runtime convention instead. Authoritative
   list: `grep -L add_project_argument scripts/*.py` (`docs/SPEC.md`).
 
