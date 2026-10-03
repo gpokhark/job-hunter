@@ -272,6 +272,9 @@ ranked `SearchResult` JSON.
   (`display_first_name`), dropped for placeholders or
   `vision.use_first_name: false`; all dynamic text is written with `textContent`. Live pages dispatch
   `jobhunter:application-status` only for a save that *newly* reaches `offer`.
+  The vision card is an email-style notification (`.mf-offer.mf-mail`); `announce()` slides a mail
+  banner in before the celebration, and `syncGap()` reserves space so the expanded card never covers
+  the stats block.
 
 - **`scripts/refilter_archive.py`** — answers "what would this already-collected archive's
   candidates look like under the *current* profile," no network. Rebuilds `candidates` from

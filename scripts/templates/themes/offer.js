@@ -90,6 +90,97 @@
     node.setAttribute('data-mf-new', next);
     node.textContent = next;
   }
+  // ---- the offer email: one builder for the masthead card and the sliding banner ----
+  var WHO = name ? 'Dear ' + name + ',' : 'Hello,';
+  var MAIL_GAP_PX = 32; // matches the page's own vertical rhythm between blocks
+  var mailCard = null, mailGap = null;
+  function mailHead() {
+    var frag = document.createDocumentFragment();
+    var top = el('div', 'mm-top');
+    var app = el('span', 'mm-app');
+    app.appendChild(el('i', 'mm-icon'));
+    app.appendChild(document.createTextNode('MAIL'));
+    top.appendChild(app);
+    top.appendChild(el('span', null, 'now'));
+    frag.appendChild(top);
+    var row = el('div', 'mm-row');
+    row.appendChild(el('div', 'mm-av', 'H'));
+    var txt = el('div', 'mm-txt');
+    var from = el('div', 'mm-from', 'Hiring Team ');
+    from.appendChild(el('small', null, '\u00b7 Your future employer'));
+    txt.appendChild(from);
+    var subj = el('div', 'mm-subj');
+    subj.appendChild(el('b', 'mm-dot'));
+    subj.appendChild(document.createTextNode('Offer of employment: ' + cfg.role));
+    txt.appendChild(subj);
+    txt.appendChild(el('div', 'mm-prev',
+      WHO + ' we\u2019re delighted to offer you the position of ' + cfg.role + '. ' + cfg.pay + ' ' + cfg.when));
+    row.appendChild(txt);
+    frag.appendChild(row);
+    return frag;
+  }
+  // Keep the expanded email from covering the stats block: reserve exactly the missing space.
+  // While the spacer is empty its margins collapse into its neighbours; once it has height the
+  // smaller of (previous block's bottom margin, stats block's top margin) stops collapsing and is
+  // added on top, so that amount is subtracted to land on exactly MAIL_GAP_PX below the card.
+  function syncGap() {
+    if (!mailCard || !mailGap) return;
+    var stats = mailGap.parentNode && mailGap.parentNode.querySelector('.stats-group');
+    var need = 0;
+    if (stats && mailCard.classList.contains('open') && getComputedStyle(mailCard).position === 'absolute') {
+      var prev = mailGap.previousElementSibling;
+      var prevBottom = prev ? parseFloat(getComputedStyle(prev).marginBottom) || 0 : 0;
+      var statsTop = parseFloat(getComputedStyle(stats).marginTop) || 0;
+      var absorbed = Math.min(prevBottom, statsTop);
+      var current = mailGap.offsetHeight;
+      var resting = stats.getBoundingClientRect().top - (current > 0 ? current + absorbed : 0);
+      need = Math.max(0, Math.ceil(mailCard.getBoundingClientRect().bottom + MAIL_GAP_PX - resting - absorbed));
+    }
+    mailGap.style.height = need + 'px';
+  }
+  function buildMailCard() {
+    var card = el('aside', 'mf-offer mf-mail');
+    card.setAttribute('aria-label', 'Offer email');
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-expanded', 'false');
+    card.tabIndex = 0;
+    card.appendChild(mailHead());
+    var body = el('div', 'mm-body');
+    body.appendChild(el('p', null, WHO));
+    var p2 = el('p');
+    p2.appendChild(document.createTextNode('We\u2019re delighted to offer you the position of '));
+    p2.appendChild(el('b', null, cfg.role));
+    p2.appendChild(document.createTextNode('. '));
+    p2.appendChild(el('span', 'hl', cfg.pay));
+    body.appendChild(p2);
+    body.appendChild(el('p', null, cfg.when + '. Welcome to the team.'));
+    var sig = el('p');
+    sig.appendChild(document.createTextNode('Warm regards,'));
+    sig.appendChild(document.createElement('br'));
+    sig.appendChild(document.createTextNode('The Hiring Team'));
+    body.appendChild(sig);
+    var foot = el('div', 'mm-foot');
+    foot.appendChild(el('span', 'mm-att', 'Offer_Letter.pdf \u00b7 1 page'));
+    var accept = el('button', 'mm-accept', 'Accept offer \u2713');
+    accept.type = 'button';
+    foot.appendChild(accept);
+    body.appendChild(foot);
+    card.appendChild(body);
+    function toggle() {
+      var open = card.classList.toggle('open');
+      card.setAttribute('aria-expanded', open ? 'true' : 'false');
+      syncGap();
+    }
+    card.addEventListener('click', function (evt) {
+      if (evt.target.closest('.mm-accept')) { celebrate(); return; }
+      toggle();
+    });
+    card.addEventListener('keydown', function (evt) {
+      if ((evt.key === 'Enter' || evt.key === ' ') && evt.target === card) { evt.preventDefault(); toggle(); }
+    });
+    return card;
+  }
+
   function decorateRadar() {
     var head = document.querySelector('.masthead');
     var sub = head.querySelector('.subhead');
@@ -104,19 +195,13 @@
       line.addEventListener('click', function () { idx = (idx + 1) % LINES.length; line.textContent = lineText(idx); });
       sub.insertAdjacentElement('afterend', line);
     }
-    var card = el('aside', 'mf-offer');
-    card.setAttribute('aria-label', 'Vision card');
-    card.appendChild(el('div', 'k', 'Signed & Sealed'));
-    card.appendChild(el('div', 't', 'Your next role, already in the envelope.'));
-    if (name) card.appendChild(el('div', 'd', 'Dear ' + name + ','));
-    card.appendChild(el('div', 'r', cfg.role));
-    var pay = el('div', 'p');
-    pay.appendChild(el('b', null, cfg.pay));
-    pay.appendChild(document.createElement('br'));
-    pay.appendChild(document.createTextNode(cfg.when));
-    card.appendChild(pay);
-    card.appendChild(el('div', 'seal', '\u2713'));
-    head.insertBefore(card, head.firstChild);
+    mailGap = el('div', 'mf-mail-gap');
+    mailGap.setAttribute('aria-hidden', 'true');
+    var firstStats = head.querySelector('.stats-group');
+    if (firstStats) head.insertBefore(mailGap, firstStats); else head.appendChild(mailGap);
+    mailCard = buildMailCard();
+    head.insertBefore(mailCard, head.firstChild);
+    window.addEventListener('resize', syncGap);
 
     var subs = {
       'Strong matches': 'Somewhere in here, it\'s already a yes.',
@@ -157,7 +242,7 @@
     });
     document.body.appendChild(tg);
     var pv = el('button', null, 'preview: the moment'); pv.id = 'mf-preview'; pv.type = 'button';
-    pv.addEventListener('click', celebrate);
+    pv.addEventListener('click', announce);
     document.body.appendChild(pv);
   }
 
@@ -184,11 +269,36 @@
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(hide, 5200);
   }
+  // The banner slides in first, then the full-screen moment; both stay silent in offer mode off.
+  var TOAST_MS = 1800;
+  var announcing = false;
+  function announce() {
+    if (announcing || isOff()) return;
+    announcing = true;
+    root.classList.add('mf-announcing'); // the masthead card steps aside while the banner shows
+    var toast = el('div', 'mf-toast mf-mail');
+    toast.id = 'mf-toast';
+    toast.setAttribute('role', 'status');
+    toast.appendChild(mailHead());
+    document.body.appendChild(toast);
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () { toast.classList.add('in'); });
+    });
+    setTimeout(function () {
+      toast.classList.remove('in');
+      setTimeout(function () {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+        root.classList.remove('mf-announcing');
+        announcing = false;
+      }, 450);
+      if (!isOff()) celebrate();
+    }, TOAST_MS);
+  }
   window.addEventListener('jobhunter:application-status', function (evt) {
     var d = evt && evt.detail;
-    if (d && d.status === 'offer' && !isOff()) celebrate();
+    if (d && d.status === 'offer') announce();
   });
-  window.JobHunterTheme = { celebrate: celebrate };
+  window.JobHunterTheme = { celebrate: celebrate, announce: announce };
 
   buildBackdrop();
   if (isRadar) decorateRadar();

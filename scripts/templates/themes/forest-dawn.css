@@ -49,11 +49,6 @@
   @keyframes mf-sunrise { from { transform: translateY(120px); opacity: .2; } to { transform: none; opacity: 1; } }
   @keyframes mf-glowup { from { opacity: .25; } to { opacity: 1; } }
 }
-.mf-offer { background: linear-gradient(160deg, #2c2352, #1d1739); border-color: #6a58a0; }
-.mf-offer .seal {
-  background: radial-gradient(circle at 35% 30%, #fff1b8, #f2a93f 70%);
-  box-shadow: 0 0 22px 6px rgba(255, 200, 110, .55), 0 4px 12px rgba(0, 0, 0, .5);
-}
 #mf-toggle, #mf-preview { background: rgba(21, 15, 38, .88); }
 #mf-win { background: radial-gradient(circle at 50% 88%, rgba(255, 196, 107, .45), rgba(21, 15, 38, .94) 62%); }
 @media (max-width: 760px) {

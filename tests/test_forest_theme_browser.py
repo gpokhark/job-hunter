@@ -57,8 +57,13 @@ def browser():
         instance.close()
 
 
-def _open(browser, path, color_scheme="light", init_script=None):
-    context = browser.new_context(color_scheme=color_scheme)
+def _open(browser, path, color_scheme="light", init_script=None, reduced_motion=None, viewport=None):
+    options = {"color_scheme": color_scheme}
+    if reduced_motion:
+        options["reduced_motion"] = reduced_motion
+    if viewport:
+        options["viewport"] = viewport
+    context = browser.new_context(**options)
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -93,20 +98,100 @@ def test_titles_swap_restore_and_celebrate(browser, tmp_path, theme):
         context.close()
 
 
-def test_celebration_rules_follow_offer_mode(browser, tmp_path):
+FIRE = ("window.dispatchEvent(new CustomEvent('jobhunter:application-status',"
+        "{detail:{status:'offer'}}))")
+
+
+def _win_on(page):
+    return "on" in (page.get_attribute("#mf-win", "class") or "")
+
+
+def test_an_offer_event_shows_the_banner_then_the_moment(browser, tmp_path):
     context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
     try:
-        fire = ("window.dispatchEvent(new CustomEvent('jobhunter:application-status',"
-                "{detail:{status:'offer'}}))")
-        page.evaluate(fire)
-        assert "on" in page.get_attribute("#mf-win", "class")
+        page.evaluate(FIRE)
+        page.wait_for_selector("#mf-toast.in")
+        assert not _win_on(page), "the banner comes first"
+        page.wait_for_selector("#mf-win.on", timeout=6000)
+        page.wait_for_selector("#mf-toast", state="detached", timeout=3000)
         page.click("#mf-win")
-        page.click("#mf-toggle")
-        page.evaluate(fire)
-        assert "on" not in (page.get_attribute("#mf-win", "class") or "")
         page.evaluate("window.dispatchEvent(new CustomEvent('jobhunter:application-status',"
                       "{detail:{status:'applied'}}))")
-        assert "on" not in (page.get_attribute("#mf-win", "class") or "")
+        page.wait_for_timeout(300)
+        assert page.locator("#mf-toast").count() == 0 and not _win_on(page)
+    finally:
+        context.close()
+
+
+def test_offer_mode_off_shows_neither_banner_nor_moment(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
+    try:
+        page.click("#mf-toggle")
+        page.evaluate(FIRE)
+        page.wait_for_timeout(2600)
+        assert page.locator("#mf-toast").count() == 0 and not _win_on(page)
+    finally:
+        context.close()
+
+
+def test_accept_offer_celebrates_at_once_without_a_banner(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest-dawn"))
+    try:
+        page.click(".mf-offer")
+        page.click(".mm-accept")
+        assert _win_on(page)
+        assert page.locator("#mf-toast").count() == 0
+    finally:
+        context.close()
+
+
+def test_the_mail_card_expands_and_collapses_by_click_and_keyboard(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest"))
+    try:
+        card = page.locator(".mf-offer")
+        assert card.get_attribute("aria-expanded") == "false"
+        assert not page.is_visible(".mm-body")
+        assert "Hiring Team" in card.inner_text() and "Your future employer" in card.inner_text()
+        card.click()
+        assert card.get_attribute("aria-expanded") == "true" and page.is_visible(".mm-body")
+        assert "Dear Jane," in page.inner_text(".mm-body")
+        card.focus()
+        page.keyboard.press("Enter")
+        assert card.get_attribute("aria-expanded") == "false"
+    finally:
+        context.close()
+
+
+def test_expanded_mail_card_clears_the_stats_block(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _page_file(tmp_path, "forest-dawn"), reduced_motion="reduce",
+        viewport={"width": 1440, "height": 900},
+    )
+    try:
+        page.click(".mf-offer")
+        card = page.evaluate("(() => { const r = document.querySelector('.mf-offer').getBoundingClientRect();"
+                             " return {bottom: r.bottom, right: r.right}; })()")
+        stats = page.evaluate("(() => { const g = document.querySelector('.stats-group').getBoundingClientRect(),"
+                              " s = document.querySelector('.stats').getBoundingClientRect();"
+                              " return {top: g.top, right: s.right}; })()")
+        gap = stats["top"] - card["bottom"]
+        assert 31 <= gap <= 34, f"expected the page's 32px rhythm below the card, got {gap}"
+        assert abs(card["right"] - stats["right"]) < 1, "card must stay right-aligned with the stats box"
+        page.click(".mf-offer")
+        assert page.evaluate("document.querySelector('.mf-mail-gap').offsetHeight") == 0
+    finally:
+        context.close()
+
+
+def test_a_narrow_layout_reserves_no_gap(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _page_file(tmp_path, "forest"), reduced_motion="reduce",
+        viewport={"width": 430, "height": 900},
+    )
+    try:
+        page.click(".mf-offer")
+        assert page.evaluate("document.querySelector('.mf-mail-gap').offsetHeight") == 0
+        assert page.evaluate("getComputedStyle(document.querySelector('.mf-offer')).position") == "static"
     finally:
         context.close()
 
@@ -130,6 +215,7 @@ def test_hostile_vision_text_stays_text(browser, tmp_path):
     try:
         assert page.evaluate("document.querySelectorAll('.mf-offer img').length") == 0
         assert page.evaluate("window.__pwned === undefined")
+        page.click(".mf-offer")
         assert hostile in page.inner_text(".mf-offer")
         assert errors == []
     finally:
@@ -159,5 +245,34 @@ def test_a_throwing_localstorage_does_not_break_the_page(browser, tmp_path):
         assert page.inner_text("h1") == "Offer Season"
         page.click("#mf-toggle")
         assert page.inner_text("h1") == "Test Radar"
+    finally:
+        context.close()
+
+
+def test_the_masthead_card_steps_aside_while_the_banner_shows(browser, tmp_path):
+    context, page, _ = _open(browser, _page_file(tmp_path, "forest-dawn"))
+    try:
+        visibility = "getComputedStyle(document.querySelector('.mf-offer')).visibility"
+        page.evaluate(FIRE)
+        page.wait_for_selector("#mf-toast.in")
+        assert page.evaluate(visibility) == "hidden", "two identical emails would be on screen"
+        page.wait_for_selector("#mf-toast", state="detached", timeout=6000)
+        assert page.evaluate(visibility) == "visible"
+    finally:
+        context.close()
+
+
+def test_floating_buttons_do_not_collide_on_a_phone(browser, tmp_path):
+    context, page, _ = _open(
+        browser, _page_file(tmp_path, "forest"), reduced_motion="reduce",
+        viewport={"width": 430, "height": 900},
+    )
+    try:
+        boxes = page.evaluate(
+            "['#mf-toggle', '#mf-preview'].map(s => { const r = document.querySelector(s)"
+            ".getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; })"
+        )
+        (al, at, ar, ab), (bl, bt, br, bb) = boxes
+        assert ar <= bl or br <= al or ab <= bt or bb <= at, boxes
     finally:
         context.close()

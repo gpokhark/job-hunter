@@ -321,7 +321,7 @@ Optional `vision:` block in `config/candidate_profile.yaml` (display text only):
 
 ```yaml
 vision:
-  role: "Staff Perception Engineer"   # shown on the Signed & Sealed card
+  role: "Staff Perception Engineer"   # used in the offer email card
   pay_note: "Better. Higher paying."
   start_note: "Start date: soon"
   use_first_name: true                 # false keeps your name out of the generated pages

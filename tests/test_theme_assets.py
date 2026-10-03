@@ -23,7 +23,8 @@ def test_css_outranks_the_page_dark_mode_block_and_defines_the_components():
     css = FOREST.read_text(encoding="utf-8")
     assert ":root:root:root" in css
     assert "[data-theme" not in css
-    for selector in ("#mf-bg", "#mf-win", "#mf-toggle", "#mf-preview", ".mf-offer", ".mf-line"):
+    for selector in ("#mf-bg", "#mf-win", "#mf-toggle", "#mf-preview", ".mf-offer", ".mf-mail",
+                     ".mf-toast", ".mf-mail-gap", ".mm-accept", ".mf-line"):
         assert selector in css
     assert "prefers-reduced-motion" in css
     dawn = DAWN.read_text(encoding="utf-8")
@@ -38,6 +39,7 @@ def test_js_is_safe_by_construction():
     assert "jobhunter:application-status" in js
     assert "job-hunter-offer-mode" in js
     assert "JobHunterTheme" in js
+    assert "announce" in js and "mf-toast" in js and "syncGap" in js
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

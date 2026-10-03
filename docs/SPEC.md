@@ -1706,3 +1706,11 @@ block is `<script type="application/json" id="mf-config">` with keys `theme`, `f
 `textContent`. The live pages dispatch `window` event `jobhunter:application-status`
 (`detail: {status: "offer", key}`) after the server acknowledges a save that newly reached `offer`
 (`RadarLive.isNewOffer`); the theme listens and shows the celebration unless offer mode is off.
+
+The masthead vision card is a mail notification (`aside.mf-offer.mf-mail`) that expands into the
+offer email; sender text is fixed (`Hiring Team - Your future employer`), subject/preview/body come
+from the `mf-config` block. A zero-height spacer (`.mf-mail-gap`) before the first stats block is
+sized by `syncGap()` so the expanded card never covers it (32 px below the card). A real offer event
+and the preview button call `JobHunterTheme.announce()` (a `#mf-toast` banner for about 1.8 s, the
+masthead card hidden meanwhile, then the celebration); `celebrate()` stays immediate and is what
+**Accept offer** uses. Nothing runs while offer mode is off.

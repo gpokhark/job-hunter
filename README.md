@@ -110,8 +110,9 @@ installable skills (`sh scripts/install_skill.sh`):
 ## Make the hunt feel good (optional themes)
 
 The radar can wear a forest: **`forest`** (night) or **`forest-dawn`** (sunrise), with a light
-"Offer Season" layer: a daily affirmation, a *Signed & Sealed* vision card, and a *You got the
-offer* moment the moment you set an application to **Offer**. It is cosmetic only: scores,
+"Offer Season" layer: a daily affirmation, an **offer email** that opens like a message (with an
+*Accept offer* button), and a *You got the offer* moment: when you set an application to **Offer**
+a mail banner slides in first, then the celebration. It is cosmetic only: scores,
 filters and data never change, and **offer mode** (bottom-left) switches the words off and
 restores the plain labels.
 
