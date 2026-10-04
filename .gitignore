@@ -1143,3 +1143,6 @@ config/salary_config.json
 # Claude Code session-runtime artifacts, not project content.
 .claude/*.lock
 
+
+# Local settings (copy of config/settings.example.yaml); keeps personal choices out of the repo.
+config/settings.yaml

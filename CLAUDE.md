@@ -88,6 +88,8 @@ the other extras — always sync with `--all-extras`. Browser binaries live in a
 syncs. Tests use saved response fixtures in `tests/fixtures/` and never hit the network unless marked
 `live`. Setup requires `cp config/candidate_profile.example.yaml config/candidate_profile.yaml`
 before most commands will find a profile (falls back to the example file otherwise).
+`config/settings.yaml` is git-ignored (local choices such as `radar.theme`); the committed template is
+`config/settings.example.yaml`, which `load_settings()` falls back to when the local file is absent.
 
 ## Architecture
 

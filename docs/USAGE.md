@@ -23,6 +23,7 @@ uv sync --all-extras                  # runtime + dev + the optional `stealth` e
 uv run playwright install chromium    # once: PDF rendering for the resume/cover-letter skills
 uv run scrapling install              # once: browser for `stealth_html` sources (astemo, google)
 cp config/candidate_profile.example.yaml config/candidate_profile.yaml
+cp config/settings.example.yaml config/settings.yaml   # optional; git-ignored, falls back to the example
 uv run job-hunter doctor
 ```
 

@@ -38,6 +38,7 @@ uv sync --all-extras                  # always keep --all-extras; a bare `uv syn
 uv run playwright install chromium    # once: PDF rendering for resumes
 uv run scrapling install              # once: only for the two browser-based sources
 cp config/candidate_profile.example.yaml config/candidate_profile.yaml   # edit your title/domain terms
+cp config/settings.example.yaml config/settings.yaml                     # optional: your local settings (git-ignored)
 uv run job-hunter doctor              # checks your environment and config
 uv run job-hunter pipeline            # search -> local review -> radar
 uv run python scripts/serve_radar.py --open   # browse it, tag jobs, track applications
@@ -117,7 +118,7 @@ filters and data never change, and **offer mode** (bottom-left) switches the wor
 restores the plain labels.
 
 ```yaml
-# config/settings.yaml
+# config/settings.yaml (copy of config/settings.example.yaml; git-ignored)
 radar:
   theme: forest-dawn   # auto (default) | forest | forest-dawn
 ```
