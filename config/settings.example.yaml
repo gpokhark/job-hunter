@@ -1,3 +1,6 @@
+# Copy to config/settings.yaml and edit (config/settings.yaml is git-ignored, so your local
+# choices -- e.g. radar.theme -- stay out of the repo). With no settings.yaml, job-hunter
+# falls back to this file. Nothing here is personal data.
 version: 1
 database_path: data/jobs.sqlite3
 collection:

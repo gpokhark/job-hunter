@@ -224,6 +224,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_settings(path: Path = Path("config/settings.yaml")) -> Settings:
+    if not path.exists():
+        # config/settings.yaml is git-ignored (local choices such as radar.theme); a fresh clone
+        # runs on the committed example, same fallback as load_profile.
+        path = path.with_name("settings.example.yaml")
     return Settings.model_validate(_load_yaml(path))
 
 

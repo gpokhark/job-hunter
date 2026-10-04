@@ -25,10 +25,13 @@ def resolve_project_root(explicit: str | os.PathLike[str] | None) -> Path:
         raise FileNotFoundError(
             f"--project/JOB_HUNTER_ROOT path does not exist or is not a directory: {root}"
         )
-    if not (root / "pyproject.toml").exists() or not (root / "config" / "settings.yaml").exists():
+    has_settings = any(
+        (root / "config" / name).exists() for name in ("settings.yaml", "settings.example.yaml")
+    )
+    if not (root / "pyproject.toml").exists() or not has_settings:
         raise FileNotFoundError(
             f"--project/JOB_HUNTER_ROOT path does not look like a job-hunter checkout (missing "
-            f"pyproject.toml and/or config/settings.yaml): {root}"
+            f"pyproject.toml and/or config/settings.yaml or settings.example.yaml): {root}"
         )
     return root
 

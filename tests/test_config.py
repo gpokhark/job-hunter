@@ -16,11 +16,11 @@ from job_hunter.config import (
 
 def test_project_configs_validate():
     root = Path(__file__).parents[1]
-    settings = load_settings(root / "config/settings.yaml")
+    settings = load_settings(root / "config/settings.example.yaml")
     assert settings.version == 1
     companies = load_companies(root / "config/companies.yaml")
     assert len(companies) == 84 and len({item.key for item in companies}) == 84
-    # config/settings.yaml's own committed retention: values, not just the model defaults.
+    # config/settings.example.yaml's own committed retention: values, not just the model defaults.
     assert settings.retention.closed_job_after_days == 10
     assert settings.retention.report_after_days == 15
     assert settings.retention.keep_latest_reports_per_slug == 2
@@ -65,7 +65,7 @@ def test_retention_config_rejects_invalid_values():
 
 def test_shipped_settings_keep_the_default_page_theme():
     root = Path(__file__).parents[1]
-    assert load_settings(root / "config/settings.yaml").radar.theme == "auto"
+    assert load_settings(root / "config/settings.example.yaml").radar.theme == "auto"
 
 
 def test_radar_config_theme_values():
