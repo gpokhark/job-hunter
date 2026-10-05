@@ -6,6 +6,7 @@ import pytest
 
 from job_hunter.config import CandidateProfile
 from job_hunter.resume_source import (
+    company_abbrev,
     company_rules,
     find_cover_sample,
     find_personalization,
@@ -273,3 +274,35 @@ def test_example_resume_in_config_is_never_the_dated_master(tmp_path):
     with pytest.raises(FileNotFoundError):
         resolve_master_resume(tmp_path)
     assert is_example(example)
+
+
+def test_company_abbrev_uses_initials_for_multi_word_names():
+    assert company_abbrev("Ford_Motor_Company") == "FMC"
+    assert company_abbrev("General_Motors") == "GM"
+    assert company_abbrev("Honda_Research_Institute") == "HRI"
+
+
+def test_company_abbrev_keeps_a_single_word_and_skips_legal_suffixes():
+    assert company_abbrev("Apple") == "Apple"
+    assert company_abbrev("Acme_Corp") == "Acme"
+    assert company_abbrev("Globex_Industries_Inc") == "GI"
+    assert company_abbrev("Inc") == "Inc"
+    assert company_abbrev("") == ""
+
+
+def test_company_abbrev_override_wins_and_is_sanitized():
+    text = "## all\n- [abbrev: SlMot] Slate_Motors\n- [abbrev: A/B!] Other_Co_Ltd\n"
+    assert company_abbrev("Slate_Motors", text) == "SlMot"
+    assert company_abbrev("Slate Motors", text) == "SlMot"
+    assert company_abbrev("Other_Co_Ltd", text) == "AB"
+    assert company_abbrev("Ford_Motor_Company", text) == "FMC"
+
+
+def test_company_abbrev_override_in_an_unknown_section_is_ignored():
+    assert company_abbrev("Slate_Motors", "## notes\n- [abbrev: SlMot] Slate_Motors\n") == "SM"
+
+
+def test_personalization_problems_flags_a_malformed_abbrev_tag():
+    assert not personalization_problems("## all\n- [abbrev: SlMot] Slate_Motors\n")
+    for bad in ("- [abbrev: ] Slate_Motors", "- [abbrev: SlMot]", "- Use [abbrev: SM] Slate_Motors"):
+        assert any("abbreviation" in p for p in personalization_problems(f"## all\n{bad}\n")), bad

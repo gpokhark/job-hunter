@@ -1612,12 +1612,14 @@ changed target does not fit.
 **Skill contracts.**
 
 - `resume-generator` - input: a JD file path or pasted JD (required), optional free-text instructions,
-  `--project`. Output: `<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
-  beside the JD, one `resume_log.csv` row, and a report of paths, pages, fill and applied
+  `--project`. Output: `<LastName>_CV_<CompanyTag>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
+  beside the JD (`<CompanyTag>` is the short tag `job-hunter resume-files` returns as `company_abbrev`:
+  initials of a multi-word folder name, a one-word name kept whole, legal suffixes skipped; a
+  `[abbrev: SHORT] Company_Name` bullet in `personalization.md` overrides it; the folder keeps the full name), one `resume_log.csv` row, and a report of paths, pages, fill and applied
   personalization. Next: `outreach-writer`.
 - `outreach-writer` - input: a JD (file, company folder or pasted), which deliverable(s) (email, cover
   letter, both), optional free-text instructions, `--project`. Output in `data/output/<Company>/`:
-  `<LastName>_Email_<Company>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<Company>-<RoleToken>_<YYYY-MM-DD>.pdf`
+  `<LastName>_Email_<CompanyTag>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<CompanyTag>-<RoleToken>_<YYYY-MM-DD>.pdf`
   (plus `.html` build artifact and `.txt` copy), and a report of word counts and applied
   personalization. It stops when `resume-files` or `contact` fails.
 

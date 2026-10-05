@@ -160,6 +160,7 @@ def personalization_problems(text: str) -> list[str]:
     for name in KNOWN_SECTIONS:
         for rule in sections.get(name, []):
             problems.extend(_role_tag_problems(rule))
+            problems.extend(_abbrev_tag_problems(rule))
     for marker in SAMPLE_MARKERS:
         if marker in text:
             problems.append(f"still contains sample text {marker!r} from the example; replace or delete it")
@@ -257,6 +258,67 @@ def company_rules(text: str, company: str) -> list[dict[str, str]]:
             if any(p.search(rule.lower()) for p in patterns):
                 hits.append({"section": section, "rule": rule})
     return hits
+
+
+# A naming override is a bullet that starts with `[abbrev: SlMot]` followed by the output folder name:
+# `- [abbrev: SlMot] Slate_Motors`. It only names files; the skills never treat it as a writing rule.
+_ABBREV_TAG = re.compile(r"^\[\s*abbrev\s*:\s*([^\]]*)\]\s*(.*)$", re.IGNORECASE)
+_ABBREV_ANYWHERE = re.compile(r"\[\s*abbrev\s*:", re.IGNORECASE)
+# Trailing legal words never form an initial ("Acme_Corp_Inc" -> "AC"), unless they are all that is left.
+_LEGAL_SUFFIX = {"inc", "incorporated", "corp", "corporation", "llc", "ltd", "co", "the"}
+
+
+def _abbrev_token(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", text)
+
+
+def _abbrev_tag_problems(rule: str) -> list[str]:
+    match = _ABBREV_TAG.match(rule)
+    if match and _abbrev_token(match.group(1)) and _norm(match.group(2)):
+        return []
+    if match or _ABBREV_ANYWHERE.search(rule):
+        return [
+            "a company abbreviation must be written '[abbrev: SHORT] Company_Name' at the start of "
+            f"the bullet, so it is ignored: {rule[:60]!r}"
+        ]
+    return []
+
+
+def _abbrev_overrides(text: str) -> dict[str, str]:
+    """normalized company name -> abbreviation, from `[abbrev: X] Company_Name` bullets in the
+    recognized sections (first one wins)."""
+    found: dict[str, str] = {}
+    for section, rules in personalization_rules(text).items():
+        if section not in KNOWN_SECTIONS:
+            continue
+        for rule in rules:
+            match = _ABBREV_TAG.match(rule)
+            if not match:
+                continue
+            abbrev, name = _abbrev_token(match.group(1)), _norm(match.group(2))
+            if abbrev and name:
+                found.setdefault(name, abbrev)
+    return found
+
+
+def company_abbrev(company: str, personalization_text: str | None = None) -> str:
+    """Short, filename-safe tag for an output folder name such as "Ford_Motor_Company" -> "FMC".
+    A `[abbrev: X] Company_Name` bullet in personalization.md wins. Otherwise: two or more words give
+    their initials in capitals ("Honda_Research_Institute" -> "HRI", "General_Motors" -> "GM"; legal
+    suffixes such as Inc/Corp/LLC are skipped), and a single word is kept whole ("Apple"). Deterministic,
+    so a CV, letter and email for one employer always share the tag. Returns "" for an empty name."""
+    key = _norm(company)
+    if not key:
+        return ""
+    if personalization_text:
+        override = _abbrev_overrides(personalization_text).get(key)
+        if override:
+            return override
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", company) if w]
+    kept = [w for w in words if w.lower() not in _LEGAL_SUFFIX] or words
+    if len(kept) == 1:
+        return kept[0]
+    return "".join(w[0] for w in kept).upper()
 
 
 def find_cover_sample(root: Path) -> Path | None:
