@@ -1904,6 +1904,50 @@ async def test_successfactors_rmk_v2_pagination_and_label_matched_detail():
     assert detail.description == "Build vehicles."
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_successfactors_rmk_v2_configurable_date_format_for_en_gb_tenant():
+    """Danfoss only serves the en_GB locale, so unifiedStandardStart is "D/M/YYYY"
+    ("23/09/2026"); the default "M/D/YY" parse would return None, not a wrong date."""
+    list_url = "https://rmk.example/services/recruiting/v1/jobs"
+    respx.post(list_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "totalJobs": 1,
+                "jobSearchResult": [
+                    {
+                        "response": {
+                            "id": "51543",
+                            "unifiedStandardTitle": "Engineer, Product",
+                            "urlTitle": "Engineer%2C-Product",
+                            "jobLocationShort": ["Cleveland, OH, USA    "],
+                            "unifiedStandardStart": "23/09/2026",
+                        }
+                    }
+                ],
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="danfoss",
+        company="Danfoss",
+        adapter="successfactors_rmk_v2",
+        config={
+            "list_url": list_url,
+            "detail_base_url": "https://rmk.example/job/",
+            "locale": "en_GB",
+            "location_filter": "United States",
+            "date_format": "%d/%m/%Y",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = SuccessFactorsRmkV2Adapter(company, client, CollectionConfig(max_retries=0))
+        jobs = await adapter.fetch_summaries()
+    assert jobs[0].posted_at.strftime("%Y-%m-%d") == "2026-09-23"
+    assert jobs[0].url == "https://rmk.example/job/Engineer%2C-Product/51543-en_GB"
+
+
 _PAYLOCITY_LISTING_HTML = """<html><body><script>
     window.pageData = {"Departments":["All Departments"],"Jobs":[{"JobId":42,"JobTitle":"Program Manager (Hybrid)","LocationName":"Plant A","ShouldDisplayLocation":true,"PublishedDate":"2026-09-10T15:30:11-05:00","Description":"Truncated preview...","IsInternal":false,"HiringDepartment":null,"JobLocation":{"LocationId":1,"ModuleId":99,"Name":"Plant A","Address":"1 Main St","City":"Plymouth","State":"MI","Zip":"48170","Country":"USA","County":null},"IsRemote":true,"IndeedRemoteType":1}],"ModuleId":"99","ModuleTitle":"Acme - Plymouth"};
 </script></body></html>"""
