@@ -1445,6 +1445,9 @@ companies:
         posted_at: first_published
   - key: microsoft
     company: Microsoft
+    # Disabled 2026-10-10: Microsoft can't file PERM going forward. Set to true (or delete this
+    # line) to resume collection; the adapter config below is intact.
+    enabled: false
     adapter: eightfold
     platform: eightfold
     config:
@@ -2101,3 +2104,62 @@ companies:
         department: categories.department
         work_arrangement: workplaceType
         posted_at: createdAt
+  - key: danfoss
+    company: Danfoss
+    adapter: successfactors_rmk_v2
+    platform: successfactors_rmk_v2
+    config:
+      # jobs.danfoss.com is SuccessFactors RMK ("Job2Web") in its client-rendered "unified"
+      # search variant: /search/ is a React shell with zero job rows in its HTML (also with
+      # ?unified=legacy), so html_paginated finds nothing. Same detail template (.joblayouttoken
+      # + bare itemprop="description") and the same listing call as bmw/cnh: the widget's
+      # POST /services/recruiting/v1/jobs, which answers plain httpx with no cookie/CSRF token.
+      # DISCLOSED TRADEOFF (chosen explicitly by the maintainer, 2026-10-08): the site's
+      # robots.txt has `Disallow: /services/`, so this API is robots-disallowed. Reasonable
+      # alternative if that becomes unacceptable: /sitemap.xml (allowed, 684 job URLs, both
+      # sample jobs present) plus detail pages would need a new adapter, ~684 GETs/run and has
+      # no posted date. Detail pages (/job/...) are not disallowed.
+      # location: "United States" is a real filter here (623 -> 233; "Germany" 47). 10 results
+      # per page, 24 pages, so max_pages is raised above the adapter default of 20.
+      # Only en_GB is served (en_US returns no jobSearchResult), so dates are D/M/YYYY
+      # ("23/09/2026") -> date_format. Detail URLs are {detail_base_url}{urlTitle}/{id}-en_GB,
+      # exactly the sample links (…/job/Engineer%2C-Product/51543-en_GB).
+      # CAVEAT: as with cnh, pagination is not stable run-to-run: two full scans of the 233
+      # reported US jobs yielded 206 and 180 unique ids, so a single search can miss postings;
+      # repeated runs plus the 3-consecutive-miss tolerance before closing a job compensate.
+      # Sample reqs 51543 (Cleveland, OH) and 49757 (Tallahassee, FL) appeared in both scans.
+      list_url: https://jobs.danfoss.com/services/recruiting/v1/jobs
+      detail_base_url: https://jobs.danfoss.com/job/
+      locale: en_GB
+      location_filter: United States
+      date_format: "%d/%m/%Y"
+      max_pages: 30
+  - key: ornl
+    company: Oak Ridge National Laboratory
+    adapter: zf
+    platform: successfactors_rmk
+    config:
+      # The given listing URL (career-hcm20.ns2cloud.com/careers?company=utbattelleP, SAP's
+      # newer Career Site Builder) is the same dead end as ZF's: plain httpx returns 200 but
+      # it is a "verp-client" widget shell with no job data and no trace of the sample job
+      # (1438704600 / "R&D Associate Staff - Applied Research for Mobility Systems") anywhere
+      # in it. The sample job's own host (jobs.ornl.gov, UT-Battelle) is the classic
+      # server-rendered SuccessFactors RMK ("Job2Web") search table — tr.data-row /
+      # a.jobTitle-link / td.colLocation span.jobLocation, startrow pagination, 25/page — the
+      # same template as ZF/PACCAR/Volkswagen, confirmed via plain curl with no cookies.
+      # The detail page reports datePosted as schema.org microdata in Java Date.toString()
+      # format (no ld+json block), exactly what the `zf` adapter's fetch_detail override
+      # handles, so it is reused as-is rather than writing new code. The description sits in
+      # `.jobdescription`. Every ORNL posting is a U.S. site (Oak Ridge/Knoxville, TN), so no
+      # country facet is applied; location.py still decides eligibility. CAVEAT: the listing's
+      # date column and the detail microdata can differ by a day (SuccessFactors republish
+      # refresh), and the listing is not confirmed newest-first, so no early-pagination-stop.
+      list_url: https://jobs.ornl.gov/search/?q=&locale=en_US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription
+      posted_at_selector: td.colDate span.jobDate

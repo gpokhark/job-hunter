@@ -21,6 +21,7 @@ How it works:
   `resume-files` lists the rules that name the employer. For a job title, start the bullet with a tag,
   `- [role: program manager, TPM] ...`: it applies only when one of the listed titles appears, as whole
   words, in the job's title (`resume-files --jd` reads the title from the JD file), and never otherwise.
+- Output file names carry a short company tag: the initials of a multi-word folder name (`Globex_Industries` -> `GI`), or the whole name if it is one word. To choose your own, add a bullet `- [abbrev: GlobInd] Globex_Industries` (the tag, then the exact folder name); it only names files and is never a writing rule.
 - Precedence: integrity rules > what you type in the request for that run > this file > the skill's
   defaults. Anything in the request wins for that run only.
 - Integrity rules cannot be overridden here: nothing may be invented (skills, tools, employers,
@@ -35,6 +36,7 @@ Applies to resumes and outreach alike.
 - Write in US English.
 - Never use the words "passionate", "synergy" or "rockstar".
 - Standing fact I am happy to state when relevant: I am open to hybrid or on-site work near Springfield.
+- [abbrev: GlobInd] Globex_Industries
 
 ## resume-generator
 

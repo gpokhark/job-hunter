@@ -269,9 +269,11 @@ that's a cost paid once per company, not per search.
 | scout_motors | Scout Motors | greenhouse | Yes (`first_published`) | httpx only — same Greenhouse public Job Board API shape as anthropic, `?content=true` inlines every description (233 jobs) |
 | meta | Meta | **unsupported** | n/a | robots.txt explicitly prohibits automated collection without Facebook's written permission; job search only renders via an internal Comet/Relay GraphQL contract — see §5.7 |
 | zf | ZF Friedrichshafen AG | zf | Yes (JobPosting microdata, Java `Date.toString()`) | httpx + selectolax — classic SuccessFactors RMK listing table (166 US jobs) reused from `html_paginated`, one bespoke `posted_at` override for a non-JSON-LD microdate; given `career5.successfactors.eu` listing URL was a dead end, real site found via the sample job's own host (§5.14) |
+| ornl | Oak Ridge National Laboratory | zf | Yes (JobPosting microdata, Java `Date.toString()`) | httpx + selectolax — classic SuccessFactors RMK listing table (131 jobs, all U.S.) via the `zf` adapter's microdata `posted_at` override, config only; given `career-hcm20.ns2cloud.com` Career Site Builder listing URL was a dead end, real site found via the sample job's own host `jobs.ornl.gov` (§5.14) |
 | schaeffler | Schaeffler | zf | Yes (JobPosting microdata `datePosted`, stable on re-fetch but clustered in the last month — same "republish" caveat as zf) | httpx + selectolax — classic server-rendered SuccessFactors RMK `/search/` page in its *tile* variant (`li.job-tile`, 100/page, city-only location), reusing the `zf` adapter via config; `optionsFacetsDD_country=US` verified exact (695 -> 226); the widget's `/services/recruiting/v1/jobs` API is CSRF-gated and robots.txt-disallowed, so not used; given Vitesco sample (req 42488) is not on this board |
 | hella | Forvia Hella | csod | Yes (`postingEffectiveDate` / JobPosting JSON-LD `DatePosted`) | httpx only — Cornerstone OnDemand, a new platform family; a short-lived anonymous JWT embedded in the plain careersite page's own HTML is replayed as a Bearer token on a public search API (488 jobs, 33 US), full description from each job's own JSON-LD detail page (§5.15) |
 | cnh | CNH Industrial | successfactors_rmk_v2 | Yes (`unifiedStandardStart`, "M/D/YY") | httpx only — same platform/API shape as bmw, reused via config; needed one shared-adapter addition (an `itemprop="description"` fallback) since CNH's detail page has no labeled `.joblayouttoken` for its description (173 US jobs; pagination confirmed non-deterministic run-to-run, see §5.7) |
+| danfoss | Danfoss | successfactors_rmk_v2 | Yes (`unifiedStandardStart`, "D/M/YYYY" — en_GB is the only served locale, so config sets `date_format: "%d/%m/%Y"`) | httpx only — client-rendered "unified" RMK site (`/search/` has no job rows, also with `?unified=legacy`); same unauthenticated `POST .../services/recruiting/v1/jobs` and detail template as bmw/cnh, reused via config plus a new optional `date_format`. **Disclosed: the site's robots.txt has `Disallow: /services/`**, so the listing API is robots-disallowed (maintainer's explicit choice; the allowed alternative is `/sitemap.xml`, 684 job URLs, but it has no dates and needs a new adapter + ~684 GETs/run). `location: "United States"` is a real filter (623 -> 233), 10/page so `max_pages: 30`; pagination is non-deterministic run-to-run like cnh (two scans of 233 gave 206 and 180 unique ids; see §5.7) |
 || faurecia | Forvia Faurecia | eightfold | Yes (`t_create`, confirmed monotonic — NOT `t_update`) | httpx only — same Eightfold platform as deere but an older API generation (flat response, snake_case fields, absolute detail URL, id-in-path detail fetch); `eightfold.py` generalized to auto-detect both shapes (111 US jobs) |
 || fanuc | FANUC America | adp_recruiting | Yes (`postingDate`) | httpx only — ADP Recruiting Management public two-call handshake, same adapter as stellantis; 43 requisitions, all in one `$top=100` call, confirmed sorted newest-first (early-stop viable) |
 || rivian | Rivian | icims_attract | Yes (`posted_date`, confirmed sorted newest-first) | httpx only — iCIMS "Attract" widget's own same-origin `/api/jobs`, found by rendering once and reading its XHR calls; full description inline, no detail fetch needed (738 jobs) |
@@ -1612,12 +1614,14 @@ changed target does not fit.
 **Skill contracts.**
 
 - `resume-generator` - input: a JD file path or pasted JD (required), optional free-text instructions,
-  `--project`. Output: `<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
-  beside the JD, one `resume_log.csv` row, and a report of paths, pages, fill and applied
+  `--project`. Output: `<LastName>_CV_<CompanyTag>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and `.pdf`
+  beside the JD (`<CompanyTag>` is the short tag `job-hunter resume-files` returns as `company_abbrev`:
+  initials of a multi-word folder name, a one-word name kept whole, legal suffixes skipped; a
+  `[abbrev: SHORT] Company_Name` bullet in `personalization.md` overrides it; the folder keeps the full name), one `resume_log.csv` row, and a report of paths, pages, fill and applied
   personalization. Next: `outreach-writer`.
 - `outreach-writer` - input: a JD (file, company folder or pasted), which deliverable(s) (email, cover
   letter, both), optional free-text instructions, `--project`. Output in `data/output/<Company>/`:
-  `<LastName>_Email_<Company>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<Company>-<RoleToken>_<YYYY-MM-DD>.pdf`
+  `<LastName>_Email_<CompanyTag>_<YYYY-MM-DD>.txt` and `<FirstName>_CL-<CompanyTag>-<RoleToken>_<YYYY-MM-DD>.pdf`
   (plus `.html` build artifact and `.txt` copy), and a report of word counts and applied
   personalization. It stops when `resume-files` or `contact` fails.
 

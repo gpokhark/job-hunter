@@ -582,10 +582,12 @@ def main(argv: list[str] | None = None) -> int:
                 role = role if role is not None else resume_source.jd_title(args.jd)
             problems: list[str] = []
             company_hits: list[dict[str, str]] | None = None
+            abbrev_text: str | None = None
             role_hits: list[dict[str, object]] | None = None
             if personalization is not None:
                 body = personalization.read_text(encoding="utf-8", errors="replace")
                 problems = resume_source.personalization_problems(body)
+                abbrev_text = body
                 for problem in problems:
                     print(f"job-hunter: personalization.md: {problem}", file=sys.stderr)
                 if company is not None:
@@ -598,6 +600,9 @@ def main(argv: list[str] | None = None) -> int:
                 "personalization": _s(personalization),
                 "personalization_warning": personalization_warning,
                 "personalization_problems": problems,
+                "company_abbrev": (
+                    resume_source.company_abbrev(company, abbrev_text) if company else None
+                ),
                 "personalization_company_rules": company_hits,
                 "role": role,
                 "personalization_role_rules": role_hits,

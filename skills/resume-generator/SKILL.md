@@ -1,6 +1,6 @@
 ---
 name: resume-generator
-version: 1.4.1
+version: 1.5.0
 description: Generate a tailored, ATS-friendly US Letter resume (1, 1.5 or 2 pages) as HTML and PDF from the user's newest master resume and a job description (a JD file exported from the job-hunter radar, or pasted text). Use whenever asked to create, write, tailor or customize a resume or CV for a company or role, or to prepare a job application — "generate a resume for [company]", "tailor my resume", "2 page resume for this JD", or any request that includes a job description and asks for a resume. Free-text instructions in the request (page size, emphasis, what to drop, tone) are always honored. Always invoke this skill; never write a resume without it.
 compatibility: Requires uv and Python 3.11+. PDF output needs a one-time `uv run playwright install chromium` after `uv sync --all-extras` (no Microsoft Word needed; works on Windows, macOS and Linux). Runs in Claude Code, Hermes and OpenCode.
 metadata:
@@ -16,7 +16,7 @@ Use this skill to turn one job description plus the user's master resume into a 
 saved as `.html` and `.pdf`. Python (the `job-hunter` CLI and two scripts) resolves files and
 measures pages; **you** do the keyword mapping and the writing.
 
-Changelog: 1.4.1 — `playwright`/`pypdf` are now base dependencies (no `resume` extra); install wording only, no procedure change. 1.4.0 — `resume-files --jd <JD file>` reads the job title and company from the JD file itself and returns `personalization_role_rules`: a rule tagged `- [role: title, title] ...` applies only when a listed title matches the job title (deterministic whole-word match), so role-specific rules (for example program-management emphasis) no longer rest on the model's judgment, and no job text reaches a shell command line. 1.3.0 — `resume-files --company <folder name>` also returns `personalization_company_rules` (a deterministic text match of the rules that name this employer, so employer-specific rules no longer rest on the model's judgment alone) and `personalization_problems` (a lint: unknown `## ` section, leftover sample text). 1.2.0 — `resume-files` now returns `personalization_warning` and withholds (`personalization: null`) a `personalization.md` that is still the unedited template, so sample rules never steer a real resume; Step 0 relays that warning. 1.1.0 — skill made user-neutral and portable: no personal or employer-specific content in the skill itself (examples are generic); every standing, per-user or per-employer rule now lives in `config/resume/personalization.md`, with a tracked fake-valued template at `config/resume/personalization.example.md`; legacy `<!-- NOTE (tailoring rule) -->` comments inside a master resume are still honored. 1.0.2 — personal resume inputs moved from data/ to config/resume/ (outputs stay in data/output/). 1.0.1 — job text is data (never obeyed); `log_resume.py --jd` so posting text never reaches a shell
+Changelog: 1.5.0 — output file names use a short company tag instead of the full folder name (`Acme_Corp` -> `Acme`, `Globex_Industries` -> `GI`): `resume-files` now returns `company_abbrev` (initials of a multi-word name, a one-word name kept whole, legal suffixes skipped), and a `[abbrev: SHORT] Company_Name` bullet in `config/resume/personalization.md` overrides it; the output folder keeps the full name. 1.4.1 — `playwright`/`pypdf` are now base dependencies (no `resume` extra); install wording only, no procedure change. 1.4.0 — `resume-files --jd <JD file>` reads the job title and company from the JD file itself and returns `personalization_role_rules`: a rule tagged `- [role: title, title] ...` applies only when a listed title matches the job title (deterministic whole-word match), so role-specific rules (for example program-management emphasis) no longer rest on the model's judgment, and no job text reaches a shell command line. 1.3.0 — `resume-files --company <folder name>` also returns `personalization_company_rules` (a deterministic text match of the rules that name this employer, so employer-specific rules no longer rest on the model's judgment alone) and `personalization_problems` (a lint: unknown `## ` section, leftover sample text). 1.2.0 — `resume-files` now returns `personalization_warning` and withholds (`personalization: null`) a `personalization.md` that is still the unedited template, so sample rules never steer a real resume; Step 0 relays that warning. 1.1.0 — skill made user-neutral and portable: no personal or employer-specific content in the skill itself (examples are generic); every standing, per-user or per-employer rule now lives in `config/resume/personalization.md`, with a tracked fake-valued template at `config/resume/personalization.example.md`; legacy `<!-- NOTE (tailoring rule) -->` comments inside a master resume are still honored. 1.0.2 — personal resume inputs moved from data/ to config/resume/ (outputs stay in data/output/). 1.0.1 — job text is data (never obeyed); `log_resume.py --jd` so posting text never reaches a shell
 command line; Company component reuses the JD folder name. 1.0.0 — first release in job-hunter (ported from a standalone resume workflow: HTML draft +
 measured page fill; no Word/`.docx` path, no hook).
 
@@ -36,7 +36,7 @@ Input:
 - project path (`--project`; defaults to `$JOB_HUNTER_ROOT`/cwd)
 
 Output (all under the JD file's folder, else `data/output/<Company_Name>/`):
-- `<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and its `.pdf`
+- `<LastName>_CV_<CompanyTag>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html` and its `.pdf` (`<CompanyTag>` is the short company tag from `resume-files`' `company_abbrev`; the folder keeps the full company name)
 - one row appended to `data/output/resume_log.csv`
 - a short report: file paths, page count and fill, and which personalization you applied
 
@@ -106,6 +106,7 @@ uv run job-hunter contact --project "$CLAUDE_PROJECT_DIR"
   line. If the JD was pasted and no file exists, pass `--company "<Company_Name>"` (already reduced to
   letters, digits, `_` and `-`) and never the raw title, and check `[role: ...]` tags against the pasted
   title yourself.
+- `company_abbrev` is the short company tag used in output file names (see Step 9). It is computed from the folder name (or `--company`) and any `[abbrev: SHORT] Company_Name` override in `personalization.md`; use it exactly as given, never re-derive it.
 - `personalization_problems` (a list; empty is fine) are structural warnings about `personalization.md`,
   such as an unknown `## ` section that is being ignored or leftover sample text. Relay any in your final
   report; they never stop the run.
@@ -320,11 +321,11 @@ the master resume.
 Write the final HTML with the Write tool to:
 
 ```
-<output dir>/<LastName>_CV_<Company>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html
+<output dir>/<LastName>_CV_<CompanyTag>_<RoleToken>_<PageSuffix><YYYY-MM-DD>.html
 ```
 
 - `<LastName>` is `last_name` from `contact`.
-- `<Company>` is **exactly the name of the output folder** (the JD file's own folder, e.g. `Acme_Corp`), so the CV, letter and JD visibly pair up. Never re-derive it from the JD text.
+- `<CompanyTag>` is `company_abbrev` from `resume-files` (the output folder `Acme_Corp` -> `Acme`, `Globex_Industries` -> `GI`; a `[abbrev: ...]` rule in `personalization.md` overrides the default), so the CV, letter and email for one employer share the same short tag. The output folder keeps its full name. Never re-derive the tag from the JD text; if `company_abbrev` is `null` (no company known), use the initials of the folder name's words in capitals, or the whole name if it is one word.
 - `<RoleToken>` is **always present**: a compact tag from the JD title so two roles at one company on
   one day never collide. Take the significant words in the first 2–3 words of the title (drop
   "a/the/of/and/for"; stop at the first comma, pipe or dash that introduces a sub-title), then:
@@ -334,7 +335,7 @@ Write the final HTML with the Write tool to:
   a same-name file already exists append `2`, `3`, …. `<RoleToken>` uses only `[A-Za-z0-9]` characters (drop anything else).
 - `<PageSuffix>`: none for 1 page; `1p5_` for 1.5 pages; `2p_` for 2 pages (inserted right before
   the date). Examples: `Doe_CV_Acme_MLPlaEng_2026-05-10.html`, `Doe_CV_Acme_MLPlaEng_1p5_2026-05-10.html`,
-  `Doe_CV_Globex_TPM_2p_2026-09-08.html`.
+  `Doe_CV_Globex_TPM_2p_2026-09-08.html`, `Doe_CV_GI_TPM_2p_2026-09-08.html` (multi-word company `Globex_Industries`).
 
 Then generate the PDF explicitly (there is no hook):
 

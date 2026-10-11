@@ -9,14 +9,15 @@ from ..normalizer import fallback_job_id, normalize_text
 from .base import JobAdapter, SchemaError
 
 
-def _parse_short_date(text: str | None) -> datetime | None:
+def _parse_short_date(text: str | None, fmt: str = "%m/%d/%y") -> datetime | None:
     """BMW's listing API reports dates as "M/D/YY" (e.g. "7/31/26") — a shape none of
     normalizer.py's existing date parsers cover (its 4-digit-year "%m/%d/%Y" is close but
-    not the same format)."""
+    not the same format). The format follows the request locale, so a tenant that only
+    serves `en_GB` (Danfoss: "23/09/2026") sets `date_format: "%d/%m/%Y"` in config."""
     if not text:
         return None
     try:
-        return datetime.strptime(text.strip(), "%m/%d/%y").replace(tzinfo=UTC)
+        return datetime.strptime(text.strip(), fmt).replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -59,6 +60,7 @@ class SuccessFactorsRmkV2Adapter(JobAdapter):
         list_url = self._list_url()
         locale = cfg.get("locale", "en_US")
         location_filter = cfg.get("location_filter", "")
+        date_format = cfg.get("date_format", "%m/%d/%y")
         base = cfg.get("detail_base_url")
         if not base:
             raise SchemaError("detail_base_url is not configured")
@@ -107,7 +109,7 @@ class SuccessFactorsRmkV2Adapter(JobAdapter):
                         title=title,
                         url=f"{base}{url_title}/{native_id}-{locale}",
                         location_raw=location,
-                        posted_at=_parse_short_date(item.get("unifiedStandardStart")),
+                        posted_at=_parse_short_date(item.get("unifiedStandardStart"), date_format),
                         raw=item,
                     )
                 )
