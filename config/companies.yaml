@@ -2227,3 +2227,99 @@ companies:
       page_size: 25
       description_selector: .jobdescription
       posted_at_selector: td.colDate span.jobDate
+  - key: kla
+    company: KLA Corporation
+    adapter: workday
+    platform: workday
+    config:
+      # kla.wd1.myworkdayjobs.com/Search is Workday's own candidate-facing site, so no hidden
+      # backend to look for — the CXS API (/wday/cxs/kla/Search/jobs) is public and
+      # unauthenticated (plain httpx POST, no cookies; ~1,120 global jobs, ~450 in the U.S.).
+      # Same workday_native shape as Toyota/GM; public_base_url is the browsable host, never the
+      # CXS host. Listing postedOn is relative text ("Posted 3 Days Ago"); the detail response
+      # carries the real startDate. Many postings show "N Locations" in the listing, so
+      # location is resolved from the detail payload. Note that the slug in a job URL can be
+      # stale (sample _2636359 has slug "Product-Development-Engineer" but title "Systems
+      # Engineer"); Workday resolves by the trailing requisition id.
+      workday_native: true
+      list_url: https://kla.wd1.myworkdayjobs.com/wday/cxs/kla/Search/jobs
+      public_base_url: https://kla.wd1.myworkdayjobs.com/en-US/Search/
+  - key: vector
+    company: Vector Informatik
+    adapter: discovered_api
+    platform: azure_search
+    config:
+      # join.vector.com is SuccessFactors Job2Web, but both its search page and its detail page are
+      # client-rendered (a `csb-loader` web component) — the SF listing API
+      # (/services/recruiting/v1/jobs, which robots.txt disallows) gives only title/location/date
+      # and the detail page carries no description in plain HTML. Rendering a job page once with
+      # Playwright and reading its XHRs showed the components actually read an Azure Search index
+      # through POST production.api.recruiting-solutions.org/search, which returns the whole
+      # posting in one call: full `description` HTML (Intro/Tasks/Profile/Techstack),
+      # `datePosted`, structured `addresses`/`country`, `workingModel`. It is authorised by a
+      # static public key (`x-api-key: pk_vector-prod_...`) plus `customerid: vector-prod`
+      # headers that the site's own frontend sends to every visitor, not a login or session —
+      # the same category as Ashby's public key / Bosch's static bearer token. Confirmed with
+      # plain httpx (no cookies). The maintainer explicitly approved using the key; if Vector
+      # rotates it the listing fails loudly (HTTP 4xx) and the new value is visible in any
+      # job page's network calls.
+      # The filter selects U.S. addresses in the en_GB document of each posting (every posting
+      # exists once per locale: 368 docs total, 8 U.S.), excluding "Unsolicited Application"
+      # placeholders. Verified: filter on jobId eq '632-en_GB' returns the sample; skip
+      # paging is real, and `top: 1000` (Azure's max) returns all in one call. datePosted
+      # matches the SF listing's start date for the same jobs (632: 2026-09-17).
+      # job_id is the index `jobId` ("632-en_GB"); the human url is templated because any slug
+      # resolves by id on the site (`link` is a job-invite apply URL, not a posting page).
+      # CAVEAT: location is city + country only (Detroit, Providence); no state is given.
+      list_url: https://production.api.recruiting-solutions.org/search
+      method: POST
+      headers:
+        x-api-key: pk_vector-prod_HkAuFFMIfLGnMVIeIQOLDFxdqrSqoVTAGYvKWdgRjzpxWIDgoZsYwwqCXAAYfZSHhvwwOTKIkwySseqFIlNzyiMmFlCMJvwS
+        customerid: vector-prod
+        internal: "false"
+        privatejobboard: "false"
+        Referer: https://join.vector.com/
+      payload:
+        count: true
+        facets: []
+        filter: "addresses/any(address: address/countryCode eq 'USA') and language eq 'en_GB' and custUnsolicitedApplication ne true"
+        search: "*"
+        skip: 0
+        top: 1000
+      items_path: value
+      public_url_template: https://join.vector.com/UnitedStates/job/Job/{id}
+      fields:
+        id: jobId
+        title: title
+        url: link
+        location: addresses.0.city
+        city: addresses.0.city
+        country: country
+        department: jobFunctions.0.label
+        posted_at: datePosted
+        work_arrangement: workingModel
+      listing_description_path: description
+  - key: benteler
+    company: BENTELER
+    adapter: zf
+    platform: successfactors_rmk
+    config:
+      # career.benteler.jobs is the classic server-rendered SuccessFactors RMK ("Job2Web")
+      # tr.data-row table, same template as ZF/ORNL/PACCAR, confirmed via plain curl with no
+      # cookies. The given /go/Professionals/3198801/ URL is only one category page (57 jobs);
+      # the whole catalog (127 jobs, global) is at /search/. optionsFacetsDD_country=US is a
+      # real filter (two different values give two different result sets: US 48, DE 61), so it
+      # is applied here; location.py still decides eligibility. 25/page, startrow pagination
+      # (confirmed: pages return distinct jobs). The listing has no date column; the detail
+      # page's <meta itemprop="datePosted"> (Java Date.toString() format) is what the `zf`
+      # adapter's fetch_detail override reads, and the description sits in `.jobdescription`,
+      # so zf is reused as-is. Sample job 1400525233 (Electrical Engineer, Shreveport, LA)
+      # is present. CAVEAT: the listing is not confirmed newest-first, so no early-stop.
+      list_url: https://career.benteler.jobs/search/?q=&locale=en_US&optionsFacetsDD_country=US
+      card_selector: tr.data-row
+      link_selector: a.jobTitle-link
+      title_selector: a.jobTitle-link
+      location_selector: td.colLocation span.jobLocation
+      page_parameter: startrow
+      page_size: 25
+      description_selector: .jobdescription

@@ -238,6 +238,69 @@ async def test_ashby_reads_structured_location_and_work_arrangement():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_json_api_posts_configured_headers_and_payload():
+    """Vector's page calls an Azure Search index (POST .../search) whose static public key and
+    customerid ride in request headers; the kernel's opt-in `headers` config must send them."""
+    url = "https://api.example/search"
+    route = respx.post(url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "jobId": "632-en_GB",
+                        "title": "Project Engineer",
+                        "link": "https://example.com/invite/632",
+                        "datePosted": "2026-09-17T16:05:15Z",
+                        "country": "United States",
+                        "addresses": [{"city": "Detroit"}],
+                        "description": "<p>Do things.</p>",
+                    }
+                ]
+            },
+        )
+    )
+    company = CompanyConfig(
+        key="example",
+        company="Example",
+        adapter="discovered_api",
+        config={
+            "list_url": url,
+            "method": "POST",
+            "headers": {"x-api-key": "pk_test", "customerid": "example-prod"},
+            "payload": {"search": "*", "skip": 0},
+            "items_path": "value",
+            "public_url_template": "https://example.com/job/{id}",
+            "fields": {
+                "id": "jobId",
+                "title": "title",
+                "url": "link",
+                "location": "addresses.0.city",
+                "country": "country",
+                "posted_at": "datePosted",
+            },
+            "listing_description_path": "description",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = adapters_pkg.adapter_class("discovered_api")(
+            company, client, CollectionConfig(max_retries=0)
+        )
+        jobs = await adapter.fetch_summaries()
+        detail = await adapter.fetch_detail(jobs[0])
+    sent = route.calls.last.request
+    assert sent.headers["x-api-key"] == "pk_test"
+    assert sent.headers["customerid"] == "example-prod"
+    assert json.loads(sent.content) == {"search": "*", "skip": 0}
+    assert jobs[0].job_id == "632-en_GB"
+    assert jobs[0].url == "https://example.com/job/632-en_GB"
+    assert jobs[0].location_raw == "Detroit"
+    assert jobs[0].posted_at is not None
+    assert detail.description == "<p>Do things.</p>"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_ashby_work_arrangement_unknown_when_not_configured():
     """work_arrangement is opt-in — a company config that doesn't map it must not crash
     or guess, same as any other unconfigured field."""

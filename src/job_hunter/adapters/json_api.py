@@ -22,6 +22,7 @@ class ConfigurableJsonAdapter(JobAdapter):
             url,
             json=cfg.get("payload") if method != "GET" else None,
             params=cfg.get("params"),
+            headers=cfg.get("headers"),
         )
         payload = response.json()
         items = nested(payload, cfg.get("items_path", ""), payload)
